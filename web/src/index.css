@@ -1,0 +1,28 @@
+/* postcss */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* FIX: remove browser default spacing */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+  background: #020617; /* your dark background */
+}
+
+/* FIX: ensure React root spans full screen with no borders */
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  background: #020617; /* matches page background */
+}
+
+/* OPTIONAL (fine to keep or remove)
+body {
+  @apply bg-slate-950;
+}
+*/

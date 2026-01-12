@@ -1,0 +1,51 @@
+# Python / FastAPI
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+.env
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# Logs / OS / IDE
+*.log
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ---- Backups / dumps / generated ----
+backup/
+backups/
+*.sql
+*.zip
+openapi.json
+folder_tree.txt
+
+# ---- Local experiments ----
+main-unused.py
+test_cached.py
+
+# ---- Env files ----
+.env.production
+
+# ---- Local / experimental / backups ----
+*.ps1
+*.bak
+compose.effective.yml
+folder_tree.txt
+
+# ---- Duplicate / scratch files ----
+* (1).py
+* (2).py
+
+# ---- Local images / temp ----
+logo1.png
+

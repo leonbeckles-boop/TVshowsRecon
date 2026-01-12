@@ -1,0 +1,22 @@
+/* 3 columns on phones, 4 on small screens, 6 on desktop/laptop */
+
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .tile-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .tile-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 1.25rem;
+  }
+}

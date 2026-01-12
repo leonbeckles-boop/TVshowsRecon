@@ -1,0 +1,71 @@
+
+
+services:
+  db:
+    image: postgres:15-alpine
+    env_file:
+      - .env
+    environment:
+      # Use your .env values if present; otherwise fall back to sane defaults
+      POSTGRES_USER: ${POSTGRES_USER:-tvuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tvpass}
+      POSTGRES_DB: ${POSTGRES_DB:-tvrecs}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--appendonly","yes"]
+
+  backend:
+    # If you build locally, keep the build context; image name is optional but nice
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tvshowsrecon-backend
+    env_file:
+      - .env
+    environment:
+      # IMPORTANT: override hostnames for in-container networking
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://tvuser:tvpass@db:5432/tvrecs
+      DATABASE_URL_SYNC: postgresql+psycopg://tvuser:tvpass@db:5432/tvrecs
+      # Pass through API keys/creds from .env
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET}
+      REDDIT_USER_AGENT: ${REDDIT_USER_AGENT}
+      # Avoid blank secret warning; override in .env for prod
+      SECRET_KEY: ${SECRET_KEY:-changeme-dev-secret}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    # If your Dockerfile already sets the CMD to uvicorn, you can omit this:
+    # command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  web:
+    # Adjust if your web Dockerfile lives elsewhere (e.g., ./web/Dockerfile)
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: tvshowsrecon-web
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    # If your frontend needs an API base env, uncomment and adjust:
+    # environment:
+    #   - VITE_API_BASE=http://localhost
+
+volumes:
+  pgdata:
+  

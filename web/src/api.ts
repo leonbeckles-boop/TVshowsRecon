@@ -1,23 +1,40 @@
 /* web/src/api.ts — central API helpers & types
  *
- * - Prevents same-origin "/api" calls on Vercel by supporting an absolute API base.
- * - Uses VITE_API_BASE if set (recommended), otherwise:
- *    - development: "/api"
- *    - production:  "https://whatnext-api.onrender.com/api"
+ * Goals:
+ * - Work locally (dev) and on Vercel (prod) without same-origin /api issues.
+ * - Keep backwards compatibility with older UI code by exporting legacy names
+ *   and flexible function signatures.
+ *
+ * API conventions in this codebase (as used by existing pages/components):
+ * - Auth: /api/auth/login, /api/auth/register
+ * - Me:   /api/me
+ * - Library (legacy): /api/library/{userId}/favorites|ratings|not_interested
+ * - Shows: /api/shows/{tmdbId} and /api/shows/{tmdbId}/posts
+ * - Recs:  /api/recs, /api/recs/v2, /api/recs/v3
+ * - Discover: /api/discover
+ * - Admin: /api/admin/stats, /api/admin/users, etc.
  */
 
-export type AnyDict = Record<string, any>;
-
+// ───────────────── Types ─────────────────
 export type User = {
   id: number;
   email: string;
-  created_at?: string;
-  [k: string]: any;
+  username?: string | null;
+  is_admin: boolean;
 };
 
-export type Genre = {
-  id: number;
-  name: string;
+export type AdminUser = User & {
+  created_at?: string;
+  last_login_at?: string | null;
+};
+
+export type AdminStats = {
+  users_total?: number;
+  users_active_7d?: number;
+  favorites_total?: number;
+  ratings_total?: number;
+  reddit_posts_total?: number;
+  [k: string]: any;
 };
 
 export type Show = {
@@ -25,41 +42,27 @@ export type Show = {
   title: string;
   poster_path?: string | null;
   overview?: string | null;
-  first_air_date?: string | null;
   vote_average?: number | null;
-  vote_count?: number | null;
-  popularity?: number | null;
-  original_language?: string | null;
-  genre_ids?: number[] | null;
-  genres?: Genre[] | null;
-  [k: string]: any;
-};
-
-export type RedditPost = {
-  id: number;
-  reddit_id: string;
-  subreddit: string;
-  title: string;
-  url?: string | null;
-  created_utc?: string | null;
-  score?: number | null;
-  num_comments?: number | null;
+  first_air_date?: string | null;
   [k: string]: any;
 };
 
 export type Favorite = {
-  id?: number;
-  user_id?: number;
+  user_id: number;
   tmdb_id: number;
   created_at?: string;
+  // Some older endpoints returned show-like objects; keep it permissive
+  title?: string;
+  poster_path?: string | null;
+  [k: string]: any;
 };
 
-export type Rating = {
+export type UserRating = {
   id?: number;
-  user_id?: number;
+  user_id: number;
   tmdb_id: number;
   rating: number;
-  title?: string;
+  title?: string | null;
   seasons_completed?: number | null;
   notes?: string | null;
   created_at?: string;
@@ -68,56 +71,43 @@ export type Rating = {
 };
 
 export type NotInterested = {
-  id?: number;
-  user_id?: number;
+  user_id: number;
   tmdb_id: number;
   created_at?: string;
-};
-
-export type RedditScore = {
-  tmdb_id: number;
-  score_reddit: number;
   [k: string]: any;
 };
 
 export type RecItem = {
   tmdb_id: number;
-  title?: string;
-  poster_url?: string | null;
+  title?: string | null;
   score?: number;
+  poster_url?: string | null;
   reason?: string;
-  [k: string]: any;
-};
-
-export type ExplainItem = {
-  tmdb_id: number;
-  title?: string;
-  final_score?: number;
-  components?: AnyDict;
-  neighbors?: AnyDict[];
-  [k: string]: any;
-};
-
-export type WrappedStats = {
-  user_id: number;
-  period?: string;
-  top_genres?: { name: string; count: number }[];
-  top_shows?: { tmdb_id: number; title: string; count: number }[];
   [k: string]: any;
 };
 
 export type LoginResponse = { access_token: string; token_type?: string };
 
+export type RecsOptions = {
+  limit?: number;
+  diversify?: boolean;
+  debug?: boolean;
+  [k: string]: any;
+};
+
 // ───────────────── Config & Token helpers ─────────────────
 
-// Prefer env var (set this on Vercel): VITE_API_BASE=https://whatnext-api.onrender.com/api
+// Prefer env var (set on Vercel): VITE_API_BASE=https://whatnext-api.onrender.com/api
+// Fallbacks:
+// - development: "/api" (works with local proxy/nginx)
+// - production: absolute Render URL (works on Vercel)
+const DEFAULT_PROD_API = "https://whatnext-api.onrender.com/api";
+
 const BASE =
   (import.meta.env.VITE_API_BASE as string | undefined) ??
-  (import.meta.env.MODE === "development"
-    ? "/api"
-    : "https://whatnext-api.onrender.com/api");
+  (import.meta.env.MODE === "development" ? "/api" : DEFAULT_PROD_API);
 
-// Normalise: no trailing slash
+// Normalise to no trailing slash
 const BASE_NORM = BASE.replace(/\/+$/, "");
 
 const TOKEN_KEY = "access_token";
@@ -130,36 +120,36 @@ export function getToken(): string | null {
   }
 }
 
-export function setToken(token: string) {
+export function setToken(token: string | null) {
   try {
-    localStorage.setItem(TOKEN_KEY, token);
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
   } catch {
     // ignore
   }
 }
 
 export function clearToken() {
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // ignore
-  }
+  setToken(null);
 }
 
-// ───────────────── URL helpers ─────────────────
+// ───────────────── Internal helpers ─────────────────
+
+// Build full URL for API calls.
+// - Absolute URLs pass through.
+// - Paths beginning with "/api" are treated as API paths and rewritten to BASE_NORM.
 function buildUrl(path: string): string {
-  // Absolute URLs pass through
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
 
-  // Back-compat: callers that already include "/api" shouldn't double-prefix
-  let p = path;
-  if (p === "/api") p = "";
-  else if (p.startsWith("/api/")) p = p.slice(4); // remove leading "/api"
+  // allow callers to pass "/api/..." and still get the right host in prod
+  if (path === "/api") return BASE_NORM;
+  if (path.startsWith("/api/")) return `${BASE_NORM}${path.slice(4)}`;
 
-  return `${BASE_NORM}${p.startsWith("/") ? "" : "/"}${p}`;
+  // otherwise treat as relative API path (e.g. "/me", "/auth/login")
+  return `${BASE_NORM}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
-// Exported helper for components/pages
+// Exported helper for components/pages that still use fetch()
 export function apiUrl(path: string): string {
   return buildUrl(path);
 }
@@ -178,7 +168,9 @@ export async function http<T>(
     (init?.headers as Record<string, string> | undefined) ?? undefined
   );
 
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && init?.body) {
+    headers.set("Content-Type", "application/json");
+  }
 
   if (!shouldSkipAuth(path)) {
     const tok = getToken();
@@ -187,12 +179,10 @@ export async function http<T>(
     }
   }
 
-  const res = await fetch(url, {
-    ...init,
-    headers,
-  });
+  const res = await fetch(url, { ...init, headers });
 
   if (!res.ok) {
+    // Try to extract a helpful error message
     let detail: any = null;
     try {
       detail = await res.json();
@@ -203,10 +193,10 @@ export async function http<T>(
         detail = null;
       }
     }
-    const message =
+    const msg =
       (detail && (detail.detail ?? detail.message ?? JSON.stringify(detail))) ||
       `${res.status} ${res.statusText}`;
-    throw new Error(message);
+    throw new Error(msg);
   }
 
   const parse = init?.parse ?? "json";
@@ -218,122 +208,203 @@ export async function http<T>(
 // ───────────────── Auth ─────────────────
 export async function login(email: string, password: string): Promise<LoginResponse> {
   clearToken();
-  return http<LoginResponse>("/auth/login", {
+  const r = await http<LoginResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+  if (r?.access_token) setToken(r.access_token);
+  return r;
 }
 
 export async function register(email: string, password: string): Promise<LoginResponse> {
   clearToken();
-  return http<LoginResponse>("/auth/register", {
+  const r = await http<LoginResponse>("/auth/register", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+  if (r?.access_token) setToken(r.access_token);
+  return r;
 }
 
 export async function me(): Promise<User> {
   return http<User>("/me", { method: "GET" });
 }
 
-// ───────────────── Discover / Shows ─────────────────
-export async function discover(params?: Record<string, any>): Promise<Show[]> {
-  const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
-  return http<Show[]>(`/discover${qs}`, { method: "GET" });
+// ───────────────── Search / TMDb passthrough ─────────────────
+// Some pages call searchShows(q, token) (old), others call searchShows(q, limit)
+export async function searchShows(q: string, arg2: any = 50): Promise<Show[]> {
+  const limit = typeof arg2 === "number" ? arg2 : 50;
+  const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
+  return http<Show[]>(`/tmdb/search?${qs}`, { method: "GET" });
 }
 
-export async function showDetails(tmdbId: number): Promise<Show> {
+export async function getTmdbTvDetails(tmdbId: number): Promise<Show> {
   return http<Show>(`/shows/${tmdbId}`, { method: "GET" });
 }
 
-export async function showPosts(tmdbId: number): Promise<RedditPost[]> {
-  return http<RedditPost[]>(`/shows/${tmdbId}/posts`, { method: "GET" });
+// ───────────────── Library (legacy userId in path) ─────────────────
+
+export async function listFavorites(userId?: number, ..._rest: any[]): Promise<Show[]> {
+  const uid = userId ?? (await me()).id;
+  return http<Show[]>(`/library/${uid}/favorites`, { method: "GET" });
 }
 
-// ───────────────── Favorites ─────────────────
-export async function favorites(): Promise<Favorite[]> {
-  return http<Favorite[]>("/library/favorites", { method: "GET" });
+// Allow older code: listFavoriteShows() with no args.
+// If userId not provided, we fetch /me first.
+export async function listFavoriteShows(userId?: number): Promise<Show[]> {
+  const uid = userId ?? (await me()).id;
+  return listFavorites(uid);
 }
 
-export async function addFavorite(tmdbId: number): Promise<Favorite> {
-  return http<Favorite>("/library/favorites", {
-    method: "POST",
-    body: JSON.stringify({ tmdb_id: tmdbId }),
-  });
+// Many components call addFavorite(userId, tmdbId, <extra>) — ignore extra args.
+export async function addFavorite(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+  const uid = arg2 === undefined ? (await me()).id : arg1;
+  const tmdbId = arg2 === undefined ? arg1 : arg2;
+
+  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "POST" });
+  return { ok: true };
 }
 
-export async function removeFavorite(tmdbId: number): Promise<{ ok: boolean }> {
-  return http<{ ok: boolean }>(`/library/favorites/${tmdbId}`, {
-    method: "DELETE",
-  });
+
+export async function removeFavorite(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+  const uid = arg2 === undefined ? (await me()).id : arg1;
+  const tmdbId = arg2 === undefined ? arg1 : arg2;
+
+  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
+  return { ok: true };
 }
 
-// ───────────────── Ratings ─────────────────
-export async function ratings(): Promise<Rating[]> {
-  return http<Rating[]>("/library/ratings", { method: "GET" });
+
+// Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
+export async function listRatings(userId: number, ..._rest: any[]): Promise<UserRating[]> {
+  const r = await http<any>(`/library/${userId}/ratings`, { method: "GET" });
+  if (Array.isArray(r)) return r as UserRating[];
+  if (Array.isArray((r as any)?.ratings)) return (r as any).ratings as UserRating[];
+  return [];
 }
 
-export async function upsertRating(payload: Rating): Promise<Rating> {
-  return http<Rating>("/library/ratings", {
+// Upsert — older pages sometimes pass (userId, payload, token)
+export async function upsertRating(
+  userId: number,
+  payload: UserRating,
+  ..._rest: any[]
+): Promise<UserRating> {
+  return http<UserRating>(`/library/${userId}/ratings`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export async function deleteRating(tmdbId: number): Promise<{ ok: boolean }> {
-  return http<{ ok: boolean }>(`/library/ratings/${tmdbId}`, { method: "DELETE" });
+// Not interested
+export async function listNotInterested(userId?: number, ..._rest: any[]): Promise<NotInterested[]> {
+  const uid = userId ?? (await me()).id;
+  return http<NotInterested[]>(`/library/${uid}/not_interested`, { method: "GET" });
 }
 
-// ───────────────── Not Interested ─────────────────
-export async function notInterested(): Promise<NotInterested[]> {
-  return http<NotInterested[]>("/library/not_interested", { method: "GET" });
+
+export async function markNotInterested(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+  const uid = arg2 === undefined ? (await me()).id : arg1;
+  const tmdbId = arg2 === undefined ? arg1 : arg2;
+
+  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "POST" });
+  return { ok: true };
 }
 
-export async function addNotInterested(tmdbId: number): Promise<NotInterested> {
-  return http<NotInterested>("/library/not_interested", {
-    method: "POST",
-    body: JSON.stringify({ tmdb_id: tmdbId }),
-  });
+
+export async function removeNotInterested(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+  const uid = arg2 === undefined ? (await me()).id : arg1;
+  const tmdbId = arg2 === undefined ? arg1 : arg2;
+
+  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "DELETE" });
+  return { ok: true };
 }
 
-export async function removeNotInterested(tmdbId: number): Promise<{ ok: boolean }> {
-  return http<{ ok: boolean }>(`/library/not_interested/${tmdbId}`, { method: "DELETE" });
+
+// Additional legacy aliases some files may import
+export const listFavoritesShows = listFavoriteShows; // common typo/variant
+export const listNotInterestedShows = listNotInterested;
+
+// ───────────────── Discover ─────────────────
+// Some code calls getDiscover() (no args), others call getDiscover(params)
+export async function getDiscover(params?: Record<string, any>): Promise<Show[]> {
+  const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
+  return http<Show[]>(`/discover${qs}`, { method: "GET" });
 }
 
 // ───────────────── Recommendations ─────────────────
-export async function recsV3(params?: Record<string, any>): Promise<RecItem[]> {
-  const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
-  return http<RecItem[]>(`/recs/v3${qs}`, { method: "GET" });
+export async function getRecs(userId: number, opts: RecsOptions = {}): Promise<RecItem[]> {
+  const qs = new URLSearchParams(
+    { user_id: String(userId), ...((opts as any) ?? {}) } as any
+  ).toString();
+  return http<RecItem[]>(`/recs?${qs}`, { method: "GET" });
 }
 
-export async function smartSimilar(tmdbId: number): Promise<RecItem[]> {
+export async function getRecsV2(userId: number, opts: RecsOptions = {}): Promise<RecItem[]> {
+  const qs = new URLSearchParams(
+    { user_id: String(userId), ...((opts as any) ?? {}) } as any
+  ).toString();
+  return http<RecItem[]>(`/recs/v2?${qs}`, { method: "GET" });
+}
+
+// Some pages call getRecsV3(userId, opts), others call getRecsV3(opts) or getRecsV3(userId, opts, token)
+export async function getRecsV3(
+  arg1: any,
+  arg2: any = {},
+  ..._rest: any[]
+): Promise<RecItem[]> {
+  let userId: number;
+  let opts: RecsOptions;
+
+  if (typeof arg1 === "number") {
+    userId = arg1;
+    opts = (arg2 ?? {}) as RecsOptions;
+  } else {
+    opts = (arg1 ?? {}) as RecsOptions;
+    userId = (await me()).id;
+  }
+
+  const qs = new URLSearchParams(
+    { user_id: String(userId), ...((opts as any) ?? {}) } as any
+  ).toString();
+
+  return http<RecItem[]>(`/recs/v3?${qs}`, { method: "GET" });
+}
+
+// Some components hit these endpoints directly:
+export async function smartSimilar(tmdbId: number, ..._rest: any[]): Promise<RecItem[]> {
   return http<RecItem[]>(`/recs/v3/smart-similar/${tmdbId}`, { method: "GET" });
 }
 
-export async function explain(userId: number, tmdbId: number): Promise<ExplainItem> {
-  return http<ExplainItem>(`/recs/v3/explain/${userId}/${tmdbId}`, { method: "GET" });
+export async function explain(userId: number, tmdbId: number, ..._rest: any[]): Promise<any> {
+  return http<any>(`/recs/v3/explain/${userId}/${tmdbId}`, { method: "GET" });
 }
 
-// ───────────────── Wrapped ─────────────────
-export async function wrapped(userId: number): Promise<WrappedStats> {
-  return http<WrappedStats>(`/wrapped/${userId}`, { method: "GET" });
+// ───────────────── Admin ─────────────────
+export async function getAdminStats(): Promise<AdminStats> {
+  return http<AdminStats>("/admin/stats", { method: "GET" });
 }
 
-// ───────────────── Misc ─────────────────
-export async function health(): Promise<{ ok: boolean }> {
-  return http<{ ok: boolean }>("/health", { method: "GET" });
+export async function adminListUsers(): Promise<AdminUser[]> {
+  return http<AdminUser[]>("/admin/users", { method: "GET" });
 }
 
-// NOTE: If you have any components/pages still doing fetch("/api/..."),
-// change them to: fetch(apiUrl("/...")) or (better) use the `http()` helpers above.
+export async function adminDeleteUser(userId: number): Promise<{ ok: true }> {
+  await http(`/admin/users/${userId}`, { method: "DELETE" });
+  return { ok: true };
+}
 
-// -----------------------------------------------------------------------------
-// Backwards-compatible aliases (older components still import these names)
-// -----------------------------------------------------------------------------
+export async function adminResetPassword(
+  userId: number,
+  newPassword: string
+): Promise<{ ok: true }> {
+  await http(`/admin/users/${userId}/reset-password`, {
+    method: "POST",
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+  return { ok: true };
+}
 
-export const listFavoriteShows = favorites;
-
-export const listNotInterested = notInterested;
-
-export const markNotInterested = addNotInterested;
-
+// ───────────────── Extra legacy aliases ─────────────────
+export const getRecsV1 = getRecs;
+export const getRecommendations = getRecsV3;
+export type { UserRating as Rating };

@@ -326,3 +326,14 @@ export async function health(): Promise<{ ok: boolean }> {
 
 // NOTE: If you have any components/pages still doing fetch("/api/..."),
 // change them to: fetch(apiUrl("/...")) or (better) use the `http()` helpers above.
+
+// -----------------------------------------------------------------------------
+// Backwards-compatible aliases (older components still import these names)
+// -----------------------------------------------------------------------------
+
+export const listFavoriteShows = favorites;
+
+export const listNotInterested = notInterested;
+
+export const markNotInterested = addNotInterested;
+

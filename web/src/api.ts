@@ -1,49 +1,125 @@
 /* web/src/api.ts — central API helpers & types
  *
- * - Prevents double '/api' prefix via buildUrl()
- * - Favorites & Ratings use: /api/library/{user_id}/...
- * - Includes NOT-INTERESTED, discover, recs v1/v2/v3
- * - Adds admin stats & user-management helpers
+ * - Prevents same-origin "/api" calls on Vercel by supporting an absolute API base.
+ * - Uses VITE_API_BASE if set (recommended), otherwise:
+ *    - development: "/api"
+ *    - production:  "https://whatnext-api.onrender.com/api"
  */
 
-// ───────────────── Types ─────────────────
+export type AnyDict = Record<string, any>;
+
 export type User = {
   id: number;
   email: string;
-  username?: string | null;
-  is_admin: boolean;
-};
-
-export type Show = {
-  tmdb_id?: number;
-  title?: string;
-  poster_url?: string | null;
-  poster_path?: string | null;
+  created_at?: string;
   [k: string]: any;
 };
 
-export type UserRating = {
+export type Genre = {
+  id: number;
+  name: string;
+};
+
+export type Show = {
+  show_id: number;
+  title: string;
+  poster_path?: string | null;
+  overview?: string | null;
+  first_air_date?: string | null;
+  vote_average?: number | null;
+  vote_count?: number | null;
+  popularity?: number | null;
+  original_language?: string | null;
+  genre_ids?: number[] | null;
+  genres?: Genre[] | null;
+  [k: string]: any;
+};
+
+export type RedditPost = {
+  id: number;
+  reddit_id: string;
+  subreddit: string;
+  title: string;
+  url?: string | null;
+  created_utc?: string | null;
+  score?: number | null;
+  num_comments?: number | null;
+  [k: string]: any;
+};
+
+export type Favorite = {
+  id?: number;
+  user_id?: number;
+  tmdb_id: number;
+  created_at?: string;
+};
+
+export type Rating = {
+  id?: number;
+  user_id?: number;
   tmdb_id: number;
   rating: number;
-  title?: string | null;
+  title?: string;
   seasons_completed?: number | null;
   notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  [k: string]: any;
+};
+
+export type NotInterested = {
+  id?: number;
+  user_id?: number;
+  tmdb_id: number;
+  created_at?: string;
+};
+
+export type RedditScore = {
+  tmdb_id: number;
+  score_reddit: number;
+  [k: string]: any;
 };
 
 export type RecItem = {
   tmdb_id: number;
-  title?: string | null;
-  score?: number;
+  title?: string;
   poster_url?: string | null;
-  original_language?: string | null;
-  genres?: string[];
+  score?: number;
+  reason?: string;
+  [k: string]: any;
+};
+
+export type ExplainItem = {
+  tmdb_id: number;
+  title?: string;
+  final_score?: number;
+  components?: AnyDict;
+  neighbors?: AnyDict[];
+  [k: string]: any;
+};
+
+export type WrappedStats = {
+  user_id: number;
+  period?: string;
+  top_genres?: { name: string; count: number }[];
+  top_shows?: { tmdb_id: number; title: string; count: number }[];
   [k: string]: any;
 };
 
 export type LoginResponse = { access_token: string; token_type?: string };
 
 // ───────────────── Config & Token helpers ─────────────────
-const BASE = "/api";
+
+// Prefer env var (set this on Vercel): VITE_API_BASE=https://whatnext-api.onrender.com/api
+const BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ??
+  (import.meta.env.MODE === "development"
+    ? "/api"
+    : "https://whatnext-api.onrender.com/api");
+
+// Normalise: no trailing slash
+const BASE_NORM = BASE.replace(/\/+$/, "");
+
 const TOKEN_KEY = "access_token";
 
 export function getToken(): string | null {
@@ -54,22 +130,38 @@ export function getToken(): string | null {
   }
 }
 
-export function setToken(token: string | null) {
+export function setToken(token: string) {
   try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {}
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // ignore
+  }
 }
 
 export function clearToken() {
-  setToken(null);
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
 }
 
-// ───────────────── Internal helpers ─────────────────
+// ───────────────── URL helpers ─────────────────
 function buildUrl(path: string): string {
+  // Absolute URLs pass through
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  if (path === "/api" || path.startsWith("/api/")) return path;
-  return `${BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+
+  // Back-compat: callers that already include "/api" shouldn't double-prefix
+  let p = path;
+  if (p === "/api") p = "";
+  else if (p.startsWith("/api/")) p = p.slice(4); // remove leading "/api"
+
+  return `${BASE_NORM}${p.startsWith("/") ? "" : "/"}${p}`;
+}
+
+// Exported helper for components/pages
+export function apiUrl(path: string): string {
+  return buildUrl(path);
 }
 
 function shouldSkipAuth(path: string) {
@@ -98,26 +190,27 @@ export async function http<T>(
   const res = await fetch(url, {
     ...init,
     headers,
-    credentials: init?.credentials ?? "same-origin",
   });
 
-  if (res.status === 401) {
-    clearToken();
-  }
-
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
+    let detail: any = null;
     try {
-      const j = await res.json();
-      if (typeof (j as any)?.detail === "string") msg = (j as any).detail;
-      else if (Array.isArray((j as any)?.detail) && (j as any).detail[0]?.msg)
-        msg = (j as any).detail[0].msg;
-    } catch {}
-    throw new Error(msg);
+      detail = await res.json();
+    } catch {
+      try {
+        detail = await res.text();
+      } catch {
+        detail = null;
+      }
+    }
+    const message =
+      (detail && (detail.detail ?? detail.message ?? JSON.stringify(detail))) ||
+      `${res.status} ${res.statusText}`;
+    throw new Error(message);
   }
 
-  const mode = (init as any)?.parse ?? "json";
-  if (mode === "text") return (await res.text()) as unknown as T;
+  const parse = init?.parse ?? "json";
+  if (parse === "text") return (await res.text()) as unknown as T;
   if (res.status === 204) return undefined as unknown as T;
   return (await res.json()) as T;
 }
@@ -140,208 +233,96 @@ export async function register(email: string, password: string): Promise<LoginRe
 }
 
 export async function me(): Promise<User> {
-  return http<User>("/auth/me");
+  return http<User>("/me", { method: "GET" });
 }
 
-// ───────────────── Recs options helper ─────────────────
-export type RecsOptions = {
-  limit?: number;
-  w_tmdb?: number;
-  w_reddit?: number;
-  w_pair?: number;
-  mmr_lambda?: number;
-  orig_lang?: string;
-  genres?: string[];
-  flat?: 0 | 1;
-  debug?: 0 | 1;
-};
-
-function buildRecsParams(opts: RecsOptions = {}): URLSearchParams {
-  const p = new URLSearchParams();
-  if (opts.limit != null) p.set("limit", String(opts.limit));
-  if (opts.w_tmdb != null) p.set("w_tmdb", String(opts.w_tmdb));
-  if (opts.w_reddit != null) p.set("w_reddit", String(opts.w_reddit));
-  if (opts.w_pair != null) p.set("w_pair", String(opts.w_pair));
-  if (opts.mmr_lambda != null) p.set("mmr_lambda", String(opts.mmr_lambda));
-  if (opts.orig_lang) p.set("orig_lang", String(opts.orig_lang));
-  if (opts.genres?.length) for (const g of opts.genres) p.append("genres", g);
-  p.set("flat", String(opts.flat ?? 1));
-  if (opts.debug != null) p.set("debug", String(opts.debug));
-  return p;
+// ───────────────── Discover / Shows ─────────────────
+export async function discover(params?: Record<string, any>): Promise<Show[]> {
+  const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
+  return http<Show[]>(`/discover${qs}`, { method: "GET" });
 }
 
-// ───────────────── Search / TMDb ─────────────────
-export async function searchShows(q: string, limit = 50): Promise<Show[]> {
-  const qs = new URLSearchParams({ q, limit: String(limit) });
-  return http<Show[]>(`/tmdb/search?${qs.toString()}`);
+export async function showDetails(tmdbId: number): Promise<Show> {
+  return http<Show>(`/shows/${tmdbId}`, { method: "GET" });
 }
 
-export async function getTmdbTvDetails(tmdbId: number): Promise<any> {
-  return http<any>(`/tmdb/tv/${tmdbId}`);
+export async function showPosts(tmdbId: number): Promise<RedditPost[]> {
+  return http<RedditPost[]>(`/shows/${tmdbId}/posts`, { method: "GET" });
 }
 
 // ───────────────── Favorites ─────────────────
-export async function listFavorites(userId: number): Promise<Show[]> {
-  return http<Show[]>(`/library/${userId}/favorites`, { method: "GET" });
+export async function favorites(): Promise<Favorite[]> {
+  return http<Favorite[]>("/library/favorites", { method: "GET" });
 }
 
-export async function addFavorite(
-  userId: number,
-  tmdbId: number
-): Promise<{ ok: true }> {
-  await http(`/library/${userId}/favorites/${tmdbId}`, { method: "POST" });
-  return { ok: true };
+export async function addFavorite(tmdbId: number): Promise<Favorite> {
+  return http<Favorite>("/library/favorites", {
+    method: "POST",
+    body: JSON.stringify({ tmdb_id: tmdbId }),
+  });
 }
 
-export async function removeFavorite(
-  userId: number,
-  tmdbId: number
-): Promise<{ ok: true }> {
-  await http(`/library/${userId}/favorites/${tmdbId}`, { method: "DELETE" });
-  return { ok: true };
+export async function removeFavorite(tmdbId: number): Promise<{ ok: boolean }> {
+  return http<{ ok: boolean }>(`/library/favorites/${tmdbId}`, {
+    method: "DELETE",
+  });
 }
-
-export const listFavoriteShows = listFavorites;
 
 // ───────────────── Ratings ─────────────────
-export async function listRatings(userId: number): Promise<UserRating[]> {
-  const r = await http<any>(`/library/${userId}/ratings`);
-  if (Array.isArray(r)) return r as UserRating[];
-  if (Array.isArray((r as any)?.ratings)) return (r as any).ratings as UserRating[];
-  return [];
+export async function ratings(): Promise<Rating[]> {
+  return http<Rating[]>("/library/ratings", { method: "GET" });
 }
 
-export async function upsertRating(
-  userId: number,
-  payload: UserRating
-): Promise<{ ok: boolean }> {
-  return http<{ ok: boolean }>(`/library/${userId}/ratings`, {
+export async function upsertRating(payload: Rating): Promise<Rating> {
+  return http<Rating>("/library/ratings", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
+export async function deleteRating(tmdbId: number): Promise<{ ok: boolean }> {
+  return http<{ ok: boolean }>(`/library/ratings/${tmdbId}`, { method: "DELETE" });
+}
+
 // ───────────────── Not Interested ─────────────────
-export async function listNotInterested(userId: number): Promise<number[]> {
-  const r = await http<{ tmdb_id: number }[]>(`/users/${userId}/not-interested`);
-  if (!Array.isArray(r)) return [];
-  return r.map((row) => Number(row.tmdb_id));
+export async function notInterested(): Promise<NotInterested[]> {
+  return http<NotInterested[]>("/library/not_interested", { method: "GET" });
 }
 
-export async function markNotInterested(
-  userId: number,
-  tmdbId: number
-): Promise<{ ok: boolean }> {
-  await http(`/users/${userId}/not-interested/${tmdbId}`, {
+export async function addNotInterested(tmdbId: number): Promise<NotInterested> {
+  return http<NotInterested>("/library/not_interested", {
     method: "POST",
-  });
-  return { ok: true };
-}
-
-export async function removeNotInterested(
-  userId: number,
-  tmdb_id: number
-): Promise<{ ok: boolean }> {
-  await http(`/users/${userId}/not-interested/${tmdb_id}`, {
-    method: "DELETE",
-  });
-  return { ok: true };
-}
-
-// ───────────────── Recs v1/v2/v3 ─────────────────
-export async function getRecs(
-  userId: number,
-  opts: RecsOptions = {}
-): Promise<RecItem[] | { items: RecItem[]; meta: any }> {
-  const qs = buildRecsParams(opts).toString();
-  return http<any>(`/recs/${userId}${qs ? `?${qs}` : ""}`);
-}
-
-export async function getRecsV2(
-  userId: number,
-  opts: RecsOptions = {}
-): Promise<RecItem[] | { items: RecItem[]; meta: any }> {
-  const qs = buildRecsParams(opts).toString();
-  return http<any>(`/recs/v2/${userId}${qs ? `?${qs}` : ""}`);
-}
-
-export async function getRecsV3(
-  userId: number,
-  opts: RecsOptions = {}
-): Promise<any> {
-  const qs = buildRecsParams(opts).toString();
-  return http<any>(`/recs/v3/${userId}${qs ? `?${qs}` : ""}`);
-}
-
-// ───────────────── Discover ─────────────────
-export interface DiscoverShow {
-  tmdb_id: number;
-  title: string;
-  name?: string;
-  overview?: string;
-  poster_path?: string;
-  first_air_date?: string;
-  vote_average?: number;
-  vote_count?: number;
-  reason?: string;
-}
-
-export interface DiscoverPayload {
-  featured: DiscoverShow[];
-  top_decade: DiscoverShow[];
-  trending: DiscoverShow[];
-  drama: DiscoverShow[];
-  crime: DiscoverShow[];
-  documentary: DiscoverShow[];
-  scifi_fantasy: DiscoverShow[];
-  thriller: DiscoverShow[];
-  comedy: DiscoverShow[];
-  action_adventure: DiscoverShow[];
-  animation: DiscoverShow[];
-  family: DiscoverShow[];
-}
-
-export async function getDiscover(): Promise<DiscoverPayload> {
-  return http<DiscoverPayload>("/discover", { method: "GET" });
-}
-
-// ───────────────── Admin (stats & user management) ─────────────────
-export interface AdminUser {
-  id: number;
-  email: string;
-  username?: string | null;
-  created_at?: string | null;
-  is_admin: boolean;
-}
-
-export interface AdminStats {
-  total_users: number;
-  new_users_last_7_days: number;
-  total_favorites: number;
-  total_ratings: number;
-  total_not_interested: number;
-  users_with_favorites: number;
-  users_with_ratings: number;
-}
-
-export async function getAdminStats(): Promise<AdminStats> {
-  return http<AdminStats>("/admin/stats");
-}
-
-export async function adminListUsers(): Promise<AdminUser[]> {
-  return http<AdminUser[]>("/admin/users");
-}
-
-export async function adminDeleteUser(userId: number): Promise<void> {
-  await http<void>(`/admin/users/${userId}`, { method: "DELETE" });
-}
-
-export async function adminResetPassword(
-  userId: number,
-  newPassword: string
-): Promise<void> {
-  await http<void>(`/admin/users/${userId}/reset-password`, {
-    method: "POST",
-    body: JSON.stringify({ new_password: newPassword }),
+    body: JSON.stringify({ tmdb_id: tmdbId }),
   });
 }
+
+export async function removeNotInterested(tmdbId: number): Promise<{ ok: boolean }> {
+  return http<{ ok: boolean }>(`/library/not_interested/${tmdbId}`, { method: "DELETE" });
+}
+
+// ───────────────── Recommendations ─────────────────
+export async function recsV3(params?: Record<string, any>): Promise<RecItem[]> {
+  const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
+  return http<RecItem[]>(`/recs/v3${qs}`, { method: "GET" });
+}
+
+export async function smartSimilar(tmdbId: number): Promise<RecItem[]> {
+  return http<RecItem[]>(`/recs/v3/smart-similar/${tmdbId}`, { method: "GET" });
+}
+
+export async function explain(userId: number, tmdbId: number): Promise<ExplainItem> {
+  return http<ExplainItem>(`/recs/v3/explain/${userId}/${tmdbId}`, { method: "GET" });
+}
+
+// ───────────────── Wrapped ─────────────────
+export async function wrapped(userId: number): Promise<WrappedStats> {
+  return http<WrappedStats>(`/wrapped/${userId}`, { method: "GET" });
+}
+
+// ───────────────── Misc ─────────────────
+export async function health(): Promise<{ ok: boolean }> {
+  return http<{ ok: boolean }>("/health", { method: "GET" });
+}
+
+// NOTE: If you have any components/pages still doing fetch("/api/..."),
+// change them to: fetch(apiUrl("/...")) or (better) use the `http()` helpers above.

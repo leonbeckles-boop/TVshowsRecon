@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
-import logo1 from "../assets/logo1.png";
+
 
 export type PageHeaderProps = {
   title: string;
@@ -107,8 +107,8 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
               }}
             >
               <img
-                src={logo1}
-                alt="WhatNext logo"
+                src={"/logo1.png"}
+                alt="WhatNext"
                 style={{
                   width: "100%",
                   height: "100%",

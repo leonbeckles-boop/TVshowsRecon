@@ -58,8 +58,7 @@ export type Favorite = {
 };
 
 export type UserRating = {
-  id?: number;
-  user_id: number;
+  user_id?: number; // OPTIONAL for frontend
   tmdb_id: number;
   rating: number;
   title?: string | null;
@@ -67,8 +66,8 @@ export type UserRating = {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
-  [k: string]: any;
 };
+
 
 export type NotInterested = {
   user_id: number;
@@ -325,7 +324,10 @@ export async function markNotInterested(
 
 
 
-export async function removeNotInterested(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+export async function removeNotInterested(
+  arg1: number,
+  arg2?: number
+): Promise<{ ok: true }> {
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
@@ -334,16 +336,20 @@ export async function removeNotInterested(arg1: number, arg2?: number, ..._rest:
 }
 
 
+
 // Additional legacy aliases some files may import
 export const listFavoritesShows = listFavoriteShows; // common typo/variant
 export const listNotInterestedShows = listNotInterested;
 
 // ───────────────── Discover ─────────────────
 // Some code calls getDiscover() (no args), others call getDiscover(params)
-export async function getDiscover(params?: Record<string, any>): Promise<Show[]> {
+export async function getDiscover(
+  params?: Record<string, any>
+): Promise<DiscoverResponse> {
   const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
-  return http<Show[]>(`/discover${qs}`, { method: "GET" });
+  return http<DiscoverResponse>(`/discover${qs}`, { method: "GET" });
 }
+
 
 // ───────────────── Recommendations ─────────────────
 export async function getRecs(userId: number, opts: RecsOptions = {}): Promise<RecItem[]> {
@@ -422,3 +428,12 @@ export async function adminResetPassword(
 export const getRecsV1 = getRecs;
 export const getRecommendations = getRecsV3;
 export type { UserRating as Rating };
+
+export type DiscoverResponse = {
+  featured: Show[];
+  trending: Show[];
+  top_decade: Show[];
+  drama: Show[];
+  crime: Show[];
+  thriller: Show[];
+};

@@ -251,13 +251,17 @@ export async function listFavorites(userId?: number, ..._rest: any[]): Promise<S
 
 // Allow older code: listFavoriteShows() with no args.
 // If userId not provided, we fetch /me first.
-export async function listFavoriteShows(userId?: number): Promise<Show[]> {
+export async function listFavoriteShows(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return listFavorites(uid);
+  return http<any[]>(`/library/${uid}/favorites`, { method: "GET" });
 }
 
+
 // Many components call addFavorite(userId, tmdbId, <extra>) — ignore extra args.
-export async function addFavorite(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+export async function addFavorite(
+  arg1: number,
+  arg2?: number
+): Promise<{ ok: true }> {
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
@@ -266,13 +270,18 @@ export async function addFavorite(arg1: number, arg2?: number, ..._rest: any[]):
 }
 
 
-export async function removeFavorite(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+
+export async function removeFavorite(
+  arg1: number,
+  arg2?: number
+): Promise<{ ok: true }> {
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
   await http(`/library/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
   return { ok: true };
 }
+
 
 
 // Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
@@ -296,19 +305,24 @@ export async function upsertRating(
 }
 
 // Not interested
-export async function listNotInterested(userId?: number, ..._rest: any[]): Promise<NotInterested[]> {
+export async function listNotInterested(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return http<NotInterested[]>(`/library/${uid}/not_interested`, { method: "GET" });
+  return http<any[]>(`/library/${uid}/not_interested`, { method: "GET" });
 }
 
 
-export async function markNotInterested(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {
+
+export async function markNotInterested(
+  arg1: number,
+  arg2?: number
+): Promise<{ ok: true }> {
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
   await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
+
 
 
 export async function removeNotInterested(arg1: number, arg2?: number, ..._rest: any[]): Promise<{ ok: true }> {

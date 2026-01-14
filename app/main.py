@@ -21,13 +21,12 @@ app = FastAPI(
 # CORS (adjust as you like)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["https://t-vshows-recon.vercel.app"],
     allow_origin_regex=r"^https:\/\/t-vshows-recon-.*\.vercel\.app$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ---- Health & route debug ----
 @app.get("/api/health", tags=["default"])

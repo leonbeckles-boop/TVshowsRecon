@@ -21,11 +21,9 @@ app = FastAPI(
 # CORS (adjust as you like)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",        # local dev
-        "https://whatnext.vercel.app",  # prod frontend (example)
-    ],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https:\/\/t-vshows-recon-.*\.vercel\.app$",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

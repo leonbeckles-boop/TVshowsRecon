@@ -147,12 +147,14 @@ function uniqBy<T>(arr: T[], keyFn: (x: T) => string | number): T[] {
 
 export default function ShowDetails() {
   // ✅ PATCH: support either route param name: /show/:id OR /show/:tmdbId
-  const params = useParams<{ id?: string; tmdbId?: string }>();
+  const params = useParams<Record<string, string | undefined>>();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const idStr = params.tmdbId ?? params.id ?? "";
+  const idStr = (Object.values(params).find((v) => !!v) ?? "").trim();
   const id = Number(idStr);
+  console.log("ShowDetails params:", params, "idStr:", idStr);
+
 
   const [tab, setTab] = useState<TabKey>("details");
   const [loading, setLoading] = useState<boolean>(true);

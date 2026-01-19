@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import PageHeader from "../components/PageHeader";
 import ShowCard from "../components/ShowCard";
+import { apiUrl } from "../api";
+
 
 const TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 
@@ -97,9 +99,9 @@ const WrappedPage: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
-        const resp = await fetch(`/api/wrapped/${user.id}`, {
+        const resp = await fetch(apiUrl(`/wrapped/${user.id}`), {
           headers: {
-            Accept: "application/json",
+          Accept: "application/json",
           },
         });
         if (!resp.ok) {

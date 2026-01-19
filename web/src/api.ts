@@ -226,8 +226,9 @@ export async function register(email: string, password: string): Promise<LoginRe
 }
 
 export async function me(): Promise<User> {
-  return http<User>("/me", { method: "GET" });
+  return http<User>("/auth/me", { method: "GET" });
 }
+
 
 // ───────────────── Search / TMDb passthrough ─────────────────
 // Some pages call searchShows(q, token) (old), others call searchShows(q, limit)

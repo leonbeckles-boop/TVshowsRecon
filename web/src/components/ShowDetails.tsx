@@ -146,11 +146,13 @@ function uniqBy<T>(arr: T[], keyFn: (x: T) => string | number): T[] {
 }
 
 export default function ShowDetails() {
-  const params = useParams();
+  // ✅ PATCH: support either route param name: /show/:id OR /show/:tmdbId
+  const params = useParams<{ id?: string; tmdbId?: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const id = Number(params.id);
+  const idStr = params.tmdbId ?? params.id ?? "";
+  const id = Number(idStr);
 
   const [tab, setTab] = useState<TabKey>("details");
   const [loading, setLoading] = useState<boolean>(true);
@@ -229,7 +231,7 @@ export default function ShowDetails() {
     let cancelled = false;
 
     async function loadAll() {
-      if (!id || Number.isNaN(id)) {
+      if (!idStr || !id || Number.isNaN(id)) {
         setErr("Invalid show id.");
         setLoading(false);
         return;
@@ -257,7 +259,7 @@ export default function ShowDetails() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, idStr]);
 
   // Load posts only when tab is active
   useEffect(() => {
@@ -664,9 +666,7 @@ export default function ShowDetails() {
                           <div className="post-meta">
                             r/{p.subreddit} • {fmtDate(p.created_utc)}
                             {typeof p.score === "number" ? ` • ↑ ${p.score}` : ""}
-                            {typeof p.num_comments === "number"
-                              ? ` • 💬 ${p.num_comments}`
-                              : ""}
+                            {typeof p.num_comments === "number" ? ` • 💬 ${p.num_comments}` : ""}
                           </div>
                         </a>
                       </li>

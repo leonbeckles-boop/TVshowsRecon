@@ -1,14 +1,11 @@
 # alembic/env.py
 from __future__ import annotations
+
 import os, sys
 from logging.config import fileConfig
+
 from alembic import context
 from sqlalchemy import create_engine, pool
-from sqlalchemy.engine import Connection
-from app.core.settings import settings
-from app.db_models import Base
-
-target_metadata = Base.metadata
 
 # --- Make sure we can import your app, and load .env ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))   # .../alembic
@@ -22,36 +19,74 @@ try:
 except Exception:
     pass
 
+from app.core.settings import settings  # noqa: E402
+from app.db_models import Base          # noqa: E402
 
-
+target_metadata = Base.metadata
 config = context.config
 
-# Choose a **sync** URL for Alembic
-url_sync = os.getenv("DATABASE_URL_SYNC")
-if not url_sync:
-    # Fallback: derive sync URL from async URL by swapping driver
-    if settings.database_url and "+asyncpg" in settings.database_url:
-        url_sync = settings.database_url.replace("+asyncpg", "+psycopg2")
-    else:
-        url_sync = settings.database_url  # may already be sync
 
-if not url_sync:
-    raise RuntimeError("No DATABASE_URL_SYNC set and cannot derive from DATABASE_URL")
+def _to_sync_psycopg(url: str) -> str:
+    """Normalize to sync psycopg v3 URL for Alembic."""
+    u = (url or "").strip()
+    if not u:
+        return u
 
-# Tell Alembic the connection URL
+    # Accept postgres:// shorthand
+    if u.startswith("postgres://"):
+        u = "postgresql://" + u[len("postgres://"):]
+
+    # Ensure psycopg v3 driver
+    if u.startswith("postgresql://"):
+        u = "postgresql+psycopg://" + u[len("postgresql://"):]
+
+    # Convert async -> sync
+    u = u.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    u = u.replace("+asyncpg", "+psycopg")
+
+    # Convert any old psycopg2 -> psycopg
+    u = u.replace("postgresql+psycopg2://", "postgresql+psycopg://")
+    u = u.replace("+psycopg2", "+psycopg")
+
+    return u
+
+
+def _choose_sync_url() -> str:
+    """
+    Priority:
+    1) ALEMBIC_SYNC_URL     (best for local -> Render)
+    2) DATABASE_URL_SYNC
+    3) DATABASE_URL
+    4) settings.database_url
+    """
+    for key in ("ALEMBIC_SYNC_URL", "DATABASE_URL_SYNC", "DATABASE_URL"):
+        v = os.getenv(key)
+        if v:
+            return _to_sync_psycopg(v)
+
+    if getattr(settings, "database_url", None):
+        return _to_sync_psycopg(settings.database_url)
+
+    return ""
+
+
+url_sync = _choose_sync_url()
+if not url_sync:
+    raise RuntimeError(
+        "No DB URL found for Alembic. Set ALEMBIC_SYNC_URL (recommended) "
+        "or DATABASE_URL_SYNC, or DATABASE_URL."
+    )
+
 config.set_main_option("sqlalchemy.url", url_sync)
 
-# Optional: print for sanity
-print("ALEMBIC_SYNC_URL:", config.get_main_option("sqlalchemy.url"))
+print("ALEMBIC using database URL:", config.get_main_option("sqlalchemy.url"))
 
 # Logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 
-
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -62,8 +97,8 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode (SYNC engine)."""
     connectable = create_engine(
         config.get_main_option("sqlalchemy.url"),
         poolclass=pool.NullPool,
@@ -72,6 +107,7 @@ def run_migrations_online() -> None:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
+
 
 if context.is_offline_mode():
     run_migrations_offline()

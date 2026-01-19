@@ -18,34 +18,41 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _table_exists(name: str) -> bool:
+    bind = op.get_bind()
+    # Prefer to_regclass over SQLAlchemy inspection: it's simpler and avoids
+    # schema/search_path surprises.
+    return bind.execute(
+        sa.text("SELECT to_regclass(:n) IS NOT NULL OR to_regclass('public.' || :n) IS NOT NULL"),
+        {"n": name},
+    ).scalar()
+
+
+def _column_exists(table: str, col: str) -> bool:
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    return any(c["name"] == col for c in insp.get_columns(table))
+
+
 def upgrade() -> None:
-    op.create_table(
-        "not_interested",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
-        sa.Column("user_id", sa.Integer(), nullable=False, index=True),
-        sa.Column("tmdb_id", sa.Integer(), nullable=False, index=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "user_id",
-            "tmdb_id",
-            name="uq_not_interested_user_tmdb",
-        ),
-        # If your DB has a `users` table, uncomment the FK below.
-        # If you’re unsure, run without the FK first to avoid coupling.
-        # sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_not_interested_user"),
+    # Idempotent: don't fail if the table already exists.
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS not_interested (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            tmdb_id INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_not_interested_user_tmdb UNIQUE (user_id, tmdb_id)
+        )
+        """
     )
 
-    # Add the indexes explicitly (helpful on some backends)
-    op.create_index("ix_not_interested_user_id", "not_interested", ["user_id"])
-    op.create_index("ix_not_interested_tmdb_id", "not_interested", ["tmdb_id"])
+    op.execute("CREATE INDEX IF NOT EXISTS ix_not_interested_user_id ON not_interested (user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_not_interested_tmdb_id ON not_interested (tmdb_id)")
 
 
 def downgrade() -> None:
-    op.drop_index("ix_not_interested_tmdb_id", table_name="not_interested")
-    op.drop_index("ix_not_interested_user_id", table_name="not_interested")
-    op.drop_table("not_interested")
+    op.execute("DROP INDEX IF EXISTS ix_not_interested_tmdb_id")
+    op.execute("DROP INDEX IF EXISTS ix_not_interested_user_id")
+    op.execute("DROP TABLE IF EXISTS not_interested")

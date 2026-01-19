@@ -13,16 +13,18 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '4192ba3cd80d'
-down_revision: Union[str, Sequence[str], None] = None
+down_revision = "42b2b492a2da"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
+    # This migration was originally generated to "baseline" an already-existing database.
+    # On a fresh database (Render production), there is nothing to baseline.
     pass
+
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
     pass
+

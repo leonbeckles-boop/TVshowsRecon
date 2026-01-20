@@ -171,20 +171,29 @@ async def list_favorites_for_user(
     by_id = {int(s.show_id): s for s in shows}
 
     out: List[dict] = []
+
     for tmdb_id in fav_ids:
-        s = by_ext.get(str(tmdb_id))
+        s = by_id.get(int(tmdb_id))
         if s:
-            item = _serialize_show(s)
-            item["tmdb_id"] = int(tmdb_id)  # ← include tmdb_id explicitly
-            out.append(item)
+            out.append({
+                "tmdb_id": int(tmdb_id),
+                "show_id": int(s.show_id),
+                "title": s.title,
+                "year": int(s.year) if s.year is not None else None,
+                "poster_path": s.poster_path,
+                "poster_url": (
+                    f"https://image.tmdb.org/t/p/w500{s.poster_path}"
+                    if s.poster_path else None
+                ),
+                })
         else:
             out.append({
-                "tmdb_id": int(tmdb_id),     # ← include tmdb_id explicitly
-                "show_id": -int(tmdb_id),
+                "tmdb_id": int(tmdb_id),
+                "show_id": int(tmdb_id),
                 "title": f"TMDb #{int(tmdb_id)}",
-                "year": None,
+             "year": None,
+                "poster_path": None,
                 "poster_url": None,
-                "external_id": int(tmdb_id),
             })
     return out
 

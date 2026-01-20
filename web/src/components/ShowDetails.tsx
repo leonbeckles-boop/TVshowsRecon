@@ -1,17 +1,17 @@
 import "./ShowDetails.css";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import {
   addFavorite,
-  removeFavorite,
+  apiUrl,
   listFavoriteShows,
   listNotInterested,
   markNotInterested,
+  removeFavorite,
   removeNotInterested,
   type Show,
-  apiUrl,
 } from "../api";
 import ShowCard from "./ShowCard";
 
@@ -25,7 +25,6 @@ interface TmdbWatchProviderGroup {
 }
 
 interface TmdbShowDetails extends Show {
-  // Extra fields we expect from /api/shows/{id}
   genres?: { id: number; name: string }[];
   number_of_seasons?: number;
   number_of_episodes?: number;
@@ -33,23 +32,13 @@ interface TmdbShowDetails extends Show {
   status?: string;
   homepage?: string;
   tagline?: string;
-  networks?: { id: number; name: string; logo_path?: string | null }[];
-  production_companies?: {
-    id: number;
-    name: string;
-    logo_path?: string | null;
-    origin_country?: string;
-  }[];
 
-  // From TMDb details (if passed through)
-  last_air_date?: string;
   first_air_date?: string;
+  last_air_date?: string;
   origin_country?: string[];
   original_language?: string;
-  adult?: boolean;
   backdrop_path?: string | null;
 
-  // Where-to-watch fields from backend (if present)
   where_to_watch?: TmdbWatchProviderGroup;
   providers?: TmdbWatchProviderGroup;
 }
@@ -73,8 +62,6 @@ interface RedditPost {
   permalink?: string | null;
 }
 
-type TabKey = "details" | "posts" | "recs" | "explain";
-
 type RecsV3SmartSimilarItem = {
   tmdb_id: number;
   title: string;
@@ -84,23 +71,15 @@ type RecsV3SmartSimilarItem = {
   [k: string]: any;
 };
 
-type RecsV3ExplainAnchor = {
-  tmdb_id: number;
-  title?: string;
-  final_score?: number;
-  components?: Record<string, any>;
-  neighbors?: any[];
-  [k: string]: any;
+type TmdbVideoResult = {
+  id?: string;
+  key?: string;
+  site?: string;
+  type?: string;
+  name?: string;
 };
 
-type RecsV3ExplainResponse = {
-  user_id: number;
-  anchor_favorites: RecsV3ExplainAnchor[];
-  explain_target?: RecsV3ExplainAnchor;
-  [k: string]: any;
-};
-
-function safeArray<T>(x: any): T[] {
+function safeArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
 }
 
@@ -121,12 +100,6 @@ function posterUrl(p?: string | null): string | null {
   return `https://image.tmdb.org/t/p/w500${p}`;
 }
 
-function backdropUrl(p?: string | null): string | null {
-  if (!p) return null;
-  if (p.startsWith("http://") || p.startsWith("https://")) return p;
-  return `https://image.tmdb.org/t/p/original${p}`;
-}
-
 function providerLogoUrl(p?: string | null): string | null {
   if (!p) return null;
   if (p.startsWith("http://") || p.startsWith("https://")) return p;
@@ -145,25 +118,58 @@ function uniqBy<T>(arr: T[], keyFn: (x: T) => string | number): T[] {
   return out;
 }
 
+function pickFirstParam(params: Record<string, string | undefined>): string {
+  return (Object.values(params).find((v) => !!v) ?? "").trim();
+}
+
+function pickTrailerKey(results: TmdbVideoResult[]): string | null {
+  const yt = results.filter((v) => (v.site ?? "").toLowerCase() === "youtube" && !!v.key);
+
+  const officialTrailer = yt.find((v) => (v.type ?? "").toLowerCase().includes("trailer") && (v.name ?? "").toLowerCase().includes("official"));
+  if (officialTrailer?.key) return officialTrailer.key;
+
+  const anyTrailer = yt.find((v) => (v.type ?? "").toLowerCase().includes("trailer"));
+  if (anyTrailer?.key) return anyTrailer.key;
+
+  return yt[0]?.key ?? null;
+}
+
+async function fetchFirstOkJson(urls: string[]): Promise<any | null> {
+  for (const u of urls) {
+    try {
+      const res = await fetch(u);
+      if (!res.ok) continue;
+      return await res.json();
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 export default function ShowDetails() {
-  // ✅ PATCH: support either route param name: /show/:id OR /show/:tmdbId
+  // Param-name agnostic: supports /show/:id or /show/:tmdbId (or any single param)
   const params = useParams<Record<string, string | undefined>>();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const idStr = (Object.values(params).find((v) => !!v) ?? "").trim();
+  const idStr = pickFirstParam(params);
   const id = Number(idStr);
-  console.log("ShowDetails params:", params, "idStr:", idStr);
 
-
-  const [tab, setTab] = useState<TabKey>("details");
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const [show, setShow] = useState<TmdbShowDetails | null>(null);
+
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [postsErr, setPostsErr] = useState<string | null>(null);
   const [posts, setPosts] = useState<RedditPost[]>([]);
+
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsErr, setRecsErr] = useState<string | null>(null);
   const [recs, setRecs] = useState<RecsV3SmartSimilarItem[]>([]);
-  const [explain, setExplain] = useState<RecsV3ExplainResponse | null>(null);
+
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
 
   const [favorites, setFavorites] = useState<number[]>([]);
   const [notInterested, setNotInterested] = useState<number[]>([]);
@@ -174,10 +180,11 @@ export default function ShowDetails() {
   const isNotInterested = useMemo(() => notInterested.includes(id), [notInterested, id]);
 
   const displayPoster = useMemo(() => posterUrl(show?.poster_path ?? null), [show?.poster_path]);
-  const displayBackdrop = useMemo(
-    () => backdropUrl((show as any)?.backdrop_path ?? null),
-    [show]
-  );
+
+  const genresText = useMemo(() => {
+    const gs = safeArray<{ id: number; name: string }>(show?.genres);
+    return gs.length ? gs.map((g) => g.name).join(", ") : "";
+  }, [show]);
 
   const watch = useMemo<TmdbWatchProviderGroup | null>(() => {
     const w = (show?.where_to_watch ?? show?.providers) as any;
@@ -186,20 +193,18 @@ export default function ShowDetails() {
   }, [show]);
 
   const watchLists = useMemo(() => {
-    const flatrate = safeArray<TmdbWatchProvider>(watch?.flatrate);
-    const rent = safeArray<TmdbWatchProvider>(watch?.rent);
-    const buy = safeArray<TmdbWatchProvider>(watch?.buy);
-    const ads = safeArray<TmdbWatchProvider>(watch?.ads);
-    const free = safeArray<TmdbWatchProvider>(watch?.free);
-
-    return {
-      flatrate: uniqBy(flatrate, (x) => x.provider_id),
-      rent: uniqBy(rent, (x) => x.provider_id),
-      buy: uniqBy(buy, (x) => x.provider_id),
-      ads: uniqBy(ads, (x) => x.provider_id),
-      free: uniqBy(free, (x) => x.provider_id),
-    };
+    const flatrate = uniqBy(safeArray<TmdbWatchProvider>(watch?.flatrate), (x) => x.provider_id);
+    const rent = uniqBy(safeArray<TmdbWatchProvider>(watch?.rent), (x) => x.provider_id);
+    const buy = uniqBy(safeArray<TmdbWatchProvider>(watch?.buy), (x) => x.provider_id);
+    const ads = uniqBy(safeArray<TmdbWatchProvider>(watch?.ads), (x) => x.provider_id);
+    const free = uniqBy(safeArray<TmdbWatchProvider>(watch?.free), (x) => x.provider_id);
+    return { flatrate, rent, buy, ads, free };
   }, [watch]);
+
+  const trailerEmbed = useMemo(() => {
+    if (!trailerKey) return null;
+    return `https://www.youtube.com/embed/${trailerKey}`;
+  }, [trailerKey]);
 
   // Load user lists
   useEffect(() => {
@@ -217,7 +222,7 @@ export default function ShowDetails() {
         if (cancelled) return;
         setFavorites(safeArray<any>(favs).map((x: any) => Number(x.tmdb_id ?? x.show_id ?? x.id)));
         setNotInterested(safeArray<any>(nis).map((x: any) => Number(x.tmdb_id ?? x.show_id ?? x.id)));
-      } catch (e: any) {
+      } catch {
         // non-fatal
       }
     }
@@ -228,12 +233,12 @@ export default function ShowDetails() {
     };
   }, [user]);
 
-  // Load show details + posts + recs (as needed)
+  // Load show details
   useEffect(() => {
     let cancelled = false;
 
-    async function loadAll() {
-      if (!idStr || !id || Number.isNaN(id)) {
+    async function loadShow() {
+      if (!idStr || Number.isNaN(id) || id <= 0) {
         setErr("Invalid show id.");
         setLoading(false);
         return;
@@ -243,7 +248,6 @@ export default function ShowDetails() {
       setErr(null);
 
       try {
-        // ✅ PATCH: was fetch(`/api/shows/${id}`)
         const res = await fetch(apiUrl(`/shows/${id}`));
         if (!res.ok) throw new Error(`Failed to load show (${res.status})`);
         const data = (await res.json()) as TmdbShowDetails;
@@ -257,22 +261,50 @@ export default function ShowDetails() {
       }
     }
 
-    loadAll();
+    // reset trailer when changing show
+    setTrailerKey(null);
+
+    loadShow();
     return () => {
       cancelled = true;
     };
   }, [id, idStr]);
 
-  // Load posts only when tab is active
+  // Load trailer videos (best-effort, optional)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTrailer() {
+      if (!id || Number.isNaN(id) || id <= 0) return;
+
+      // Try a few common route shapes (depending on how your tmdb router is implemented)
+      const payload = await fetchFirstOkJson([
+        apiUrl(`/tmdb/${id}/videos`),
+        apiUrl(`/tmdb/tv/${id}/videos`),
+        apiUrl(`/shows/${id}/videos`),
+      ]);
+
+      if (cancelled) return;
+      const results = safeArray<TmdbVideoResult>(payload?.results);
+      setTrailerKey(pickTrailerKey(results));
+    }
+
+    loadTrailer();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // Load reddit posts (right column)
   useEffect(() => {
     let cancelled = false;
 
     async function loadPosts() {
-      if (tab !== "posts") return;
       if (!id || Number.isNaN(id)) return;
+      setPostsLoading(true);
+      setPostsErr(null);
 
       try {
-        // ✅ PATCH: was fetch(`/api/shows/${id}/posts`)
         const res = await fetch(apiUrl(`/shows/${id}/posts`));
         if (!res.ok) throw new Error(`Failed to load posts (${res.status})`);
         const data = (await res.json()) as RedditPost[];
@@ -280,7 +312,9 @@ export default function ShowDetails() {
         setPosts(safeArray<RedditPost>(data));
       } catch (e: any) {
         if (cancelled) return;
-        setErr(e?.message ?? "Failed to load posts.");
+        setPostsErr(e?.message ?? "Failed to load posts.");
+      } finally {
+        if (!cancelled) setPostsLoading(false);
       }
     }
 
@@ -288,18 +322,18 @@ export default function ShowDetails() {
     return () => {
       cancelled = true;
     };
-  }, [tab, id]);
+  }, [id]);
 
-  // Load recs only when tab is active
+  // Load smart-similar recs (bottom main)
   useEffect(() => {
     let cancelled = false;
 
     async function loadRecs() {
-      if (tab !== "recs") return;
       if (!id || Number.isNaN(id)) return;
+      setRecsLoading(true);
+      setRecsErr(null);
 
       try {
-        // ✅ PATCH: was fetch(`/api/recs/v3/smart-similar/${id}`)
         const res = await fetch(apiUrl(`/recs/v3/smart-similar/${id}`));
         if (!res.ok) throw new Error(`Failed to load recs (${res.status})`);
         const data = (await res.json()) as RecsV3SmartSimilarItem[];
@@ -307,7 +341,9 @@ export default function ShowDetails() {
         setRecs(safeArray<RecsV3SmartSimilarItem>(data));
       } catch (e: any) {
         if (cancelled) return;
-        setErr(e?.message ?? "Failed to load recs.");
+        setRecsErr(e?.message ?? "Failed to load recs.");
+      } finally {
+        if (!cancelled) setRecsLoading(false);
       }
     }
 
@@ -315,39 +351,7 @@ export default function ShowDetails() {
     return () => {
       cancelled = true;
     };
-  }, [tab, id]);
-
-  // Load explain only when tab is active
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadExplain() {
-      if (tab !== "explain") return;
-      if (!id || Number.isNaN(id)) return;
-      if (!user) {
-        setExplain(null);
-        return;
-      }
-
-      try {
-        const userId = user.id;
-        // ✅ PATCH: was fetch(`/api/recs/v3/explain/${userId}/${id}`)
-        const res = await fetch(apiUrl(`/recs/v3/explain/${userId}/${id}`));
-        if (!res.ok) throw new Error(`Failed to load explanation (${res.status})`);
-        const data = (await res.json()) as RecsV3ExplainResponse;
-        if (cancelled) return;
-        setExplain(data);
-      } catch (e: any) {
-        if (cancelled) return;
-        setErr(e?.message ?? "Failed to load explanation.");
-      }
-    }
-
-    loadExplain();
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, id, user]);
+  }, [id]);
 
   async function onToggleFavorite() {
     if (!user) {
@@ -395,321 +399,273 @@ export default function ShowDetails() {
     }
   }
 
-  const title = show?.title ?? "Show Details";
+  // Loading skeleton (matches your CSS)
+  if (loading) {
+    return (
+      <div className="show-details-skeleton">
+        <button className="show-details-back" onClick={() => navigate(-1)}>
+          ← Back
+        </button>
+        <div className="show-details-layout">
+          <div className="show-details-poster-skel" />
+          <div className="show-details-main">
+            <div className="show-details-title-skel" />
+            <div className="show-details-meta-skel" />
+            <div className="show-details-overview-skel" />
+            <div className="show-details-buttons-skel" />
+          </div>
+        </div>
+        <div className="show-details-similar-skel">
+          <div className="show-details-similar-title-skel" />
+          <div className="show-details-similar-grid-skel">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="show-details-similar-card-skel" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (err) {
+    return (
+      <div className="show-details-page">
+        <button className="show-details-back" onClick={() => navigate(-1)}>
+          ← Back
+        </button>
+        <div className="show-details-error">
+          <div>Something went wrong.</div>
+          <div className="show-details-error-msg">{err}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!show) {
+    return (
+      <div className="show-details-page">
+        <button className="show-details-back" onClick={() => navigate(-1)}>
+          ← Back
+        </button>
+        <div className="show-details-error">
+          <div>Show not found.</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="show-details-page">
-      <div className="show-details-header">
-        <button className="back-btn" onClick={() => navigate(-1)}>
-          ← Back
-        </button>
+      <button className="show-details-back" onClick={() => navigate(-1)}>
+        ← Back
+      </button>
 
-        <h1 className="show-details-title">{title}</h1>
-
-        <div className="show-details-actions">
-          <button
-            className={`fav-btn ${isFavorite ? "is-fav" : ""}`}
-            onClick={onToggleFavorite}
-            disabled={busyFavorite}
-            title={isFavorite ? "Remove from favorites" : "Add to favorites"}
-          >
-            {isFavorite ? "♥" : "♡"} Favorite
-          </button>
-
-          <button
-            className={`ni-btn ${isNotInterested ? "is-ni" : ""}`}
-            onClick={onToggleNotInterested}
-            disabled={busyNotInterested}
-            title={isNotInterested ? "Remove from Not Interested" : "Mark Not Interested"}
-          >
-            {isNotInterested ? "✓" : "＋"} Not Interested
-          </button>
+      <div className="show-details-layout">
+        <div className="show-details-poster-wrapper">
+          {displayPoster ? (
+            <img className="show-details-poster" src={displayPoster} alt={show.title} />
+          ) : (
+            <div className="show-details-poster-placeholder">No poster</div>
+          )}
         </div>
-      </div>
 
-      {err && <div className="error-banner">{err}</div>}
+        <div className="show-details-main">
+          <h1 className="show-details-title">{show.title}</h1>
 
-      {loading && <div className="loading">Loading…</div>}
-
-      {!loading && show && (
-        <div className="show-details-body">
-          <div className="show-hero">
-            {displayBackdrop && (
-              <div
-                className="show-backdrop"
-                style={{ backgroundImage: `url(${displayBackdrop})` }}
-              />
+          <div className="show-details-meta">
+            {show.first_air_date && (
+              <span className="show-details-meta-item">
+                <span className="show-details-meta-sub">First aired</span>
+                <span>{fmtDate(show.first_air_date)}</span>
+              </span>
             )}
+            {show.status && (
+              <span className="show-details-meta-item">
+                <span className="show-details-meta-sub">Status</span>
+                <span>{show.status}</span>
+              </span>
+            )}
+            {typeof show.vote_average === "number" && (
+              <span className="show-details-meta-item">
+                <span className="show-details-meta-sub">Rating</span>
+                <span>★ {show.vote_average.toFixed(1)}</span>
+              </span>
+            )}
+            {genresText && <span className="show-details-meta-genres">{genresText}</span>}
+          </div>
 
-            <div className="show-hero-content">
-              {displayPoster && (
-                <img className="show-poster" src={displayPoster} alt={show.title} />
+          {show.tagline && <div className="show-details-meta-sub">“{show.tagline}”</div>}
+
+          {show.overview && <p className="show-details-overview">{show.overview}</p>}
+
+          <div className="show-details-actions">
+            <button
+              className={`show-details-fav-btn ${isFavorite ? "is-favorite" : ""}`}
+              onClick={onToggleFavorite}
+              disabled={busyFavorite}
+              title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            >
+              <span className="fav-heart">{isFavorite ? "♥" : "♡"}</span>
+              <span className="fav-label">Favorite</span>
+            </button>
+
+            <button
+              className={`show-details-ni-btn ${isNotInterested ? "is-ni" : ""}`}
+              onClick={onToggleNotInterested}
+              disabled={busyNotInterested}
+              title={isNotInterested ? "Remove from Not Interested" : "Mark Not Interested"}
+            >
+              <span className="ni-icon">{isNotInterested ? "✓" : "＋"}</span>
+              <span className="ni-label">Not Interested</span>
+            </button>
+          </div>
+
+          {watch && (
+            <div className="show-details-watch-section">
+              <h2>Where to watch</h2>
+
+              {watch.link && (
+                <a className="show-details-trailer-btn" href={watch.link} target="_blank" rel="noreferrer">
+                  View on TMDb
+                </a>
               )}
 
-              <div className="show-meta">
-                {show.tagline && <div className="tagline">“{show.tagline}”</div>}
-
-                <div className="meta-row">
-                  {show.first_air_date && <span>{fmtDate(show.first_air_date)}</span>}
-                  {show.status && <span>• {show.status}</span>}
-                  {typeof show.vote_average === "number" && (
-                    <span>• ★ {show.vote_average.toFixed(1)}</span>
-                  )}
-                </div>
-
-                {show.overview && <p className="overview">{show.overview}</p>}
-
-                {safeArray<any>(show.genres).length > 0 && (
-                  <div className="genres">
-                    {safeArray<any>(show.genres).map((g: any) => (
-                      <span className="genre" key={g.id}>
-                        {g.name}
-                      </span>
-                    ))}
+              <div className="show-details-watch-groups">
+                {watchLists.flatrate.length > 0 && (
+                  <div className="show-details-watch-group">
+                    <h3>Streaming</h3>
+                    <div className="show-details-watch-providers">
+                      {watchLists.flatrate.map((p) => (
+                        <div className="show-details-watch-provider" key={p.provider_id} title={p.provider_name}>
+                          {providerLogoUrl(p.logo_path) ? (
+                            <img src={providerLogoUrl(p.logo_path) as string} alt={p.provider_name} />
+                          ) : (
+                            <div className="show-details-watch-provider-placeholder">{p.provider_name}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 
-                {watch && (
-                  <div className="watch-section">
-                    <h3>Where to watch</h3>
-
-                    {watch.link && (
-                      <div className="watch-link">
-                        <a href={watch.link} target="_blank" rel="noreferrer">
-                          View on TMDb
-                        </a>
-                      </div>
-                    )}
-
-                    {watchLists.flatrate.length > 0 && (
-                      <div className="watch-group">
-                        <div className="watch-label">Streaming</div>
-                        <div className="watch-providers">
-                          {watchLists.flatrate.map((p) => (
-                            <div className="provider" key={p.provider_id} title={p.provider_name}>
-                              {providerLogoUrl(p.logo_path) ? (
-                                <img
-                                  src={providerLogoUrl(p.logo_path) as string}
-                                  alt={p.provider_name}
-                                />
-                              ) : (
-                                <span>{p.provider_name}</span>
-                              )}
-                            </div>
-                          ))}
+                {watchLists.free.length > 0 && (
+                  <div className="show-details-watch-group">
+                    <h3>Free</h3>
+                    <div className="show-details-watch-providers">
+                      {watchLists.free.map((p) => (
+                        <div className="show-details-watch-provider" key={p.provider_id} title={p.provider_name}>
+                          {providerLogoUrl(p.logo_path) ? (
+                            <img src={providerLogoUrl(p.logo_path) as string} alt={p.provider_name} />
+                          ) : (
+                            <div className="show-details-watch-provider-placeholder">{p.provider_name}</div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-                    {watchLists.free.length > 0 && (
-                      <div className="watch-group">
-                        <div className="watch-label">Free</div>
-                        <div className="watch-providers">
-                          {watchLists.free.map((p) => (
-                            <div className="provider" key={p.provider_id} title={p.provider_name}>
-                              {providerLogoUrl(p.logo_path) ? (
-                                <img
-                                  src={providerLogoUrl(p.logo_path) as string}
-                                  alt={p.provider_name}
-                                />
-                              ) : (
-                                <span>{p.provider_name}</span>
-                              )}
-                            </div>
-                          ))}
+                {watchLists.rent.length > 0 && (
+                  <div className="show-details-watch-group">
+                    <h3>Rent</h3>
+                    <div className="show-details-watch-providers">
+                      {watchLists.rent.map((p) => (
+                        <div className="show-details-watch-provider" key={p.provider_id} title={p.provider_name}>
+                          {providerLogoUrl(p.logo_path) ? (
+                            <img src={providerLogoUrl(p.logo_path) as string} alt={p.provider_name} />
+                          ) : (
+                            <div className="show-details-watch-provider-placeholder">{p.provider_name}</div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-                    {watchLists.rent.length > 0 && (
-                      <div className="watch-group">
-                        <div className="watch-label">Rent</div>
-                        <div className="watch-providers">
-                          {watchLists.rent.map((p) => (
-                            <div className="provider" key={p.provider_id} title={p.provider_name}>
-                              {providerLogoUrl(p.logo_path) ? (
-                                <img
-                                  src={providerLogoUrl(p.logo_path) as string}
-                                  alt={p.provider_name}
-                                />
-                              ) : (
-                                <span>{p.provider_name}</span>
-                              )}
-                            </div>
-                          ))}
+                {watchLists.buy.length > 0 && (
+                  <div className="show-details-watch-group">
+                    <h3>Buy</h3>
+                    <div className="show-details-watch-providers">
+                      {watchLists.buy.map((p) => (
+                        <div className="show-details-watch-provider" key={p.provider_id} title={p.provider_name}>
+                          {providerLogoUrl(p.logo_path) ? (
+                            <img src={providerLogoUrl(p.logo_path) as string} alt={p.provider_name} />
+                          ) : (
+                            <div className="show-details-watch-provider-placeholder">{p.provider_name}</div>
+                          )}
                         </div>
-                      </div>
-                    )}
-
-                    {watchLists.buy.length > 0 && (
-                      <div className="watch-group">
-                        <div className="watch-label">Buy</div>
-                        <div className="watch-providers">
-                          {watchLists.buy.map((p) => (
-                            <div className="provider" key={p.provider_id} title={p.provider_name}>
-                              {providerLogoUrl(p.logo_path) ? (
-                                <img
-                                  src={providerLogoUrl(p.logo_path) as string}
-                                  alt={p.provider_name}
-                                />
-                              ) : (
-                                <span>{p.provider_name}</span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-          </div>
+          )}
 
-          <div className="show-tabs">
-            <button className={tab === "details" ? "active" : ""} onClick={() => setTab("details")}>
-              Details
-            </button>
-            <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>
-              Reddit posts
-            </button>
-            <button className={tab === "recs" ? "active" : ""} onClick={() => setTab("recs")}>
-              Similar (smart)
-            </button>
-            <button className={tab === "explain" ? "active" : ""} onClick={() => setTab("explain")}>
-              Explain
-            </button>
-          </div>
-
-          <div className="show-tab-body">
-            {tab === "details" && (
-              <div className="details-tab">
-                <div className="details-grid">
-                  <div className="detail">
-                    <div className="label">Seasons</div>
-                    <div className="value">{show.number_of_seasons ?? "-"}</div>
-                  </div>
-                  <div className="detail">
-                    <div className="label">Episodes</div>
-                    <div className="value">{show.number_of_episodes ?? "-"}</div>
-                  </div>
-                  <div className="detail">
-                    <div className="label">Status</div>
-                    <div className="value">{show.status ?? "-"}</div>
-                  </div>
-                  <div className="detail">
-                    <div className="label">First aired</div>
-                    <div className="value">{fmtDate(show.first_air_date ?? null) || "-"}</div>
-                  </div>
-                  <div className="detail">
-                    <div className="label">Last aired</div>
-                    <div className="value">{fmtDate((show as any).last_air_date ?? null) || "-"}</div>
-                  </div>
-                  <div className="detail">
-                    <div className="label">Language</div>
-                    <div className="value">{show.original_language ?? "-"}</div>
-                  </div>
-                </div>
-
-                {safeArray<any>(show.networks).length > 0 && (
-                  <div className="networks">
-                    <h3>Networks</h3>
-                    <div className="network-list">
-                      {safeArray<any>(show.networks).map((n: any) => (
-                        <div key={n.id} className="network">
-                          {n.logo_path ? (
-                            <img
-                              src={posterUrl(n.logo_path) as string}
-                              alt={n.name}
-                              title={n.name}
-                            />
-                          ) : (
-                            <span>{n.name}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {safeArray<any>(show.production_companies).length > 0 && (
-                  <div className="companies">
-                    <h3>Production companies</h3>
-                    <div className="company-list">
-                      {safeArray<any>(show.production_companies).map((c: any) => (
-                        <div key={c.id} className="company">
-                          {c.logo_path ? (
-                            <img
-                              src={posterUrl(c.logo_path) as string}
-                              alt={c.name}
-                              title={c.name}
-                            />
-                          ) : (
-                            <span>{c.name}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+          {trailerEmbed && (
+            <div className="show-details-trailer-section">
+              <h2>Trailer</h2>
+              <div className="show-details-trailer-embed">
+                <iframe
+                  src={trailerEmbed}
+                  title="Trailer"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
               </div>
-            )}
-
-            {tab === "posts" && (
-              <div className="posts-tab">
-                {posts.length === 0 ? (
-                  <div className="empty">No Reddit posts found.</div>
-                ) : (
-                  <ul className="post-list">
-                    {posts.map((p) => (
-                      <li key={p.id} className="post">
-                        <a href={p.url} target="_blank" rel="noreferrer">
-                          <div className="post-title">{p.title}</div>
-                          <div className="post-meta">
-                            r/{p.subreddit} • {fmtDate(p.created_utc)}
-                            {typeof p.score === "number" ? ` • ↑ ${p.score}` : ""}
-                            {typeof p.num_comments === "number" ? ` • 💬 ${p.num_comments}` : ""}
-                          </div>
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            {tab === "recs" && (
-              <div className="recs-tab">
-                {recs.length === 0 ? (
-                  <div className="empty">No recommendations found.</div>
-                ) : (
-                  <div className="recs-grid">
-                    {recs.map((r) => (
-                      <ShowCard key={r.tmdb_id} show={r as any} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {tab === "explain" && (
-              <div className="explain-tab">
-                {!user ? (
-                  <div className="empty">Log in to see explanation details.</div>
-                ) : !explain ? (
-                  <div className="empty">No explanation found.</div>
-                ) : (
-                  <div className="explain-content">
-                    <pre className="json">{JSON.stringify(explain, null, 2)}</pre>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
-      {!loading && !show && !err && <div className="empty">Show not found.</div>}
+      <div className="show-details-bottom">
+        <div className="show-details-bottom-main">
+          <div className="show-details-similar-header">
+            <h2>Similar shows</h2>
+            {recsLoading && <span className="show-details-chip">Loading…</span>}
+            {recsErr && <span className="show-details-error-msg-inline">{recsErr}</span>}
+          </div>
+
+          {!recsLoading && recs.length === 0 ? (
+            <div className="show-details-similar-empty">No recommendations found.</div>
+          ) : (
+            <div className="show-details-similar-grid">
+              {recs.map((r) => (
+                <ShowCard key={r.tmdb_id} show={r as any} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <aside className="show-details-reddit">
+          <div className="show-details-reddit-header">
+            <h2>Reddit</h2>
+            {postsLoading && <span className="show-details-chip">Loading…</span>}
+          </div>
+
+          {postsErr && <div className="show-details-error-msg-inline">{postsErr}</div>}
+
+          {!postsLoading && posts.length === 0 ? (
+            <div className="show-details-reddit-empty">No Reddit posts found.</div>
+          ) : (
+            <ul className="show-details-reddit-list">
+              {posts.slice(0, 12).map((p) => (
+                <li key={p.id} className="show-details-reddit-item">
+                  <a className="show-details-reddit-title" href={p.url} target="_blank" rel="noreferrer">
+                    {p.title}
+                  </a>
+                  <div className="show-details-reddit-meta">
+                    <span>r/{p.subreddit}</span>
+                    <span>{fmtDate(p.created_utc)}</span>
+                    {typeof p.score === "number" ? <span>↑ {p.score}</span> : null}
+                    {typeof p.num_comments === "number" ? <span>💬 {p.num_comments}</span> : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }

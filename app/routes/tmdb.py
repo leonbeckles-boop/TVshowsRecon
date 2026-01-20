@@ -219,7 +219,7 @@ async def tmdb_tv_videos(tmdb_id: int = Path(..., ge=1)):
     return r.json()
 
     @router.get("/tv/{tmdb_id}/watch/providers", summary="TMDb TV watch providers (where to watch)")
-async def tmdb_tv_watch_providers(tmdb_id: int = Path(..., ge=1)):
+    async def tmdb_tv_watch_providers(tmdb_id: int = Path(..., ge=1)):
     if not TMDB_API_KEY:
         raise HTTPException(status_code=500, detail="TMDB_API_KEY not set on server")
 

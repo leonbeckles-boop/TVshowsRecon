@@ -443,6 +443,9 @@ useEffect(() => {
         <button className="show-details-back" onClick={() => navigate(-1)}>
           ← Back
         </button>
+        <div style={{ opacity: 0.6, fontSize: 12 }}>
+          build: watch-providers-v1
+        </div>
         <div className="show-details-layout">
           <div className="show-details-poster-skel" />
           <div className="show-details-main">

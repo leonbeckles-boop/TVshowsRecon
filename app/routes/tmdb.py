@@ -198,3 +198,22 @@ async def tmdb_tv_details(tmdb_id: int = Path(..., ge=1)):
         raise HTTPException(status_code=502, detail=f"TMDb error {r.status_code}: {r.text[:200]}")
 
     return r.json()
+
+@router.get("/tv/{tmdb_id}/videos", summary="TMDb TV videos (trailers, teasers)")
+async def tmdb_tv_videos(tmdb_id: int = Path(..., ge=1)):
+    if not TMDB_API_KEY:
+        raise HTTPException(status_code=500, detail="TMDB_API_KEY not set on server")
+
+    params = {"api_key": TMDB_API_KEY}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(f"{TMDB_BASE}/tv/{tmdb_id}/videos", params=params)
+
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="TMDb videos not found")
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"TMDb error {r.status_code}: {r.text[:200]}",
+        )
+
+    return r.json()

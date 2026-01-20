@@ -171,6 +171,10 @@ export default function ShowDetails() {
 
   const [trailerKey, setTrailerKey] = useState<string | null>(null);
 
+  const [watchProviders, setWatchProviders] =
+  useState<TmdbWatchProviderGroup | null>(null);
+
+
   const [favorites, setFavorites] = useState<number[]>([]);
   const [notInterested, setNotInterested] = useState<number[]>([]);
   const [busyFavorite, setBusyFavorite] = useState(false);
@@ -186,11 +190,8 @@ export default function ShowDetails() {
     return gs.length ? gs.map((g) => g.name).join(", ") : "";
   }, [show]);
 
-  const watch = useMemo<TmdbWatchProviderGroup | null>(() => {
-    const w = (show?.where_to_watch ?? show?.providers) as any;
-    if (!w) return null;
-    return w as TmdbWatchProviderGroup;
-  }, [show]);
+  const watch = watchProviders;
+
 
   const watchLists = useMemo(() => {
     const flatrate = uniqBy(safeArray<TmdbWatchProvider>(watch?.flatrate), (x) => x.provider_id);
@@ -294,6 +295,42 @@ export default function ShowDetails() {
       cancelled = true;
     };
   }, [id]);
+
+  // Load watch providers (Where to watch)
+useEffect(() => {
+  let cancelled = false;
+
+  async function loadWatchProviders() {
+    if (!id || Number.isNaN(id) || id <= 0) return;
+
+    try {
+      const res = await fetch(apiUrl(`/tmdb/tv/${id}/watch/providers`));
+      if (!res.ok) return;
+
+      const data = await res.json();
+
+      // Prefer UK (GB), fallback to US
+      const region =
+        data?.results?.GB ??
+        data?.results?.US ??
+        null;
+
+      if (!cancelled) {
+        setWatchProviders(region);
+      }
+    } catch {
+      // optional feature – fail silently
+    }
+  }
+
+  setWatchProviders(null);
+  loadWatchProviders();
+
+  return () => {
+    cancelled = true;
+  };
+}, [id]);
+
 
   // Load reddit posts (right column)
   useEffect(() => {

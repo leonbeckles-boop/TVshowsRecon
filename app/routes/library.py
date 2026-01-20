@@ -161,15 +161,14 @@ async def list_favorites_for_user(
     if not fav_ids:
         return []
 
-    # Try to enrich using Show.external_id (string)
-    ext_strs = [str(i) for i in fav_ids]
-    shows: List[Show] = []
-    if ext_strs:
-        shows = (await db.execute(
-            select(Show).where(Show.external_id.in_(ext_strs))
-        )).scalars().all()
+    # Enrich using Show.show_id (TMDb id)
+    shows: List[Show] = (
+        await db.execute(
+            select(Show).where(Show.show_id.in_(fav_ids))
+        )
+    ).scalars().all()
 
-    by_ext = {str(s.external_id): s for s in shows if s.external_id is not None}
+    by_id = {int(s.show_id): s for s in shows}
 
     out: List[dict] = []
     for tmdb_id in fav_ids:

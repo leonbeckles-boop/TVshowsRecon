@@ -279,7 +279,7 @@ export default function ShowDetails() {
 
       // Try a few common route shapes (depending on how your tmdb router is implemented)
       const payload = await fetchFirstOkJson([
-        apiUrl(`/tmdb/${id}/videos`),
+        apiUrl(`/tmdb/tv/${id}/videos`),
         apiUrl(`/tmdb/tv/${id}/videos`),
         apiUrl(`/shows/${id}/videos`),
       ]);

@@ -154,47 +154,56 @@ async def list_favorites_for_user(
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict]:
     # Unique tmdb ids first (avoid join dupes)
-    fav_ids = (await db.execute(
-        select(distinct(FavoriteTmdb.tmdb_id)).where(FavoriteTmdb.user_id == user_id)
-    )).scalars().all()
+    fav_ids = (
+        await db.execute(
+            select(distinct(FavoriteTmdb.tmdb_id)).where(FavoriteTmdb.user_id == user_id)
+        )
+    ).scalars().all()
+
+    # Normalize + drop nulls
+    fav_ids = [int(x) for x in fav_ids if x is not None]
 
     if not fav_ids:
         return []
 
-    # Enrich using Show.show_id (TMDb id)
+    # ✅ Enrich using Show.show_id (TMDb id / PK in your schema)
     shows: List[Show] = (
-        await db.execute(
-            select(Show).where(Show.show_id.in_(fav_ids))
-        )
+        await db.execute(select(Show).where(Show.show_id.in_(fav_ids)))
     ).scalars().all()
 
     by_id = {int(s.show_id): s for s in shows}
 
     out: List[dict] = []
-
     for tmdb_id in fav_ids:
         s = by_id.get(int(tmdb_id))
         if s:
-            out.append({
-                "tmdb_id": int(tmdb_id),
-                "show_id": int(s.show_id),
-                "title": s.title,
-                "year": int(s.year) if s.year is not None else None,
-                "poster_path": s.poster_path,
-                "poster_url": (
-                    f"https://image.tmdb.org/t/p/w500{s.poster_path}"
-                    if s.poster_path else None
-                ),
-                })
+            poster_path = getattr(s, "poster_path", None)
+            poster_url = getattr(s, "poster_url", None)
+            if not poster_url and poster_path:
+                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+
+            out.append(
+                {
+                    "tmdb_id": int(tmdb_id),
+                    "show_id": int(s.show_id),
+                    "title": getattr(s, "title", None),
+                    "year": int(getattr(s, "year", 0)) if getattr(s, "year", None) is not None else None,
+                    "poster_path": poster_path,
+                    "poster_url": poster_url,
+                }
+            )
         else:
-            out.append({
-                "tmdb_id": int(tmdb_id),
-                "show_id": int(tmdb_id),
-                "title": f"TMDb #{int(tmdb_id)}",
-             "year": None,
-                "poster_path": None,
-                "poster_url": None,
-            })
+            out.append(
+                {
+                    "tmdb_id": int(tmdb_id),
+                    "show_id": int(tmdb_id),
+                    "title": f"TMDb #{int(tmdb_id)}",
+                    "year": None,
+                    "poster_path": None,
+                    "poster_url": None,
+                }
+            )
+
     return out
 
 @router.post("/{user_id}/favorites/{tmdb_id}")

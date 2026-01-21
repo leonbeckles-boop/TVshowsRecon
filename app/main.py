@@ -85,6 +85,4 @@ _include("app.routes.wrapped", name_hint="wrapped")
 _include("app.routes.admin", name_hint="admin")
 
 # Attach /api router once
-# Attach /api router once
-app.include_router(api, prefix="/api")
-
+app.include_router(api)

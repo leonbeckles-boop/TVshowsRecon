@@ -49,7 +49,7 @@ async def list_routes() -> List[Dict[str, Any]]:
     return out
 
 # Single API namespace prefix
-api = APIRouter()
+api = APIRouter(prefix="/api")
 
 
 def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -> None:
@@ -61,6 +61,15 @@ def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -
     try:
         mod = __import__(router_import, fromlist=[attr])
         router = getattr(mod, attr)
+        # Normalize router prefixes to avoid /api/api duplication
+        pfx = getattr(router, "prefix", "") or ""
+        if pfx == "/api":
+            router.prefix = ""
+        elif pfx.startswith("/api/") :
+            router.prefix = pfx[len("/api"): ]
+        elif pfx.startswith("/api") and len(pfx) > 4:
+            # e.g. '/apiusers' (unlikely), be conservative
+            router.prefix = pfx[4:]
         api.include_router(router)
         log.info("Mounted router: %s (prefix=%s)", label, getattr(router, "prefix", ""))
     except Exception as e:
@@ -85,4 +94,4 @@ _include("app.routes.wrapped", name_hint="wrapped")
 _include("app.routes.admin", name_hint="admin")
 
 # Attach /api router once
-app.include_router(api, prefix="/api")
+app.include_router(api)

@@ -49,7 +49,7 @@ async def list_routes() -> List[Dict[str, Any]]:
     return out
 
 # Single API namespace prefix
-api = APIRouter(prefix="/api")
+api = APIRouter()
 
 
 def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -> None:
@@ -85,4 +85,4 @@ _include("app.routes.wrapped", name_hint="wrapped")
 _include("app.routes.admin", name_hint="admin")
 
 # Attach /api router once
-app.include_router(api)
+app.include_router(api, prefix="/api")

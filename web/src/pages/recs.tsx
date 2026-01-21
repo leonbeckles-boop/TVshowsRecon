@@ -139,10 +139,9 @@ const RecsPage: React.FC = () => {
     setErr(null);
     try {
       const data = await getRecsV3(userId, {
-limit: 60,
+        limit: 60,
         flat: 1,
-...(selectedGenres.length > 0 && { genres: selectedGenres }),
-.length ? selectedGenres : undefined,
+        ...(selectedGenres.length > 0 ? { genres: selectedGenres } : {}),
       });
 
       const list = Array.isArray(data) ? data : (data as any).items ?? [];

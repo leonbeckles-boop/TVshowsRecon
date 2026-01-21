@@ -209,7 +209,34 @@ async def add_favorite_path(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
-    # Dialect-aware UPSERT (ON CONFLICT DO NOTHING) via ORM table — avoids hardcoding table name.
+    # 1️⃣ Ensure show exists in `shows`
+    exists = await db.scalar(
+        select(Show.show_id).where(Show.show_id == tmdb_id)
+    )
+
+    if not exists:
+        # Fetch from TMDb via direct API call
+        import httpx, os
+
+        TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+        if TMDB_API_KEY:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"https://api.themoviedb.org/3/tv/{tmdb_id}",
+                    params={"api_key": TMDB_API_KEY},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    show = Show(
+                        show_id=tmdb_id,
+                        title=data.get("name"),
+                        year=(data.get("first_air_date") or "")[:4] or None,
+                        poster_path=data.get("poster_path"),
+                    )
+                    db.add(show)
+                    await db.commit()
+
+    # 2️⃣ Add favorite (idempotent)
     ins = pg_insert(FavoriteTmdb.__table__).values(
         user_id=user_id,
         tmdb_id=tmdb_id,
@@ -218,7 +245,9 @@ async def add_favorite_path(
     )
     await db.execute(ins)
     await db.commit()
+
     return {"ok": True}
+
 
 @router.delete("/{user_id}/favorites/{tmdb_id}")
 async def remove_favorite_path(

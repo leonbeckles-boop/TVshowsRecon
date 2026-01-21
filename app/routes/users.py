@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Path
-from sqlalchemy import select, and_
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Prefer the project’s current dependency locations; fall back if names differ
@@ -17,7 +17,6 @@ try:
 except Exception:  # pragma: no cover
     from app.security import require_user  # type: ignore
 
-from app.db_models import FavoriteTmdb, Show
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -26,22 +25,9 @@ def _poster_url(poster_path: Optional[str]) -> Optional[str]:
     return f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
 
 
-def _serialize_show(s: Show) -> Dict[str, Any]:
-    poster_path = getattr(s, "poster_path", None)
-    poster_url = getattr(s, "poster_url", None) or _poster_url(poster_path)
-    year = getattr(s, "year", None)
-    return {
-        "tmdb_id": int(getattr(s, "show_id")),
-        "show_id": int(getattr(s, "show_id")),
-        "title": getattr(s, "title", None),
-        "year": int(year) if year is not None else None,
-        "poster_path": poster_path,
-        "poster_url": poster_url,
-    }
-
-
 async def _tmdb_tv_details(tmdb_id: int) -> Optional[dict]:
-    """Minimal TMDb TV details fetch for backfilling shows.
+    """Minimal TMDb TV details fetch (NO DB writes).
+
     Supports either TMDB_API_KEY (v3) or TMDB_BEARER_TOKEN / TMDB_READ_ACCESS_TOKEN / TMDB_ACCESS_TOKEN (v4).
     """
     import os
@@ -73,31 +59,68 @@ async def _tmdb_tv_details(tmdb_id: int) -> Optional[dict]:
         return r.json()
 
 
-async def _ensure_show(db: AsyncSession, tmdb_id: int) -> Optional[Show]:
-    show = (await db.execute(select(Show).where(Show.show_id == tmdb_id))).scalar_one_or_none()
-    if show:
-        return show
+async def _fetch_show_from_db(db: AsyncSession, tmdb_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch show metadata from local DB if present (schema uses shows.show_id as TMDb id)."""
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT show_id, title, poster_path, year
+                FROM shows
+                WHERE show_id = :sid
+                """
+            ),
+            {"sid": tmdb_id},
+        )
+    ).mappings().first()
 
-    data = await _tmdb_tv_details(tmdb_id)
-    if not data:
+    if not row:
         return None
 
-    title = data.get("name") or data.get("title") or f"TMDb #{tmdb_id}"
-    first_air = data.get("first_air_date") or ""
-    year = int(first_air[:4]) if len(first_air) >= 4 and first_air[:4].isdigit() else None
-    poster_path = data.get("poster_path")
+    poster_path = row.get("poster_path")
+    return {
+        "tmdb_id": int(row["show_id"]),
+        "show_id": int(row["show_id"]),
+        "title": row.get("title") or f"TMDb #{tmdb_id}",
+        "year": int(row["year"]) if row.get("year") is not None else None,
+        "poster_path": poster_path,
+        "poster_url": _poster_url(poster_path),
+    }
 
-    show = Show(
-        show_id=int(tmdb_id),
-        title=title,
-        poster_path=poster_path,
-        year=year,
-        external_id=int(tmdb_id),
-    )
-    db.add(show)
-    await db.commit()
-    await db.refresh(show)
-    return show
+
+async def _resolve_show_payload(db: AsyncSession, tmdb_id: int) -> Dict[str, Any]:
+    """Return best-effort show payload:
+    1) local DB shows table
+    2) TMDb API (no DB writes)
+    3) fallback placeholder
+    """
+    db_payload = await _fetch_show_from_db(db, tmdb_id)
+    if db_payload:
+        return db_payload
+
+    data = await _tmdb_tv_details(tmdb_id)
+    if data:
+        title = data.get("name") or data.get("title") or f"TMDb #{tmdb_id}"
+        first_air = data.get("first_air_date") or ""
+        year = int(first_air[:4]) if len(first_air) >= 4 and first_air[:4].isdigit() else None
+        poster_path = data.get("poster_path")
+        return {
+            "tmdb_id": tmdb_id,
+            "show_id": tmdb_id,
+            "title": title,
+            "year": year,
+            "poster_path": poster_path,
+            "poster_url": _poster_url(poster_path),
+        }
+
+    return {
+        "tmdb_id": tmdb_id,
+        "show_id": tmdb_id,
+        "title": f"TMDb #{tmdb_id}",
+        "year": None,
+        "poster_path": None,
+        "poster_url": None,
+    }
 
 
 @router.get("/{user_id}/favorites")
@@ -106,26 +129,24 @@ async def list_favorites(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> List[Dict[str, Any]]:
-    favs = (
-        await db.execute(select(FavoriteTmdb.tmdb_id).where(FavoriteTmdb.user_id == user_id))
+    # Canonical table is user_favorites(user_id, tmdb_id)
+    tmdb_ids = (
+        await db.execute(
+            text(
+                """
+                SELECT tmdb_id
+                FROM user_favorites
+                WHERE user_id = :uid
+                ORDER BY id DESC NULLS LAST
+                """
+            ),
+            {"uid": user_id},
+        )
     ).scalars().all()
 
     out: List[Dict[str, Any]] = []
-    for tmdb_id in favs:
-        show = await _ensure_show(db, int(tmdb_id))
-        if show:
-            out.append(_serialize_show(show))
-        else:
-            out.append(
-                {
-                    "tmdb_id": int(tmdb_id),
-                    "show_id": int(tmdb_id),
-                    "title": f"TMDb #{int(tmdb_id)}",
-                    "year": None,
-                    "poster_path": None,
-                    "poster_url": None,
-                }
-            )
+    for tid in tmdb_ids:
+        out.append(await _resolve_show_payload(db, int(tid)))
     return out
 
 
@@ -136,19 +157,18 @@ async def add_favorite(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> Dict[str, Any]:
-    exists = (
-        await db.execute(
-            select(FavoriteTmdb).where(
-                and_(FavoriteTmdb.user_id == user_id, FavoriteTmdb.tmdb_id == tmdb_id)
-            )
-        )
-    ).scalar_one_or_none()
-
-    if not exists:
-        db.add(FavoriteTmdb(user_id=user_id, tmdb_id=tmdb_id))
-        await _ensure_show(db, tmdb_id)
-        await db.commit()
-
+    # Unique(user_id, tmdb_id) exists per your schema; ON CONFLICT keeps this idempotent.
+    await db.execute(
+        text(
+            """
+            INSERT INTO user_favorites (user_id, tmdb_id)
+            VALUES (:uid, :tid)
+            ON CONFLICT (user_id, tmdb_id) DO NOTHING
+            """
+        ),
+        {"uid": user_id, "tid": tmdb_id},
+    )
+    await db.commit()
     return {"ok": True}
 
 
@@ -159,16 +179,14 @@ async def remove_favorite(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> Dict[str, Any]:
-    row = (
-        await db.execute(
-            select(FavoriteTmdb).where(
-                and_(FavoriteTmdb.user_id == user_id, FavoriteTmdb.tmdb_id == tmdb_id)
-            )
-        )
-    ).scalar_one_or_none()
-
-    if row:
-        await db.delete(row)
-        await db.commit()
-
+    await db.execute(
+        text(
+            """
+            DELETE FROM user_favorites
+            WHERE user_id = :uid AND tmdb_id = :tid
+            """
+        ),
+        {"uid": user_id, "tid": tmdb_id},
+    )
+    await db.commit()
     return {"ok": True}

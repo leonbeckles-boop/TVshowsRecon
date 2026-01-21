@@ -246,14 +246,14 @@ export async function getTmdbTvDetails(tmdbId: number): Promise<Show> {
 
 export async function listFavorites(userId?: number, ..._rest: any[]): Promise<Show[]> {
   const uid = userId ?? (await me()).id;
-  return http<Show[]>(`/library/${uid}/favorites`, { method: "GET" });
+  return http<Show[]>(`/users/${uid}/favorites`, { method: "GET" });
 }
 
 // Allow older code: listFavoriteShows() with no args.
 // If userId not provided, we fetch /me first.
 export async function listFavoriteShows(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return http<any[]>(`/library/${uid}/favorites`, { method: "GET" });
+  return http<any[]>(`/users/${uid}/favorites`, { method: "GET" });
 }
 
 
@@ -265,7 +265,7 @@ export async function addFavorite(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "POST" });
+  await http(`/users/${uid}/favorites/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
 
@@ -278,7 +278,7 @@ export async function removeFavorite(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
+  await http(`/users/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
   return { ok: true };
 }
 

@@ -54,7 +54,7 @@ async def _ensure_show(db: AsyncSession, tmdb_id: int) -> Optional[Show]:
     return show
 
 
-@router.get("users/{user_id}/favorites")
+@router.get("/{user_id}/favorites")
 async def list_favorites(
     user_id: int,
     _: Any = Depends(require_user),
@@ -72,7 +72,7 @@ async def list_favorites(
     return out
 
 
-@router.post("users/{user_id}/favorites/{tmdb_id}")
+@router.post("/{user_id}/favorites/{tmdb_id}")
 async def add_favorite(
     user_id: int,
     tmdb_id: int = Path(..., ge=1),
@@ -95,7 +95,7 @@ async def add_favorite(
     return {"ok": True}
 
 
-@router.delete("users/{user_id}/favorites/{tmdb_id}")
+@router.delete("/{user_id}/favorites/{tmdb_id}")
 async def remove_favorite(
     user_id: int,
     tmdb_id: int = Path(..., ge=1),

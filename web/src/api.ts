@@ -246,14 +246,14 @@ export async function getTmdbTvDetails(tmdbId: number): Promise<Show> {
 
 export async function listFavorites(userId?: number, ..._rest: any[]): Promise<Show[]> {
   const uid = userId ?? (await me()).id;
-  return http<Show[]>(`/users/${uid}/favorites`, { method: "GET" });
+  return http<Show[]>(`/library/${uid}/favorites`, { method: "GET" });
 }
 
 // Allow older code: listFavoriteShows() with no args.
 // If userId not provided, we fetch /me first.
 export async function listFavoriteShows(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return http<any[]>(`/users/${uid}/favorites`, { method: "GET" });
+  return http<any[]>(`/library/${uid}/favorites`, { method: "GET" });
 }
 
 
@@ -265,7 +265,7 @@ export async function addFavorite(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/users/${uid}/favorites/${tmdbId}`, { method: "POST" });
+  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
 
@@ -278,7 +278,7 @@ export async function removeFavorite(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/users/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
+  await http(`/library/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
   return { ok: true };
 }
 
@@ -376,6 +376,9 @@ export async function getRecsV3(
   let userId: number;
   let opts: RecsOptions;
 
+  // Support both call styles:
+  // - getRecsV3(userId, opts)
+  // - getRecsV3(opts)  (uses /api/me to resolve userId)
   if (typeof arg1 === "number") {
     userId = arg1;
     opts = (arg2 ?? {}) as RecsOptions;
@@ -384,14 +387,30 @@ export async function getRecsV3(
     userId = (await me()).id;
   }
 
-  const qs = new URLSearchParams(
-    { user_id: String(userId), ...((opts as any) ?? {}) } as any
-  ).toString();
+  const params = new URLSearchParams();
 
-  return http<RecItem[]>(`/recs/v3?${qs}`, { method: "GET" });
+  // Do NOT send user_id as a query param – backend route is /recs/v3/{user_id}
+  for (const [k, v] of Object.entries((opts as any) ?? {})) {
+    if (k === "user_id") continue;
+    if (v === undefined || v === null) continue;
+
+    // Avoid `genres=undefined` and support array -> csv
+    if (Array.isArray(v)) {
+      if (v.length === 0) continue;
+      params.set(k, v.join(","));
+      continue;
+    }
+
+    params.set(k, String(v));
+  }
+
+  const qs = params.toString();
+  const url = qs ? `/recs/v3/${userId}?${qs}` : `/recs/v3/${userId}`;
+  return http<RecItem[]>(url, { method: "GET" });
 }
 
 // Some components hit these endpoints directly:
+
 export async function smartSimilar(tmdbId: number, ..._rest: any[]): Promise<RecItem[]> {
   return http<RecItem[]>(`/recs/v3/smart-similar/${tmdbId}`, { method: "GET" });
 }

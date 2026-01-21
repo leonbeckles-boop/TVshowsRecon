@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Path, Body
 from pydantic import BaseModel, Field
-from sqlalchemy import select, and_, delete, distinct
+from sqlalchemy import and_, delete, distinct, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # PG UPSERT
 
@@ -14,6 +14,23 @@ from app.db_models import UserRating, FavoriteTmdb, NotInterested, Show
 from app.security import require_user
 
 router = APIRouter(prefix="/library", tags=["library"])
+
+async def _tmdb_tv_details(tmdb_id: int) -> dict | None:
+    """Best-effort fetch of TMDb TV details for backfilling the local `shows` table."""
+    import os
+    import httpx
+
+    api_key = os.getenv("TMDB_API_KEY")
+    if not api_key:
+        return None
+
+    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(url, params={"api_key": api_key})
+        if r.status_code != 200:
+            return None
+        return r.json()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
@@ -153,53 +170,70 @@ async def list_favorites_for_user(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict]:
-    # Unique tmdb ids first (avoid join dupes)
-    fav_ids = (await db.execute(
-        select(distinct(FavoriteTmdb.tmdb_id)).where(FavoriteTmdb.user_id == user_id)
-    )).scalars().all()
+res = await db.execute(
+    text("SELECT tmdb_id FROM user_favorites WHERE user_id = :uid ORDER BY id DESC"),
+    {"uid": user_id},
+)
+fav_ids = [int(x) for (x,) in res.fetchall() if x is not None]
 
-    # Normalize + drop nulls
-    fav_ids = [int(x) for x in fav_ids if x is not None]
+if not fav_ids:
+    return []
 
-    if not fav_ids:
-        return []
+shows = (await db.execute(select(Show).where(Show.show_id.in_(fav_ids)))).scalars().all()
+by_id = {int(s.show_id): s for s in shows}
 
-    # ✅ Enrich using Show.show_id (TMDb id / PK)
-    shows: List[Show] = (
-        await db.execute(select(Show).where(Show.show_id.in_(fav_ids)))
-    ).scalars().all()
+missing_ids = [i for i in fav_ids if i not in by_id]
 
-    by_id = {int(s.show_id): s for s in shows}
+# Backfill up to 20 missing shows so tiles have posters/titles
+for tmdb_id in missing_ids[:20]:
+    data = await _tmdb_tv_details(int(tmdb_id))
+    if not data:
+        continue
+    title = data.get("name") or data.get("title") or f"TMDb #{tmdb_id}"
+    poster_path = data.get("poster_path")
 
-    out: List[dict] = []
-    for tmdb_id in fav_ids:
-        s = by_id.get(int(tmdb_id))
-        if s:
-            poster_path = getattr(s, "poster_path", None)
-            poster_url = getattr(s, "poster_url", None)
-            if not poster_url and poster_path:
-                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+    ins_show = pg_insert(Show.__table__).values(
+        show_id=int(tmdb_id),
+        title=title,
+        poster_path=poster_path,
+        external_id=int(tmdb_id),
+    ).on_conflict_do_nothing(index_elements=["show_id"])
+    await db.execute(ins_show)
 
-            out.append({
-                "tmdb_id": int(tmdb_id),
-                "show_id": int(s.show_id),
-                "title": getattr(s, "title", None),
-                "year": int(getattr(s, "year", 0)) if getattr(s, "year", None) is not None else None,
-                "poster_path": poster_path,
-                "poster_url": poster_url,
-            })
-        else:
-            # Fallback if show not in local DB yet
-            out.append({
-                "tmdb_id": int(tmdb_id),
-                "show_id": int(tmdb_id),
-                "title": f"TMDb #{int(tmdb_id)}",
-                "year": None,
-                "poster_path": None,
-                "poster_url": None,
-            })
+if missing_ids:
+    await db.commit()
+    shows2 = (await db.execute(select(Show).where(Show.show_id.in_(missing_ids)))).scalars().all()
+    for s in shows2:
+        by_id[int(s.show_id)] = s
 
-    return out
+out: List[dict] = []
+for tmdb_id in fav_ids:
+    s = by_id.get(int(tmdb_id))
+    if s:
+        poster_path = getattr(s, "poster_path", None)
+        poster_url = getattr(s, "poster_url", None)
+        if not poster_url and poster_path:
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+
+        out.append({
+            "tmdb_id": int(tmdb_id),
+            "show_id": int(s.show_id),
+            "title": getattr(s, "title", None),
+            "year": int(getattr(s, "year", 0)) if getattr(s, "year", None) is not None else None,
+            "poster_path": poster_path,
+            "poster_url": poster_url,
+        })
+    else:
+        out.append({
+            "tmdb_id": int(tmdb_id),
+            "show_id": int(tmdb_id),
+            "title": f"TMDb #{int(tmdb_id)}",
+            "year": None,
+            "poster_path": None,
+            "poster_url": None,
+        })
+
+return out
 
 @router.post("/{user_id}/favorites/{tmdb_id}")
 async def add_favorite_path(
@@ -208,50 +242,30 @@ async def add_favorite_path(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
-    # 1) Add favorite (idempotent)
-    ins = pg_insert(FavoriteTmdb.__table__).values(
-        user_id=user_id,
-        tmdb_id=tmdb_id,
-    ).on_conflict_do_nothing(
-        index_elements=["user_id", "tmdb_id"]
-    )
-    await db.execute(ins)
+# Ensure show exists in local `shows` so Favorites tiles have posters/titles.
+exists = await db.scalar(select(Show.show_id).where(Show.show_id == tmdb_id))
+if not exists:
+    data = await _tmdb_tv_details(int(tmdb_id))
+    if data:
+        title = data.get("name") or data.get("title") or f"TMDb #{tmdb_id}"
+        poster_path = data.get("poster_path")
+        ins_show = pg_insert(Show.__table__).values(
+            show_id=int(tmdb_id),
+            title=title,
+            poster_path=poster_path,
+            external_id=int(tmdb_id),
+        ).on_conflict_do_nothing(index_elements=["show_id"])
+        await db.execute(ins_show)
+        await db.commit()
 
-    # 2) Ensure the show exists in our local `shows` table so Favorites tiles can render
-    exists = await db.scalar(select(Show.show_id).where(Show.show_id == tmdb_id))
-    if not exists:
-        try:
-            import os
-            import httpx
-
-            api_key = os.getenv("TMDB_API_KEY")
-            if api_key:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    r = await client.get(
-                        "https://api.themoviedb.org/3/tv/{tmdb_id}".format(tmdb_id=tmdb_id),
-                        params={"api_key": api_key},
-                    )
-                if r.status_code == 200:
-                    data = r.json()
-                    title = data.get("name") or data.get("title") or f"TMDb #{tmdb_id}"
-                    poster_path = data.get("poster_path")
-                    first_air = data.get("first_air_date") or ""
-                    year = None
-                    if len(first_air) >= 4 and first_air[:4].isdigit():
-                        year = int(first_air[:4])
-
-                    db.add(Show(
-                        show_id=tmdb_id,
-                        title=title,
-                        poster_path=poster_path,
-                        year=year,
-                    ))
-        except Exception:
-            # Best-effort; favorite still succeeds even if TMDb fetch fails
-            pass
-
-    await db.commit()
-    return {"ok": True}
+# Add favorite (idempotent)
+ins = pg_insert(FavoriteTmdb.__table__).values(
+    user_id=user_id,
+    tmdb_id=tmdb_id,
+).on_conflict_do_nothing(index_elements=["user_id", "tmdb_id"])
+await db.execute(ins)
+await db.commit()
+return {"ok": True}
 
 @router.delete("/{user_id}/favorites/{tmdb_id}")
 async def remove_favorite_path(

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Path, Body
 from pydantic import BaseModel, Field
-from sqlalchemy import select, and_, delete, distinct
+from sqlalchemy import select, and_, delete, distinct, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # PG UPSERT
 
@@ -149,25 +149,19 @@ async def upsert_rating_body(
 
 @router.get("/{user_id}/favorites")
 async def list_favorites_for_user(
-    user_id: int = Path(ge=1),
-    _: Any = Depends(require_user),
+    user_id: int,
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict]:
-    # Unique tmdb ids first (avoid join dupes)
-    fav_ids = (
-        await db.execute(
-            select(distinct(FavoriteTmdb.tmdb_id)).where(FavoriteTmdb.user_id == user_id)
-        )
-    ).scalars().all()
-
-    # Normalize + drop nulls
-    fav_ids = [int(x) for x in fav_ids if x is not None]
+    res = await db.execute(
+        text("SELECT tmdb_id FROM user_favorites WHERE user_id = :uid"),
+        {"uid": user_id},
+    )
+    fav_ids = [int(x) for (x,) in res.fetchall() if x is not None]
 
     if not fav_ids:
         return []
 
-    # ✅ Enrich using Show.show_id (TMDb id / PK in your schema)
-    shows: List[Show] = (
+    shows = (
         await db.execute(select(Show).where(Show.show_id.in_(fav_ids)))
     ).scalars().all()
 
@@ -186,8 +180,8 @@ async def list_favorites_for_user(
                 {
                     "tmdb_id": int(tmdb_id),
                     "show_id": int(s.show_id),
-                    "title": getattr(s, "title", None),
-                    "year": int(getattr(s, "year", 0)) if getattr(s, "year", None) is not None else None,
+                    "title": s.title,
+                    "year": int(s.year) if getattr(s, "year", None) is not None else None,
                     "poster_path": poster_path,
                     "poster_url": poster_url,
                 }
@@ -205,6 +199,8 @@ async def list_favorites_for_user(
             )
 
     return out
+
+
 
 @router.post("/{user_id}/favorites/{tmdb_id}")
 async def add_favorite_path(

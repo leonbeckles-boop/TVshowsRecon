@@ -78,20 +78,15 @@ async def _try_show_query(db: AsyncSession, sql: str, params: dict) -> Optional[
 async def _fetch_show_from_db(db: AsyncSession, tmdb_id: int) -> Optional[Dict[str, Any]]:
     """Fetch show metadata from local DB.
 
-    NOTE: Your production DB currently errors on 'poster_path' missing, so we try multiple
-    column variants to stay compatible with whichever schema is deployed.
+    NOTE: We try a couple of safe column variants (poster_path / poster_url) to tolerate minor schema drift.
     """
     variants = [
-        # Most common
+        # Production schema (Render) currently has: show_id, title, year, poster_path, poster_url
+        # Prefer poster_path but fall back to poster_url if poster_path is blank.
+        "SELECT show_id, title, COALESCE(NULLIF(poster_path, ''), NULLIF(poster_url, '')) AS poster, year FROM shows WHERE show_id = :sid",
+        # Fallbacks (in case COALESCE/NULLIF behaves unexpectedly with non-text types)
         "SELECT show_id, title, poster_path AS poster, year FROM shows WHERE show_id = :sid",
-        # Alternate poster column
-        "SELECT show_id, title, poster AS poster, year FROM shows WHERE show_id = :sid",
-        # Some schemas store full URL
         "SELECT show_id, title, poster_url AS poster, year FROM shows WHERE show_id = :sid",
-        # Year sometimes named release_year
-        "SELECT show_id, title, poster_path AS poster, release_year AS year FROM shows WHERE show_id = :sid",
-        "SELECT show_id, title, poster AS poster, release_year AS year FROM shows WHERE show_id = :sid",
-        "SELECT show_id, title, poster_url AS poster, release_year AS year FROM shows WHERE show_id = :sid",
     ]
 
     row: Optional[Dict[str, Any]] = None

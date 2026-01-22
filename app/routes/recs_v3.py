@@ -15,6 +15,74 @@ from app.db.session import get_async_session
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
+
+async def _fetch_show_stub_from_db(db: AsyncSession, tmdb_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch minimal show info from our `shows` table.
+
+    Uses a single, schema-safe expression for the poster:
+      COALESCE(NULLIF(poster_path,''), NULLIF(poster_url,''))
+
+    Returns None if the show isn't present.
+    """
+    try:
+        sql = text(
+            """
+            SELECT
+              show_id,
+              title,
+              year,
+              COALESCE(NULLIF(poster_path, ''), NULLIF(poster_url, '')) AS poster
+            FROM shows
+            WHERE show_id = :sid
+            """
+        )
+        res = await db.execute(sql, {"sid": int(tmdb_id)})
+        row = res.first()
+        if not row:
+            return None
+
+        poster = row.poster
+        poster_url = None
+        poster_path = None
+        if poster:
+            if isinstance(poster, str) and poster.startswith("http"):
+                poster_url = poster
+            else:
+                poster_path = str(poster)
+                poster_url = f"{TMDB_IMG}/{poster_path.lstrip('/')}"
+        return {
+            "tmdb_id": int(row.show_id),
+            "show_id": int(row.show_id),
+            "title": row.title,
+            "year": row.year,
+            "poster_path": poster_path,
+            "poster_url": poster_url,
+        }
+    except Exception:
+        # If the DB query fails for any reason, don't take down recs; we'll fall back to TMDb.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return None
+
+
+async def _details_db_or_tmdb(db: AsyncSession, tmdb_id: int) -> Dict[str, Any]:
+    """Prefer DB for title/year/poster (fast), fall back to TMDb for full metadata."""
+    stub = await _fetch_show_stub_from_db(db, tmdb_id)
+    if stub and stub.get("title") and not str(stub["title"]).startswith("TMDb #"):
+        year = stub.get("year")
+        return {
+            "tmdb_id": int(tmdb_id),
+            "name": stub.get("title"),
+            "first_air_date": f"{int(year)}-01-01" if year else None,
+            "poster_path": stub.get("poster_path"),
+            "poster_url": stub.get("poster_url"),
+            "genres": [],
+            "original_language": None,
+        }
+    return await _tmdb_details(int(tmdb_id))
+
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
 
 # Require at least this many favourites before we serve any recs
@@ -477,6 +545,17 @@ def _mmr_diversify(
 @router.get("/diag-ez")
 async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
+
+
+@router.get("", summary="Recommendations v3 (query param form)")
+async def get_recs_v3_query(
+    user_id: int = Query(..., ge=1),
+    limit: int = Query(60, ge=1, le=200),
+    flat: int = Query(1, ge=0, le=1),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Supports /api/recs/v3?user_id=1&limit=60&flat=1"""
+    return await get_recs_v3(user_id=user_id, limit=limit, flat=flat, db=db)
 
 
 @router.get("/{user_id}")

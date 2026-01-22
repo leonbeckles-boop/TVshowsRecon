@@ -479,30 +479,6 @@ async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
 
-
-@router.get("", summary="Get Recs V3 (query param)", tags=["recs_v3"])
-async def get_recs_v3_query(
-    user_id: int = Query(..., description="User id"),
-    limit: int = Query(60, ge=1, le=200),
-    flat: int = Query(1, description="Return flat list if 1, else grouped"),
-    tmdb_w: float = Query(0.5, ge=0.0, le=1.0),
-    reddit_w: float = Query(0.5, ge=0.0, le=1.0),
-    personal_w: float = Query(0.0, ge=0.0, le=1.0),
-    mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
-    session: AsyncSession = Depends(get_async_session),
-):
-    """Compatibility endpoint for the frontend (supports /api/recs/v3?user_id=...)."""
-    return await get_recs_v3(
-        user_id=user_id,
-        limit=limit,
-        flat=flat,
-        tmdb_w=tmdb_w,
-        reddit_w=reddit_w,
-        personal_w=personal_w,
-        mmr_lambda=mmr_lambda,
-        session=session,
-    )
-
 @router.get("/{user_id}")
 async def get_recs_v3(
     user_id: int,

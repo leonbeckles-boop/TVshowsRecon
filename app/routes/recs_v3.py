@@ -489,7 +489,7 @@ async def get_recs_v3_query(
     reddit_w: float = Query(0.5, ge=0.0, le=1.0),
     personal_w: float = Query(0.0, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Compatibility endpoint for the frontend (supports /api/recs/v3?user_id=...)."""
     return await get_recs_v3(

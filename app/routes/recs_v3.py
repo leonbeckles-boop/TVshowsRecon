@@ -10,29 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-try:
-    from app.db.session import get_session_dep as get_session_dep
-except ImportError:  # older name
-    from app.db.session import get_async_db as get_session_dep
+from app.database import get_async_db
+
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
-
-@router.get(
-    "",
-    summary="Get recommendations (v3) using query parameters",
-    name="get_recs_v3_query",
-)
-async def get_recs_v3_query(
-    user_id: int = Query(..., description="User id", alias="user_id"),
-    limit: int = Query(60, ge=1, le=200),
-    flat: int = Query(1, description="1 = flat list, 0 = grouped"),
-    session = Depends(get_session_dep),
-):
-    # Delegate to the path-param endpoint for consistent logic
-    return await get_recs_v3(user_id=user_id, limit=limit, flat=flat, session=session)
-
 
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
@@ -496,6 +479,30 @@ async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
 
+
+@router.get("", summary="Get Recs V3 (query param)", tags=["recs_v3"])
+async def get_recs_v3_query(
+    user_id: int = Query(..., description="User id"),
+    limit: int = Query(60, ge=1, le=200),
+    flat: int = Query(1, description="Return flat list if 1, else grouped"),
+    tmdb_w: float = Query(0.5, ge=0.0, le=1.0),
+    reddit_w: float = Query(0.5, ge=0.0, le=1.0),
+    personal_w: float = Query(0.0, ge=0.0, le=1.0),
+    mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compatibility endpoint for the frontend (supports /api/recs/v3?user_id=...)."""
+    return await get_recs_v3(
+        user_id=user_id,
+        limit=limit,
+        flat=flat,
+        tmdb_w=tmdb_w,
+        reddit_w=reddit_w,
+        personal_w=personal_w,
+        mmr_lambda=mmr_lambda,
+        db=db,
+    )
+
 @router.get("/{user_id}")
 async def get_recs_v3(
     user_id: int,
@@ -505,7 +512,7 @@ async def get_recs_v3(
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
-    session: AsyncSession = Depends(get_session_dep),
+    session: AsyncSession = Depends(get_async_db),
 ) -> Any:
     """
     v3 recommendations:
@@ -780,7 +787,7 @@ async def get_recs_v3(
 async def explain_recs_v3_for_show(
     user_id: int,
     tmdb_id: int,
-    session: AsyncSession = Depends(get_session_dep),
+    session: AsyncSession = Depends(get_async_db),
 ) -> Dict[str, Any]:
     """
     Explain why recs_v3 thinks this show fits the user's taste.

@@ -286,7 +286,7 @@ export async function removeFavorite(
 
 // Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
 export async function listRatings(userId: number, ..._rest: any[]): Promise<UserRating[]> {
-  const r = await http<any>(`/ratings/ratings?user_id=${userId}`, { method: "GET" });
+  const r = await http<any>(`/library/${userId}/ratings`, { method: "GET" });
   if (Array.isArray(r)) return r as UserRating[];
   if (Array.isArray((r as any)?.ratings)) return (r as any).ratings as UserRating[];
   return [];
@@ -298,7 +298,7 @@ export async function upsertRating(
   payload: UserRating,
   ..._rest: any[]
 ): Promise<UserRating> {
-  return http<UserRating>(`/ratings/ratings?user_id=${userId}`, {
+  return http<UserRating>(`/library/${userId}/ratings`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -307,7 +307,7 @@ export async function upsertRating(
 // Not interested
 export async function listNotInterested(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return http<any[]>(`/users/${uid}/not_interested`, { method: "GET" });
+  return http<any[]>(`/library/${uid}/not_interested`, { method: "GET" });
 }
 
 
@@ -319,7 +319,7 @@ export async function markNotInterested(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/users/${uid}/not_interested/${tmdbId}`, { method: "POST" });
+  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
 
@@ -332,7 +332,7 @@ export async function removeNotInterested(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/users/${uid}/not_interested/${tmdbId}`, { method: "DELETE" });
+  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "DELETE" });
   return { ok: true };
 }
 

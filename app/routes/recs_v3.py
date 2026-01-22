@@ -303,23 +303,51 @@ async def _fetch_reddit_candidates(
     block_ids: set[int],
 ) -> List[Dict[str, Any]]:
     """
-    Pull per-user reddit recs from user_reddit_pairs.
-    Returns list[ { tmdb_id, score_raw } ], already filtered.
-    """
-    raw_limit = max(limit * 3, limit)
+    Build reddit-based candidates from the global `reddit_pairs` table + the user's favorites.
 
+    Returns list[ { tmdb_id, score_raw, source } ], already filtered against `block_ids`.
+
+    Schema notes (Render DB):
+      - reddit_pairs(tmdb_id_a, tmdb_id_b, pair_weight, pair_count, ...)
+      - user_favorites(user_id, tmdb_id)
+      - not_interested(user_id, tmdb_id)
+    """
+    raw_limit = max(limit * 6, limit)
+
+    # Join the user's favorites against reddit_pairs in either direction, then aggregate.
     sql = text(
         """
-        SELECT suggested_tmdb_id AS tmdb_id, weight
-        FROM user_reddit_pairs
-        WHERE user_id = :uid
+        WITH favs AS (
+            SELECT tmdb_id
+            FROM user_favorites
+            WHERE user_id = :uid
+        ),
+        expanded AS (
+            SELECT
+                CASE
+                    WHEN rp.tmdb_id_a = f.tmdb_id THEN rp.tmdb_id_b
+                    ELSE rp.tmdb_id_a
+                END AS tmdb_id,
+                rp.pair_weight AS weight
+            FROM reddit_pairs rp
+            JOIN favs f
+              ON (rp.tmdb_id_a = f.tmdb_id OR rp.tmdb_id_b = f.tmdb_id)
+        ),
+        blocked AS (
+            SELECT tmdb_id FROM favs
+            UNION
+            SELECT tmdb_id FROM not_interested WHERE user_id = :uid
+        )
+        SELECT e.tmdb_id, SUM(e.weight) AS weight
+        FROM expanded e
+        WHERE e.tmdb_id NOT IN (SELECT tmdb_id FROM blocked)
+        GROUP BY e.tmdb_id
         ORDER BY weight DESC
         LIMIT :limit
         """
     )
-    res = await session.execute(
-        sql, {"uid": user_id, "limit": raw_limit}
-    )
+
+    res = await session.execute(sql, {"uid": user_id, "limit": raw_limit})
     rows = res.mappings().all()
 
     items: List[Dict[str, Any]] = []
@@ -331,7 +359,7 @@ async def _fetch_reddit_candidates(
             {
                 "tmdb_id": tid,
                 "score_raw": float(r["weight"] or 0.0),
-                "source": "reddit_v3",
+                "source": "reddit_pairs",
             }
         )
     return items
@@ -493,7 +521,7 @@ async def get_recs_v3(
     """
     v3 recommendations:
       - candidates from:
-          * user_reddit_pairs (per-user reddit recs)
+          * reddit_pairs (global co-mention pairs from Reddit)
           * TMDB /tv/{fav}/recommendations for user's favourites
           * TMDB /trending/tv/week filtered by user's taste
       - filter out favourites + not-interested

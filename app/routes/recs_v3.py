@@ -292,12 +292,12 @@ async def _fetch_reddit_candidates_from_pairs(
         """
         SELECT
             CASE
-                WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
+                WHEN rp.tmdb_id_a IN (:favs) THEN rp.tmdb_id_b
                 ELSE rp.tmdb_id_a
             END AS tmdb_id,
             SUM(rp.pair_weight) AS weight
         FROM reddit_pairs rp
-        WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
+        WHERE (rp.tmdb_id_a IN (:favs) OR rp.tmdb_id_b IN (:favs))
         GROUP BY 1
         ORDER BY weight DESC NULLS LAST
         LIMIT :limit
@@ -311,6 +311,10 @@ async def _fetch_reddit_candidates_from_pairs(
         res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
     except Exception:
         # If table doesn't exist or SQL error, just skip reddit influence
+        try:
+            print("reddit_pairs query failed; skipping reddit candidates", flush=True)
+        except Exception:
+            pass
         log.exception("reddit_pairs query failed; skipping reddit candidates")
         return []
 
@@ -710,7 +714,12 @@ async def get_recs_v3(
 
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        # Ensure something shows up even if logging config is minimal on Render
+        try:
+            print("recs_v3 exception:", repr(e), flush=True)
+        except Exception:
+            pass
         log.exception("recs_v3 failed user_id=%s limit=%s flat=%s", user_id, limit, flat)
         raise HTTPException(status_code=500, detail="Internal error in recs_v3")
 

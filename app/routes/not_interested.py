@@ -8,7 +8,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
-from app.security import require_user
+from app.security import require_user, require_user_match
 from app.db_models import NotInterested  # added in step 1
 
 router = APIRouter(prefix="/users", tags=["Not Interested"])
@@ -19,7 +19,7 @@ class HiddenOut(BaseModel):
 @router.get("/{user_id}/not-interested", response_model=List[HiddenOut])
 async def list_not_interested(
     user_id: int = Path(..., ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ):
     rows = (await db.execute(
@@ -31,7 +31,7 @@ async def list_not_interested(
 async def add_not_interested(
     user_id: int = Path(..., ge=1),
     tmdb_id: int = Path(..., ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ):
     # upsert-ish: if exists, do nothing (idempotent)
@@ -51,7 +51,7 @@ async def add_not_interested(
 async def remove_not_interested(
     user_id: int = Path(..., ge=1),
     tmdb_id: int = Path(..., ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ):
     await db.execute(

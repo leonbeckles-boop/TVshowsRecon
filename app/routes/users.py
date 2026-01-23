@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
 from app.db_models import FavoriteTmdb, Show, NotInterested
-from app.security import require_user
+from app.security import require_user, require_user_match
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -33,7 +33,7 @@ def _serialize_show(s: Show) -> dict[str, Any]:
 @router.get("/{user_id}/favorites")
 async def list_favorites(
     user_id: int,
-    _: Any = Depends(require_user),  # enforce ownership via JWT
+    _: Any = Depends(require_user_match),  # enforce ownership via JWT
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict[str, Any]]:
     fav_rows = (await db.execute(
@@ -54,7 +54,7 @@ async def list_favorites(
 async def add_favorite(
     user_id: int,
     tmdb_id: int = Path(..., ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict[str, Any]:
     existing = (
@@ -76,7 +76,7 @@ async def add_favorite(
 async def remove_favorite(
     user_id: int,
     tmdb_id: int = Path(..., ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict[str, Any]:
     row = (
@@ -98,7 +98,7 @@ async def remove_favorite(
 async def hide_show_path(
     user_id: int = Path(ge=1),
     tmdb_id: int = Path(ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     exists = (await db.execute(
@@ -114,7 +114,7 @@ async def hide_show_path(
 @router.get("/{user_id}/not_interested")
 async def list_hidden_for_user(
     user_id: int = Path(ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ) -> List[int]:
     ids = (

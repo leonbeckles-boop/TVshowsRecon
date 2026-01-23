@@ -13,9 +13,9 @@ from app.db_models import UserRating
 
 # Auth dependency (use whatever you already use elsewhere)
 try:
-    from app.routes.auth import require_user
+    from app.routes.auth import require_user, require_user_match
 except Exception:
-    from app.security import require_user  # fallback
+    from app.security import require_user, require_user_match  # fallback
 
 # IMPORTANT: expose under /api/users/...
 # We'll mount with prefix="/api" in main, so final paths are /api/users/{user_id}/ratings
@@ -46,7 +46,7 @@ class RatingsResponse(BaseModel):
 @router.get("/{user_id}/ratings", response_model=RatingsResponse, summary="List ratings for a user (path style)")
 async def list_ratings_for_user(
     user_id: int = Path(ge=1),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ):
     rows = (await db.execute(
@@ -71,7 +71,7 @@ async def list_ratings_for_user(
 async def upsert_rating_for_user(
     user_id: int = Path(ge=1),
     payload: RatingIn = Body(...),
-    _: Any = Depends(require_user),
+    _: Any = Depends(require_user_match),
     db: AsyncSession = Depends(get_async_db),
 ) -> Dict[str, Any]:
     existing = (await db.execute(

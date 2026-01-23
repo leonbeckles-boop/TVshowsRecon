@@ -8,7 +8,7 @@
  * API conventions in this codebase (as used by existing pages/components):
  * - Auth: /api/auth/login, /api/auth/register
  * - Me:   /api/me
- * - Library (legacy): /api/library/{userId}/favorites|ratings|not_interested
+ * - User Library: /api/users/{userId}/favorites|not-interested and /api/ratings/ratings
  * - Shows: /api/shows/{tmdbId} and /api/shows/{tmdbId}/posts
  * - Recs:  /api/recs, /api/recs/v2, /api/recs/v3
  * - Discover: /api/discover
@@ -286,7 +286,7 @@ export async function removeFavorite(
 
 // Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
 export async function listRatings(userId: number, ..._rest: any[]): Promise<UserRating[]> {
-  const r = await http<any>(`/library/${userId}/ratings`, { method: "GET" });
+  const r = await http<any>(`/ratings/ratings?user_id=${userId}`, { method: "GET" });
   if (Array.isArray(r)) return r as UserRating[];
   if (Array.isArray((r as any)?.ratings)) return (r as any).ratings as UserRating[];
   return [];
@@ -298,16 +298,16 @@ export async function upsertRating(
   payload: UserRating,
   ..._rest: any[]
 ): Promise<UserRating> {
-  return http<UserRating>(`/library/${userId}/ratings`, {
+  return http<UserRating>(`/ratings/ratings`, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, user_id: userId }),
   });
 }
 
 // Not interested
 export async function listNotInterested(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
-  return http<any[]>(`/library/${uid}/not_interested`, { method: "GET" });
+  return http<any[]>(`/users/${uid}/not-interested`, { method: "GET" });
 }
 
 
@@ -319,7 +319,7 @@ export async function markNotInterested(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "POST" });
+  await http(`/users/${uid}/not-interested/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
 
@@ -332,7 +332,7 @@ export async function removeNotInterested(
   const uid = arg2 === undefined ? (await me()).id : arg1;
   const tmdbId = arg2 === undefined ? arg1 : arg2;
 
-  await http(`/library/${uid}/not_interested/${tmdbId}`, { method: "DELETE" });
+  await http(`/users/${uid}/not-interested/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
 
@@ -384,11 +384,11 @@ export async function getRecsV3(
     userId = (await me()).id;
   }
 
-  const qs = new URLSearchParams(
-    { user_id: String(userId), ...((opts as any) ?? {}) } as any
-  ).toString();
+  const qs = new URLSearchParams({ ...((opts as any) ?? {}) } as any).toString();
 
-  return http<RecItem[]>(`/recs/v3?${qs}`, { method: "GET" });
+  return http<RecItem[]>(`/recs/v3/${userId}?${qs}`, { method: "GET" });
+
+
 }
 
 // Some components hit these endpoints directly:

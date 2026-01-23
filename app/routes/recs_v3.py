@@ -3,10 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-import logging
 from typing import Any, Dict, List
-
-log = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -298,70 +295,6 @@ async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int
             continue
     return favs
 
-
-
-async def _fetch_reddit_candidates_from_pairs(
-    session: AsyncSession,
-    user_id: int,
-    *,
-    limit: int,
-    exclude_ids: set[int],
-) -> list[tuple[int, float]]:
-    """Fallback when user_reddit_pairs isn't available.
-
-    Uses reddit_pairs + user's favorites to generate candidates.
-    Returns (tmdb_id, score) sorted desc.
-    """
-    fav_ids = await _fetch_user_favorites(session, user_id)
-    if not fav_ids:
-        return []
-
-    # Exclude the user's own favorites and any explicit excludes.
-    exclude_all = set(exclude_ids) | set(fav_ids)
-
-    from sqlalchemy import bindparam
-
-    sql = text(
-        """
-        WITH favs AS (
-          SELECT UNNEST(:fav_ids) AS fav_id
-        ),
-        pairs AS (
-          SELECT
-            CASE
-              WHEN rp.tmdb_id_a = f.fav_id THEN rp.tmdb_id_b
-              ELSE rp.tmdb_id_a
-            END AS other_id,
-            rp.pair_weight AS w
-          FROM reddit_pairs rp
-          JOIN favs f
-            ON rp.tmdb_id_a = f.fav_id OR rp.tmdb_id_b = f.fav_id
-        )
-        SELECT other_id AS tmdb_id, SUM(w) AS score
-        FROM pairs
-        GROUP BY other_id
-        ORDER BY score DESC
-        LIMIT :lim
-        """
-    ).bindparams(bindparam("fav_ids", expanding=True))
-
-    try:
-        res = await session.execute(sql, {"fav_ids": fav_ids, "lim": int(limit * 3)})
-        rows = [(int(r.tmdb_id), float(r.score or 0.0)) for r in res]
-    except Exception:
-        # If anything fails here, don't take the whole endpoint down.
-        await session.rollback()
-        log.exception("reddit_pairs fallback failed")
-        return []
-
-    out: list[tuple[int, float]] = []
-    for tmdb_id, score in rows:
-        if tmdb_id in exclude_all:
-            continue
-        out.append((tmdb_id, score))
-        if len(out) >= limit:
-            break
-    return out
 
 async def _fetch_reddit_candidates(
     session: AsyncSession,
@@ -824,12 +757,7 @@ async def get_recs_v3(
     except HTTPException:
         raise
     except Exception:
-            try:
-                await session.rollback()
-            except Exception:
-                pass
-            log.exception(\"Internal error in recs_v3\")
-            raise HTTPException(status_code=500, detail=\"Internal error in recs_v3\")
+        raise HTTPException(status_code=500, detail="Internal error in recs_v3")
 
 @router.get("/explain/{user_id}/{tmdb_id}")
 async def explain_recs_v3_for_show(

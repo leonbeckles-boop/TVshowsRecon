@@ -73,7 +73,7 @@ def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -
 # ───────────────── Mount routers (no /api duplication) ─────────────────
 _include("app.routes.recs_v3", name_hint="recs_v3")
 _include("app.routes.discover", name_hint="discover")
-# _include("app.routes.library", name_hint="library")  # disabled: old /library router
+_include("app.routes.library", name_hint="library")
 _include("app.routes.ratings", name_hint="ratings")
 _include("app.routes.users", name_hint="users")
 _include("app.routes.shows", name_hint="shows")

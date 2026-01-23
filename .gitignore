@@ -49,3 +49,7 @@ folder_tree.txt
 # ---- Local images / temp ----
 logo1.png
 
+*.dump
+*.sql
+*.backup
+*.bak

@@ -70,7 +70,7 @@ _include("app.routes.recs_v3", name_hint="recs v3")
 _include("app.routes.discover", name_hint="discover")
 
 # library/favorites/ratings/users/shows/tmdb/auth/admin (only if present in your repo)
-_include("app.routes.library", name_hint="library")
+##_include("app.routes.library", name_hint="library")
 _include("app.routes.ratings", name_hint="ratings")
 _include("app.routes.users", name_hint="users")
 _include("app.routes.shows", name_hint="shows")

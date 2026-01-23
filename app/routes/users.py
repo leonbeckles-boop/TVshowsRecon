@@ -20,6 +20,8 @@ TMDB_KEY = os.getenv("TMDB_API_KEY") or os.getenv("TMDB_KEY")
 router = APIRouter(prefix="/users", tags=["Users"])
 
 
+
+
 async def _tmdb_details_min(tmdb_id: int) -> dict[str, Any]:
     """
     Minimal TMDb enrichment for favorites when our shows table is missing fields.
@@ -92,7 +94,7 @@ async def list_favorites(
     _: Any = Depends(require_user_match),  # enforce ownership via JWT
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict[str, Any]]:
-    # Pull favorites in a stable order
+    # Pull favorites in stable order
     fav_rows = (
         (await db.execute(
             select(FavoriteTmdb)
@@ -102,14 +104,12 @@ async def list_favorites(
         .scalars()
         .all()
     )
-    if not item.get("poster_path"):
-        extra = await _tmdb_details_min(int(tid))
 
     tmdb_ids = [int(fr.tmdb_id) for fr in fav_rows if fr.tmdb_id is not None]
     if not tmdb_ids:
         return []
 
-    # Fetch any Show rows we have for those tmdb ids
+    # Fetch Show rows we already have
     shows = (
         (await db.execute(select(Show).where(Show.show_id.in_(tmdb_ids))))
         .scalars()
@@ -119,40 +119,43 @@ async def list_favorites(
 
     out: list[dict[str, Any]] = []
 
-    # Build response in the same order as favorites
     for tid in tmdb_ids:
         s = show_by_id.get(int(tid))
+
+        # Always define item
         if s:
             item = _serialize_show(s)
-
-            # If DB is missing poster/title/year, enrich from TMDb (minimal call)
-            if (not item.get("poster_path")) or (not item.get("title")) or (item.get("year") is None):
-                extra = await _tmdb_details_min(int(tid))
-                if extra:
-                    item["poster_path"] = item.get("poster_path") or extra.get("poster_path")
-                    if not item.get("poster_url") and item.get("poster_path"):
-                        item["poster_url"] = f"{TMDB_IMG}{item['poster_path']}"
-                    item["title"] = item.get("title") or extra.get("title")
-                    if item.get("year") is None:
-                        item["year"] = extra.get("year")
-
-            out.append(item)
         else:
-            # No Show row in DB -> still return something usable
+            item = {
+                "show_id": int(tid),
+                "title": None,
+                "year": None,
+                "poster_path": None,
+                "poster_url": None,
+                "external_id": int(tid),
+            }
+
+        # Enrich from TMDb when poster/title/year missing
+        if (not item.get("poster_path")) or (not item.get("title")) or (item.get("year") is None):
             extra = await _tmdb_details_min(int(tid))
-            poster_path = extra.get("poster_path") if extra else None
-            out.append(
-                {
-                    "show_id": int(tid),
-                    "title": extra.get("title") if extra else None,
-                    "year": extra.get("year") if extra else None,
-                    "poster_path": poster_path,
-                    "poster_url": f"{TMDB_IMG}{poster_path}" if poster_path else None,
-                    "external_id": int(tid),
-                }
-            )
+
+            if extra:
+                pp = extra.get("poster_path")
+                if pp and not item.get("poster_path"):
+                    item["poster_path"] = pp
+                    item["poster_url"] = f"{TMDB_IMG}{pp}"
+
+                if not item.get("title"):
+                    item["title"] = extra.get("title")
+
+                if item.get("year") is None:
+                    item["year"] = extra.get("year")
+
+        out.append(item)
 
     return out
+
+
 
 
 @router.post("/{user_id}/favorites/{tmdb_id}")

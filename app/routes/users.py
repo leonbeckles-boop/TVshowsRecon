@@ -14,7 +14,12 @@ from app.security import require_user, require_user_match
 router = APIRouter(prefix="/users", tags=["Users"])
 
 
+TMDB_IMG = "https://image.tmdb.org/t/p/w500"
+
 def _serialize_show(s: Show) -> dict[str, Any]:
+    poster_path = getattr(s, "poster_path", None)
+    poster_url = f"{TMDB_IMG}{poster_path}" if poster_path else None
+
     ext: Optional[int] = None
     if s.external_id is not None:
         try:
@@ -26,10 +31,11 @@ def _serialize_show(s: Show) -> dict[str, Any]:
         "show_id": int(s.show_id),
         "title": s.title,
         "year": int(s.year) if getattr(s, "year", None) is not None else None,
-        # DB column is poster_path (not poster_url)
-        "poster_path": getattr(s, "poster_path", None),
+        "poster_path": poster_path,
+        "poster_url": poster_url,
         "external_id": ext,
     }
+
 
 
 @router.get("/{user_id}/favorites")
@@ -44,14 +50,12 @@ async def list_favorites(
         .all()
     )
 
-    tmdb_ids = [fr.tmdb_id for fr in fav_rows]
+    tmdb_ids = [int(fr.tmdb_id) for fr in fav_rows if fr.tmdb_id is not None]
     if not tmdb_ids:
         return []
 
-    # Show.external_id is stored as STRING in DB
-    ext_ids = [str(i) for i in tmdb_ids]
     shows = (
-        (await db.execute(select(Show).where(Show.external_id.in_(ext_ids))))
+        (await db.execute(select(Show).where(Show.show_id.in_(tmdb_ids))))
         .scalars()
         .all()
     )

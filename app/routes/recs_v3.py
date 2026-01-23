@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 from typing import Any, Dict, List
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
+from app.security import require_user_match
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
+
+log = logging.getLogger("recs_v3")
 
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
@@ -25,17 +29,21 @@ MIN_FAVORITES = 3
 # TMDB helpers
 # ---------------------------------------------------------------------------
 
+def _tmdb_api_key() -> str | None:
+    """
+    Resolve TMDB API key from env.
+    IMPORTANT: TMDB_API is the base URL, not the key.
+    """
+    return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
+
+
 async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     """
     Fetch TV details for a tmdb_id from TMDB.
     Returns a dict with the same shape v1/v2 use:
       tmdb_id, name/title, overview, poster_path/url, genres, genre_ids, etc.
     """
-    api_key = (
-        os.environ.get("TMDB_API_KEY")
-        or os.environ.get("TMDB_KEY")
-        or os.environ.get("TMDB_API")
-    )
+    api_key = _tmdb_api_key()
     if not api_key:
         return {"tmdb_id": tmdb_id}
 
@@ -57,16 +65,16 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     poster_url = f"{TMDB_IMG}/{poster_path}" if poster_path else None
 
     genres_arr = data.get("genres") or []
-    genre_names = [
-        str(g.get("name")).strip()
-        for g in genres_arr
-        if g and g.get("name")
-    ]
-    genre_ids = [
-        int(g.get("id"))
-        for g in genres_arr
-        if g and isinstance(g.get("id"), int)
-    ]
+    genre_names = [str(g.get("name")).strip() for g in genres_arr if g and g.get("name")]
+
+    # TMDB genre ids are ints, but keep the guard anyway
+    genre_ids: list[int] = []
+    for g in genres_arr:
+        if not g:
+            continue
+        gid = g.get("id")
+        if isinstance(gid, int):
+            genre_ids.append(gid)
 
     return {
         "tmdb_id": tmdb_id,
@@ -86,11 +94,7 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     }
 
 
-async def _tmdb_recommendations_for_fav(
-    tmdb_id: int,
-    api_key: str,
-    max_n: int = 20,
-) -> List[int]:
+async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int = 20) -> List[int]:
     """
     Fetch TMDB recommendations for a single favourite show.
     Returns a list of recommended tmdb_ids (TV).
@@ -115,31 +119,19 @@ async def _tmdb_recommendations_for_fav(
     return out
 
 
-async def _fetch_tmdb_candidates(
-    fav_ids: List[int],
-    block_ids: set[int],
-    limit: int,
-) -> List[Dict[str, Any]]:
+async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit: int) -> List[Dict[str, Any]]:
     """
     Build TMDB-based candidate list from favourites using /tv/{id}/recommendations.
     Returns [{ tmdb_id, score_raw, source="tmdb_recs" }, ...].
     """
-    api_key = (
-        os.environ.get("TMDB_API_KEY")
-        or os.environ.get("TMDB_KEY")
-        or os.environ.get("TMDB_API")
-    )
+    api_key = _tmdb_api_key()
     if not api_key or not fav_ids:
         return []
 
     # Limit how many favourites we query to avoid spamming TMDB
-    max_favs = min(len(fav_ids), 10)
-    fav_slice = fav_ids[:max_favs]
+    fav_slice = fav_ids[: min(len(fav_ids), 10)]
 
-    tasks = [
-        _tmdb_recommendations_for_fav(fid, api_key, max_n=20)
-        for fid in fav_slice
-    ]
+    tasks = [_tmdb_recommendations_for_fav(fid, api_key, max_n=20) for fid in fav_slice]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     tmdb_ids: set[int] = set()
@@ -155,13 +147,7 @@ async def _fetch_tmdb_candidates(
 
     items: List[Dict[str, Any]] = []
     for tid in list(tmdb_ids)[: max(limit * 3, limit)]:
-        items.append(
-            {
-                "tmdb_id": tid,
-                "score_raw": 1.0,
-                "source": "tmdb_recs",
-            }
-        )
+        items.append({"tmdb_id": tid, "score_raw": 1.0, "source": "tmdb_recs"})
     return items
 
 
@@ -177,11 +163,7 @@ async def _fetch_tmdb_trending_candidates(
 
     Returns [{ tmdb_id, score_raw, source="tmdb_trending" }, ...].
     """
-    api_key = (
-        os.environ.get("TMDB_API_KEY")
-        or os.environ.get("TMDB_KEY")
-        or os.environ.get("TMDB_API")
-    )
+    api_key = _tmdb_api_key()
     if not api_key:
         return []
 
@@ -229,18 +211,10 @@ async def _fetch_tmdb_trending_candidates(
         except Exception:
             pop = 0.0
 
-        # Base weight from popularity, but softer than reddit/TMDB recs
-        # so trending is a "nudge", not the main driver.
         base = math.log10(1.0 + max(pop, 0.0))
-        score_raw = 0.3 + 0.4 * base  # was 0.5 + 1.0 * base
+        score_raw = 0.3 + 0.4 * base  # trending should be a nudge
 
-        items.append(
-            {
-                "tmdb_id": tid,
-                "score_raw": score_raw,
-                "source": "tmdb_trending",
-            }
-        )
+        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
         if len(items) >= max_items:
             break
 
@@ -270,7 +244,7 @@ async def _get_block_ids(session: AsyncSession, user_id: int) -> set[int]:
     )
     res = await session.execute(sql, {"uid": user_id})
     rows = res.mappings().all()
-    return {int(r["tmdb_id"]) for r in rows}
+    return {int(r["tmdb_id"]) for r in rows if r.get("tmdb_id") is not None}
 
 
 async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int]:
@@ -296,44 +270,76 @@ async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int
     return favs
 
 
-async def _fetch_reddit_candidates(
+async def _fetch_reddit_candidates_from_pairs(
     session: AsyncSession,
-    user_id: int,
+    fav_ids: List[int],
     limit: int,
     block_ids: set[int],
 ) -> List[Dict[str, Any]]:
     """
-    Pull per-user reddit recs from user_reddit_pairs.
-    Returns list[ { tmdb_id, score_raw } ], already filtered.
-    """
-    raw_limit = max(limit * 3, limit)
+    Build reddit candidates using the existing global reddit_pairs table,
+    using the user's favourites as anchors.
 
+    This replaces the old user_reddit_pairs dependency (which may not exist).
+    """
+    if not fav_ids:
+        return []
+
+    raw_limit = max(limit * 6, limit * 3, limit)
+
+    # We use expanding IN (...) params to avoid asyncpg ARRAY/ANY edge cases.
     sql = text(
         """
-        SELECT suggested_tmdb_id AS tmdb_id, weight
-        FROM user_reddit_pairs
-        WHERE user_id = :uid
-        ORDER BY weight DESC
+        SELECT
+            CASE
+                WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
+                ELSE rp.tmdb_id_a
+            END AS tmdb_id,
+            SUM(rp.pair_weight) AS weight
+        FROM reddit_pairs rp
+        WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
+        GROUP BY 1
+        ORDER BY weight DESC NULLS LAST
         LIMIT :limit
         """
+    ).bindparams(
+        bindparam("favs", expanding=True),
+        bindparam("limit"),
     )
-    res = await session.execute(
-        sql, {"uid": user_id, "limit": raw_limit}
-    )
-    rows = res.mappings().all()
 
+    try:
+        res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
+    except Exception:
+        # If table doesn't exist or SQL error, just skip reddit influence
+        log.exception("reddit_pairs query failed; skipping reddit candidates")
+        return []
+
+    rows = res.mappings().all()
     items: List[Dict[str, Any]] = []
+
     for r in rows:
-        tid = int(r["tmdb_id"])
-        if tid in block_ids:
+        tid = r.get("tmdb_id")
+        if tid is None:
             continue
-        items.append(
-            {
-                "tmdb_id": tid,
-                "score_raw": float(r["weight"] or 0.0),
-                "source": "reddit_v3",
-            }
-        )
+        try:
+            tid_i = int(tid)
+        except Exception:
+            continue
+        if tid_i in block_ids:
+            continue
+        w = r.get("weight") or 0.0
+        try:
+            w_f = float(w)
+        except Exception:
+            w_f = 0.0
+        if w_f <= 0:
+            continue
+
+        items.append({"tmdb_id": tid_i, "score_raw": w_f, "source": "reddit_pairs"})
+
+        if len(items) >= raw_limit:
+            break
+
     return items
 
 
@@ -352,18 +358,10 @@ def _normalise(vals: List[float]) -> List[float]:
 
 def _tmdb_quality(item: Dict[str, Any]) -> float:
     """
-    TMDB quality heuristic:
+    TMDB quality heuristic.
 
-    - IMDb-style confidence-adjusted rating:
-        rating_conf = (v / (v + m)) * R + (m / (v + m)) * C
-      where:
-        R = vote_average
-        v = vote_count
-        C = global mean (e.g. 6.5)
-        m = minimum votes threshold (e.g. 50)
-
-    - plus a log-squashed popularity bonus:
-        + 0.5 * log10(popularity + 1)
+    - confidence-adjusted rating (vote_average + vote_count)
+    - plus log-squashed popularity bonus
     """
     va = item.get("vote_average") or 0.0
     vc = item.get("vote_count") or 0
@@ -393,15 +391,13 @@ def _tmdb_quality(item: Dict[str, Any]) -> float:
         rating_conf = (v / (v + m)) * R + (m / (v + m)) * C
 
     pop_term = math.log10(1.0 + max(pop, 0.0))
-
     return float(rating_conf + 0.5 * pop_term)
 
 
 def _similarity(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     """
-    'Similarity' used for both MMR and favourite-similarity:
+    Similarity used for both MMR and favourite-similarity:
       - Jaccard over genre_ids
-      - extra weight only when there are 2+ overlapping genres
       - small bonus if language matches
     """
     ga = set(a.get("genre_ids") or [])
@@ -417,7 +413,6 @@ def _similarity(a: Dict[str, Any], b: Dict[str, Any]) -> float:
         if inter == 1:
             base *= 0.6
         elif inter >= 3:
-            # Slight boost when lots of genres line up
             base *= 1.1
 
     la = a.get("original_language")
@@ -428,16 +423,7 @@ def _similarity(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     return float(max(0.0, min(base, 1.0)))
 
 
-def _mmr_diversify(
-    items: List[Dict[str, Any]],
-    k: int,
-    mmr_lambda: float,
-) -> List[Dict[str, Any]]:
-    """
-    Basic MMR: greedily pick items maximising
-      λ * relevance - (1-λ) * max_sim_to_selected
-    where 'relevance' is item['score'].
-    """
+def _mmr_diversify(items: List[Dict[str, Any]], k: int, mmr_lambda: float) -> List[Dict[str, Any]]:
     if not items or k <= 0:
         return []
 
@@ -488,12 +474,13 @@ async def get_recs_v3(
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
+    _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Any:
     """
     v3 recommendations:
       - candidates from:
-          * user_reddit_pairs (per-user reddit recs)
+          * reddit_pairs (global) anchored on user favourites
           * TMDB /tv/{fav}/recommendations for user's favourites
           * TMDB /trending/tv/week filtered by user's taste
       - filter out favourites + not-interested
@@ -503,7 +490,6 @@ async def get_recs_v3(
           * score_reddit   (log weight)
           * score_tmdb     (quality)
           * score_personal (favourite-similarity + profile similarity)
-      - drop Talk / Soap & off-language content
       - combine with weights + optional MMR diversity
     """
     try:
@@ -532,22 +518,14 @@ async def get_recs_v3(
                 },
             }
 
-        # 3) Per-user Reddit candidates
-        reddit_base = await _fetch_reddit_candidates(session, user_id, limit, block_ids)
+        # 3) Reddit candidates (from global reddit_pairs anchored on favourites)
+        reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
         # 4) Favourite details for language/genre profile
-        fav_details: List[Dict[str, Any]] = []
-        if fav_ids:
-            fav_details = await asyncio.gather(
-                *[_tmdb_details(fid) for fid in fav_ids]
-            )
+        fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
 
         # Language profile
-        allowed_langs = {
-            d.get("original_language")
-            for d in fav_details
-            if d.get("original_language")
-        }
+        allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
 
         # Genre profile (counts for taste vector)
         fav_genre_counts: Dict[int, int] = {}
@@ -559,9 +537,7 @@ async def get_recs_v3(
                     continue
                 fav_genre_counts[g] = fav_genre_counts.get(g, 0) + 1
         fav_genres_all = set(fav_genre_counts.keys())
-        fav_genre_norm = math.sqrt(
-            sum(c * c for c in fav_genre_counts.values())
-        ) or 1.0
+        fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites
         tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
@@ -574,23 +550,17 @@ async def get_recs_v3(
             limit=limit,
         )
 
-        # 7) Merge & dedupe by tmdb_id
+        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > trending)
         by_id: Dict[int, Dict[str, Any]] = {}
 
-        # Lowest priority: trending
         for item in trending_base:
             by_id[item["tmdb_id"]] = item
-
-        # Override with TMDB recs
         for item in tmdb_base:
             by_id[item["tmdb_id"]] = item
-
-        # Highest priority: reddit
         for item in reddit_base:
             by_id[item["tmdb_id"]] = item
 
         base = list(by_id.values())
-
         if not base:
             if flat:
                 return []
@@ -604,23 +574,21 @@ async def get_recs_v3(
                     "w_reddit": w_reddit,
                     "w_personal": w_personal,
                     "mmr_lambda": mmr_lambda,
+                    "reason": "no_candidates",
                 },
             }
 
         # 8) Fetch TMDB details for candidates
         tmdb_ids = [b["tmdb_id"] for b in base]
-        details_list = await asyncio.gather(
-            *[_tmdb_details(tid) for tid in tmdb_ids]
-        )
+        details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []
-
         for base_item, det in zip(base, details_list):
-            merged = dict(det)
+            merged = dict(det or {})
             merged.setdefault("tmdb_id", base_item["tmdb_id"])
             merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
-            merged["source"] = base_item.get("source", "reddit_v3")
+            merged["source"] = base_item.get("source", "reddit_pairs")
 
             lang = merged.get("original_language")
             if allowed_langs and lang not in allowed_langs:
@@ -638,10 +606,10 @@ async def get_recs_v3(
         # If filters removed everything, fall back to unfiltered merged candidates
         if not items:
             for base_item, det in zip(base, details_list):
-                merged = dict(det)
+                merged = dict(det or {})
                 merged.setdefault("tmdb_id", base_item["tmdb_id"])
                 merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
-                merged["source"] = base_item.get("source", "reddit_v3")
+                merged["source"] = base_item.get("source", "reddit_pairs")
                 items.append(merged)
 
         # 10) Build Reddit + TMDB score vectors and personalisation
@@ -678,8 +646,6 @@ async def get_recs_v3(
                 taste_sim = 0.0
 
             taste_sim = float(max(0.0, min(taste_sim, 1.0)))
-
-            # Combine into a raw personal signal
             personal_raw = 0.7 * best_sim + 0.3 * taste_sim
 
             it["fav_similarity"] = best_sim
@@ -710,33 +676,21 @@ async def get_recs_v3(
             score_tmdb = t_n
             score_personal = p_n
 
-            score = (
-                w_reddit_eff * score_reddit
-                + w_tmdb_eff * score_tmdb
-                + w_personal_eff * score_personal
-            )
+            score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
 
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit
             enriched["score_tmdb"] = score_tmdb
             enriched["score_personal"] = score_personal
             enriched["score"] = score
-            enriched["score_weights"] = {
-                "tmdb": w_tmdb_eff,
-                "reddit": w_reddit_eff,
-                "personal": w_personal_eff,
-            }
+            enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
             combined_items.append(enriched)
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:
             diversified = _mmr_diversify(combined_items, k=limit, mmr_lambda=mmr_lambda)
         else:
-            diversified = sorted(
-                combined_items,
-                key=lambda x: float(x.get("score", 0.0)),
-                reverse=True,
-            )[:limit]
+            diversified = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:limit]
 
         if flat:
             return diversified
@@ -757,41 +711,29 @@ async def get_recs_v3(
     except HTTPException:
         raise
     except Exception:
+        log.exception("recs_v3 failed user_id=%s limit=%s flat=%s", user_id, limit, flat)
         raise HTTPException(status_code=500, detail="Internal error in recs_v3")
+
 
 @router.get("/explain/{user_id}/{tmdb_id}")
 async def explain_recs_v3_for_show(
     user_id: int,
     tmdb_id: int,
+    _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Dict[str, Any]:
     """
     Explain why recs_v3 thinks this show fits the user's taste.
-
-    Uses the same building blocks as the main v3 engine:
-      - user favourites
-      - TMDB-based similarity (genres + language)
-      - reddit_pairs co-mention strength
-
-    Returns a small JSON payload with:
-      - anchor_favorites: the key favourites that 'explain' this show
-      - shared_genres: overlapping genre names across anchors
-      - reddit_pairs_strength: simple stats over pair_weight vs anchors
-      - tmdb_similarity: simple stats over similarity vs anchors
-      - summary_lines: human-readable bullet points
+    (Kept compatible with your existing FE usage.)
     """
     if user_id <= 0 or tmdb_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid user_id or tmdb_id")
 
     try:
-        # Fetch favourites for this user
         fav_ids = await _fetch_user_favorites(session, user_id)
-
-        # Always fetch target details so we can at least fall back to a simple explanation.
         target = await _tmdb_details(tmdb_id)
         target_genres = set(target.get("genres") or [])
 
-        # No favourites => fall back to a generic, show-only explanation
         if not fav_ids:
             lines: List[str] = []
             if target_genres:
@@ -804,28 +746,18 @@ async def explain_recs_v3_for_show(
                 elif vote >= 7.5:
                     lines.append("Well rated and liked by most audiences.")
             if not lines:
-                lines.append(
-                    "We don't have enough favourites for you yet, but this show aligns well with your overall taste profile."
-                )
+                lines.append("We don't have enough favourites for you yet, but this show aligns well with your overall taste profile.")
             return {
                 "tmdb_id": tmdb_id,
                 "user_id": user_id,
                 "anchor_favorites": [],
                 "shared_genres": sorted(target_genres),
-                "reddit_pairs_strength": {
-                    "count": 0,
-                    "max": 0.0,
-                    "avg": 0.0,
-                },
-                "tmdb_similarity": {
-                    "count": 0,
-                    "max": 0.0,
-                    "avg": 0.0,
-                },
+                "reddit_pairs_strength": {"count": 0, "max": 0.0, "avg": 0.0},
+                "tmdb_similarity": {"count": 0, "max": 0.0, "avg": 0.0},
                 "summary_lines": lines,
             }
 
-        # Pull all reddit_pairs rows that involve this tmdb_id, then later intersect with favourites.
+        # Pull all reddit_pairs rows that involve this tmdb_id, then intersect with favourites.
         sql = text(
             """
             SELECT
@@ -855,21 +787,14 @@ async def explain_recs_v3_for_show(
                 w_f = float(w)
             except Exception:
                 w_f = 0.0
-            # Keep the strongest weight we see for a given other_id
             prev = pair_by_other.get(o_id, 0.0)
             if w_f > prev:
                 pair_by_other[o_id] = w_f
 
-        # Limit how many favourites we consider for explanation to keep TMDB calls bounded.
-        max_favs = min(len(fav_ids), 30)
-        fav_subset = fav_ids[:max_favs]
-
-        # Fetch TMDB details for favourite subset concurrently.
-        tasks = [_tmdb_details(fid) for fid in fav_subset]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        fav_subset = fav_ids[: min(len(fav_ids), 30)]
+        results = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_subset], return_exceptions=True)
 
         anchors: List[Dict[str, Any]] = []
-
         for fav_id, det in zip(fav_subset, results):
             if isinstance(det, Exception):
                 continue
@@ -882,7 +807,6 @@ async def explain_recs_v3_for_show(
             sim = _similarity(target, details)
             pair_w = pair_by_other.get(fav_id, 0.0)
 
-            # If we have neither similarity nor reddit signal, this favourite doesn't help explain much.
             if sim <= 0.0 and pair_w <= 0.0:
                 continue
 
@@ -902,7 +826,6 @@ async def explain_recs_v3_for_show(
             )
 
         if not anchors:
-            # User has favourites, but none with meaningful overlap or reddit signal.
             lines: List[str] = []
             if target_genres:
                 top_g = ", ".join(list(target_genres)[:3])
@@ -914,28 +837,17 @@ async def explain_recs_v3_for_show(
                 elif vote >= 7.5:
                     lines.append("Well rated and liked by most audiences.")
             if not lines:
-                lines.append(
-                    "This show overlaps with your favourites in more subtle ways, even if we can't pinpoint a single anchor show."
-                )
+                lines.append("This show overlaps with your favourites in more subtle ways, even if we can't pinpoint a single anchor show.")
             return {
                 "tmdb_id": tmdb_id,
                 "user_id": user_id,
                 "anchor_favorites": [],
                 "shared_genres": sorted(target_genres),
-                "reddit_pairs_strength": {
-                    "count": 0,
-                    "max": 0.0,
-                    "avg": 0.0,
-                },
-                "tmdb_similarity": {
-                    "count": 0,
-                    "max": 0.0,
-                    "avg": 0.0,
-                },
+                "reddit_pairs_strength": {"count": 0, "max": 0.0, "avg": 0.0},
+                "tmdb_similarity": {"count": 0, "max": 0.0, "avg": 0.0},
                 "summary_lines": lines,
             }
 
-        # Rank anchors by a combined score of TMDB similarity and reddit_pairs weight.
         def _combined_score(a: Dict[str, Any]) -> float:
             sim_val = float(a.get("similarity") or 0.0)
             pw_val = float(a.get("pair_weight") or 0.0)
@@ -943,10 +855,8 @@ async def explain_recs_v3_for_show(
             return 0.7 * sim_val + 0.3 * pw_term
 
         anchors_sorted = sorted(anchors, key=_combined_score, reverse=True)
-        max_anchors = 3
-        top_anchors = anchors_sorted[:max_anchors]
+        top_anchors = anchors_sorted[:3]
 
-        # Aggregate shared genres and stats based only on top anchors.
         shared_genres_set: set[str] = set()
         sims_top: List[float] = []
         pair_top: List[float] = []
@@ -955,8 +865,7 @@ async def explain_recs_v3_for_show(
             for g in a.get("shared_genres") or []:
                 if isinstance(g, str) and g:
                     shared_genres_set.add(g)
-            sim_val = float(a.get("similarity") or 0.0)
-            sims_top.append(sim_val)
+            sims_top.append(float(a.get("similarity") or 0.0))
             pw_val = float(a.get("pair_weight") or 0.0)
             if pw_val > 0.0:
                 pair_top.append(pw_val)
@@ -968,28 +877,22 @@ async def explain_recs_v3_for_show(
             "max": max(sims_top) if sims_top else 0.0,
             "avg": (sum(sims_top) / len(sims_top)) if sims_top else 0.0,
         }
-
         reddit_meta = {
             "count": len(pair_top),
             "max": max(pair_top) if pair_top else 0.0,
             "avg": (sum(pair_top) / len(pair_top)) if pair_top else 0.0,
         }
 
-        # Build summary lines
         summary_lines: List[str] = []
-
         anchor_titles = [str(a.get("title")).strip() for a in top_anchors if a.get("title")]
+
         if anchor_titles:
             if len(anchor_titles) == 1:
                 summary_lines.append(f"Because you liked {anchor_titles[0]}.")
             elif len(anchor_titles) == 2:
-                summary_lines.append(
-                    f"Because you liked {anchor_titles[0]} and {anchor_titles[1]}."
-                )
+                summary_lines.append(f"Because you liked {anchor_titles[0]} and {anchor_titles[1]}.")
             else:
-                summary_lines.append(
-                    f"Because you liked {anchor_titles[0]}, {anchor_titles[1]} and {anchor_titles[2]}."
-                )
+                summary_lines.append(f"Because you liked {anchor_titles[0]}, {anchor_titles[1]} and {anchor_titles[2]}.")
 
         if shared_genres:
             if len(shared_genres) == 1:
@@ -999,9 +902,7 @@ async def explain_recs_v3_for_show(
                 summary_lines.append(f"Shares genres like {top_g}.")
 
         if reddit_meta["count"] > 0:
-            summary_lines.append(
-                "These shows are often discussed together on Reddit, so they tend to appeal to similar audiences."
-            )
+            summary_lines.append("These shows are often discussed together on Reddit, so they tend to appeal to similar audiences.")
 
         vote = target.get("vote_average")
         if isinstance(vote, (int, float)):
@@ -1011,9 +912,7 @@ async def explain_recs_v3_for_show(
                 summary_lines.append("Well rated and liked by most audiences.")
 
         if not summary_lines:
-            summary_lines.append(
-                "This show overlaps strongly with your favourite shows in terms of tone and themes."
-            )
+            summary_lines.append("This show overlaps strongly with your favourite shows in terms of tone and themes.")
 
         return {
             "tmdb_id": tmdb_id,
@@ -1028,6 +927,7 @@ async def explain_recs_v3_for_show(
     except HTTPException:
         raise
     except Exception:
+        log.exception("explain engine failed user_id=%s tmdb_id=%s", user_id, tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in explanation engine")
 
 
@@ -1038,29 +938,17 @@ async def get_smart_similar_for_show(
 ) -> Any:
     """
     Lightweight show-centric smart similar endpoint, used by the ShowDetails page.
-
-    It does not depend on a particular user_id. Instead, it:
-      - pulls TMDB recommendations for this tmdb_id
-      - enriches them with basic TMDB details
-      - returns up to `limit` items shaped like other recs_v3 results.
+    Does not depend on a user_id.
     """
-    # Re-use the same API key resolution logic as _tmdb_details()
-    api_key = (
-        os.environ.get("TMDB_API_KEY")
-        or os.environ.get("TMDB_KEY")
-        or os.environ.get("TMDB_API")
-    )
+    api_key = _tmdb_api_key()
     if not api_key:
-        # No TMDB key configured => just return empty list rather than 500
         return []
 
     try:
-        # Use the helper that already pulls TMDB recommendations for a single favourite
         rec_ids = await _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=limit * 2)
         if not rec_ids:
             return []
 
-        # Deduplicate while preserving order
         seen: set[int] = set()
         ordered_ids: list[int] = []
         for rid in rec_ids:
@@ -1078,7 +966,6 @@ async def get_smart_similar_for_show(
         items: list[dict[str, Any]] = []
         for rid in ordered_ids:
             details = await _tmdb_details(rid)
-            # _tmdb_details always returns a dict with "tmdb_id", and possibly title/name/poster.
             title = details.get("title") or details.get("name")
             if not title:
                 continue
@@ -1091,4 +978,5 @@ async def get_smart_similar_for_show(
     except HTTPException:
         raise
     except Exception:
+        log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in smart-similar")

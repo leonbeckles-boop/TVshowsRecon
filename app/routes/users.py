@@ -26,14 +26,20 @@ async def _tmdb_details_min(tmdb_id: int) -> dict[str, Any]:
     Returns: {title, year, poster_path}
     """
     if not TMDB_KEY:
+        print("TMDB_KEY missing in users.py", flush=True)
         return {}
 
     url = f"{TMDB_API}/tv/{tmdb_id}?api_key={TMDB_KEY}"
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(url)
+
         if r.status_code != 200:
+            # Log status so Render tells us what's happening (401/429/etc.)
+            print(f"TMDb details failed for {tmdb_id}: {r.status_code} {r.text[:200]}", flush=True)
             return {}
+
         data = r.json() or {}
         first_air = data.get("first_air_date") or ""
         year = None
@@ -43,13 +49,20 @@ async def _tmdb_details_min(tmdb_id: int) -> dict[str, Any]:
             except Exception:
                 year = None
 
+        poster_path = data.get("poster_path")
+        if not poster_path:
+            print(f"TMDb returned no poster_path for {tmdb_id}", flush=True)
+
         return {
             "title": data.get("name") or data.get("original_name"),
             "year": year,
-            "poster_path": data.get("poster_path"),
+            "poster_path": poster_path,
         }
-    except Exception:
+
+    except Exception as e:
+        print(f"TMDb exception for {tmdb_id}: {repr(e)}", flush=True)
         return {}
+
 
 
 def _serialize_show(s: Show) -> dict[str, Any]:
@@ -89,6 +102,8 @@ async def list_favorites(
         .scalars()
         .all()
     )
+    if not item.get("poster_path"):
+        extra = await _tmdb_details_min(int(tid))
 
     tmdb_ids = [int(fr.tmdb_id) for fr in fav_rows if fr.tmdb_id is not None]
     if not tmdb_ids:

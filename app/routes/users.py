@@ -94,7 +94,6 @@ async def list_favorites(
     _: Any = Depends(require_user_match),  # enforce ownership via JWT
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict[str, Any]]:
-    # Pull favorites in stable order
     fav_rows = (
         (await db.execute(
             select(FavoriteTmdb)
@@ -109,7 +108,6 @@ async def list_favorites(
     if not tmdb_ids:
         return []
 
-    # Fetch Show rows we already have
     shows = (
         (await db.execute(select(Show).where(Show.show_id.in_(tmdb_ids))))
         .scalars()
@@ -122,7 +120,7 @@ async def list_favorites(
     for tid in tmdb_ids:
         s = show_by_id.get(int(tid))
 
-        # Always define item
+        # ALWAYS define item (prevents UnboundLocalError)
         if s:
             item = _serialize_show(s)
         else:
@@ -135,10 +133,9 @@ async def list_favorites(
                 "external_id": int(tid),
             }
 
-        # Enrich from TMDb when poster/title/year missing
+        # Enrich missing fields from TMDb
         if (not item.get("poster_path")) or (not item.get("title")) or (item.get("year") is None):
             extra = await _tmdb_details_min(int(tid))
-
             if extra:
                 pp = extra.get("poster_path")
                 if pp and not item.get("poster_path"):
@@ -154,9 +151,6 @@ async def list_favorites(
         out.append(item)
 
     return out
-
-
-
 
 @router.post("/{user_id}/favorites/{tmdb_id}")
 async def add_favorite(

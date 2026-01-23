@@ -8,6 +8,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+
 log = logging.getLogger("startup")
 
 app = FastAPI(
@@ -22,13 +23,17 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",        # local dev
-        "https://whatnext.vercel.app",  # prod frontend (example)
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://whatnexttv.vercel.app",   # <-- change to your actual Vercel domain
+        "https://*.vercel.app",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # ---- Health & route debug ----

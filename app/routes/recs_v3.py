@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import logging
 from typing import Any, Dict, List
+
+log = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_async_db
+from app.db.session import get_async_session
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
@@ -296,6 +299,70 @@ async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int
     return favs
 
 
+
+async def _fetch_reddit_candidates_from_pairs(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    limit: int,
+    exclude_ids: set[int],
+) -> list[tuple[int, float]]:
+    """Fallback when user_reddit_pairs isn't available.
+
+    Uses reddit_pairs + user's favorites to generate candidates.
+    Returns (tmdb_id, score) sorted desc.
+    """
+    fav_ids = await _fetch_user_favorites(session, user_id)
+    if not fav_ids:
+        return []
+
+    # Exclude the user's own favorites and any explicit excludes.
+    exclude_all = set(exclude_ids) | set(fav_ids)
+
+    from sqlalchemy import bindparam
+
+    sql = text(
+        """
+        WITH favs AS (
+          SELECT UNNEST(:fav_ids) AS fav_id
+        ),
+        pairs AS (
+          SELECT
+            CASE
+              WHEN rp.tmdb_id_a = f.fav_id THEN rp.tmdb_id_b
+              ELSE rp.tmdb_id_a
+            END AS other_id,
+            rp.pair_weight AS w
+          FROM reddit_pairs rp
+          JOIN favs f
+            ON rp.tmdb_id_a = f.fav_id OR rp.tmdb_id_b = f.fav_id
+        )
+        SELECT other_id AS tmdb_id, SUM(w) AS score
+        FROM pairs
+        GROUP BY other_id
+        ORDER BY score DESC
+        LIMIT :lim
+        """
+    ).bindparams(bindparam("fav_ids", expanding=True))
+
+    try:
+        res = await session.execute(sql, {"fav_ids": fav_ids, "lim": int(limit * 3)})
+        rows = [(int(r.tmdb_id), float(r.score or 0.0)) for r in res]
+    except Exception:
+        # If anything fails here, don't take the whole endpoint down.
+        await session.rollback()
+        log.exception("reddit_pairs fallback failed")
+        return []
+
+    out: list[tuple[int, float]] = []
+    for tmdb_id, score in rows:
+        if tmdb_id in exclude_all:
+            continue
+        out.append((tmdb_id, score))
+        if len(out) >= limit:
+            break
+    return out
+
 async def _fetch_reddit_candidates(
     session: AsyncSession,
     user_id: int,
@@ -479,30 +546,6 @@ async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
 
-
-@router.get("", summary="Get Recs V3 (query param)", tags=["recs_v3"])
-async def get_recs_v3_query(
-    user_id: int = Query(..., description="User id"),
-    limit: int = Query(60, ge=1, le=200),
-    flat: int = Query(1, description="Return flat list if 1, else grouped"),
-    tmdb_w: float = Query(0.5, ge=0.0, le=1.0),
-    reddit_w: float = Query(0.5, ge=0.0, le=1.0),
-    personal_w: float = Query(0.0, ge=0.0, le=1.0),
-    mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
-    db: AsyncSession = Depends(get_async_db),
-):
-    """Compatibility endpoint for the frontend (supports /api/recs/v3?user_id=...)."""
-    return await get_recs_v3(
-        user_id=user_id,
-        limit=limit,
-        flat=flat,
-        tmdb_w=tmdb_w,
-        reddit_w=reddit_w,
-        personal_w=personal_w,
-        mmr_lambda=mmr_lambda,
-        db=db,
-    )
-
 @router.get("/{user_id}")
 async def get_recs_v3(
     user_id: int,
@@ -512,7 +555,7 @@ async def get_recs_v3(
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
-    session: AsyncSession = Depends(get_async_db),
+    session: AsyncSession = Depends(get_async_session),
 ) -> Any:
     """
     v3 recommendations:
@@ -781,13 +824,18 @@ async def get_recs_v3(
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=500, detail="Internal error in recs_v3")
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            log.exception(\"Internal error in recs_v3\")
+            raise HTTPException(status_code=500, detail=\"Internal error in recs_v3\")
 
 @router.get("/explain/{user_id}/{tmdb_id}")
 async def explain_recs_v3_for_show(
     user_id: int,
     tmdb_id: int,
-    session: AsyncSession = Depends(get_async_db),
+    session: AsyncSession = Depends(get_async_session),
 ) -> Dict[str, Any]:
     """
     Explain why recs_v3 thinks this show fits the user's taste.

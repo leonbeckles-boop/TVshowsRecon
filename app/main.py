@@ -5,7 +5,7 @@ import logging
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi.responses import JSONResponse
 
 
@@ -18,25 +18,30 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url=None,
 )
+from fastapi.middleware.cors import CORSMiddleware
 
-# CORS (adjust as you like)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
-        "https://whatnexttv.vercel.app",   # <-- change to your actual Vercel domain
-        "https://*.vercel.app",
+        "https://whatnexttv.vercel.app",  # your production frontend domain (exact)
     ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origin_regex=r"^https://.*\.vercel\.app$",  # allows ALL preview deployments
+    allow_credentials=False,  # set True ONLY if you use cookies
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],  # includes Authorization
+    max_age=86400,
 )
 
 
 
+
 # ---- Health & route debug ----
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "whatnext-api"}
+
 @app.get("/api/health", tags=["default"])
 async def health() -> Dict[str, Any]:
     return {"ok": True}

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import text
@@ -20,22 +22,65 @@ BATCH_SIZE = int(os.getenv("TMDB_BACKFILL_BATCH", "25"))
 MAX_RETRIES = int(os.getenv("TMDB_BACKFILL_RETRIES", "3"))
 
 
-def _to_asyncpg(url: str) -> str:
+def _parse_date(s: str | None) -> date | None:
+    """TMDB returns YYYY-MM-DD strings; asyncpg wants datetime.date."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except Exception:
+        return None
+
+
+def _strip_sslmode(url: str) -> Tuple[str, bool]:
+    """
+    asyncpg doesn't accept sslmode=... inside the DSN query string.
+    We strip it and return a boolean indicating whether SSL should be enabled.
+    """
+    parts = urlsplit(url)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+
+    ssl_on = False
+    sslmode = (q.get("sslmode") or "").lower().strip()
+    if sslmode in {"require", "verify-ca", "verify-full"}:
+        ssl_on = True
+
+    if "sslmode" in q:
+        q.pop("sslmode", None)
+
+    new_query = urlencode(q, doseq=True)
+    new_url = urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+    return new_url, ssl_on
+
+
+def _to_asyncpg(url: str) -> Tuple[str, Dict[str, Any]]:
     """
     Convert a sync psycopg URL -> asyncpg for async SQLAlchemy engine.
     Accepts postgres:// shorthand too.
+    Returns (async_url, engine_kwargs) where engine_kwargs may include connect_args.
     """
     u = (url or "").strip()
     if not u:
-        return u
+        return u, {}
+
     if u.startswith("postgres://"):
         u = "postgresql://" + u[len("postgres://"):]
+
+    # Convert driver
     u = u.replace("postgresql+psycopg://", "postgresql+asyncpg://")
     u = u.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
-    # If plain postgresql://, pick asyncpg
     if u.startswith("postgresql://"):
         u = "postgresql+asyncpg://" + u[len("postgresql://"):]
-    return u
+
+    # Handle sslmode in query string (asyncpg doesn't like it)
+    u, ssl_on = _strip_sslmode(u)
+
+    engine_kwargs: Dict[str, Any] = {}
+    if ssl_on:
+        # asyncpg accepts ssl=True (uses default SSL context)
+        engine_kwargs["connect_args"] = {"ssl": True}
+
+    return u, engine_kwargs
 
 
 async def _tmdb_get_tv(tmdb_id: int, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
@@ -54,19 +99,16 @@ async def _tmdb_get_tv(tmdb_id: int, client: httpx.AsyncClient) -> Optional[Dict
             if r.status_code == 404:
                 return None
             if r.status_code == 429:
-                # TMDB rate limit: obey Retry-After if present
                 ra = r.headers.get("Retry-After")
                 sleep_s = float(ra) if ra and ra.isdigit() else (1.0 + attempt)
                 await asyncio.sleep(sleep_s)
                 continue
-            # Other non-200
             last_err = RuntimeError(f"TMDB {r.status_code}: {r.text[:200]}")
         except Exception as e:
             last_err = e
 
         await asyncio.sleep(0.5 * attempt)
 
-    # If we get here, we failed retries
     if last_err:
         raise last_err
     return None
@@ -76,14 +118,19 @@ def _extract_fields(data: Dict[str, Any]) -> Dict[str, Any]:
     genres = [g.get("name") for g in (data.get("genres") or []) if g and g.get("name")]
     networks = [n.get("name") for n in (data.get("networks") or []) if n and n.get("name")]
 
+    # Only overwrite numeric fields when TMDB actually has values (avoid writing 0s everywhere)
+    popularity = data.get("popularity")
+    vote_average = data.get("vote_average")
+    vote_count = data.get("vote_count")
+
     return {
-        "overview": data.get("overview"),
+        "overview": data.get("overview") or None,
         "genres": genres or None,
         "networks": networks or None,
-        "first_air_date": data.get("first_air_date") or None,  # YYYY-MM-DD
-        "popularity": float(data.get("popularity") or 0.0),
-        "vote_average": float(data.get("vote_average") or 0.0),
-        "vote_count": int(data.get("vote_count") or 0),
+        "first_air_date": _parse_date(data.get("first_air_date") or None),  # datetime.date or None
+        "popularity": float(popularity) if popularity is not None else None,
+        "vote_average": float(vote_average) if vote_average is not None else None,
+        "vote_count": int(vote_count) if vote_count is not None else None,
         "poster_path": data.get("poster_path") or None,
     }
 
@@ -119,6 +166,7 @@ async def _fetch_rows_to_update(session: AsyncSession, limit: int) -> List[Tuple
 
 
 async def _update_show(session: AsyncSession, show_id: int, fields: Dict[str, Any]) -> None:
+    # NOTE: Do NOT CAST :first_air_date; asyncpg must bind a date object, not a str.
     q = text(
         """
         UPDATE shows
@@ -126,7 +174,7 @@ async def _update_show(session: AsyncSession, show_id: int, fields: Dict[str, An
           overview = COALESCE(:overview, overview),
           genres = COALESCE(:genres, genres),
           networks = COALESCE(:networks, networks),
-          first_air_date = COALESCE(CAST(:first_air_date AS DATE), first_air_date),
+          first_air_date = COALESCE(:first_air_date, first_air_date),
           popularity = COALESCE(:popularity, popularity),
           vote_average = COALESCE(:vote_average, vote_average),
           vote_count = COALESCE(:vote_count, vote_count),
@@ -147,9 +195,9 @@ async def main() -> None:
     if not db_url:
         raise SystemExit("Set DATABASE_URL (preferred) or ALEMBIC_SYNC_URL so we can connect to Postgres.")
 
-    db_url_async = _to_asyncpg(db_url)
+    db_url_async, engine_kwargs = _to_asyncpg(db_url)
 
-    engine = create_async_engine(db_url_async, pool_pre_ping=True)
+    engine = create_async_engine(db_url_async, pool_pre_ping=True, **engine_kwargs)
     SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     total_updated = 0

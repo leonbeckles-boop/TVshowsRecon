@@ -12,7 +12,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_KEY = os.getenv("TMDB_API_KEY") or os.getenv("TMDB_KEY")
 
@@ -21,66 +20,55 @@ REQUEST_DELAY_S = float(os.getenv("TMDB_BACKFILL_DELAY", "0.25"))
 BATCH_SIZE = int(os.getenv("TMDB_BACKFILL_BATCH", "25"))
 MAX_RETRIES = int(os.getenv("TMDB_BACKFILL_RETRIES", "3"))
 
-
-def _parse_date(s: str | None) -> date | None:
-    """TMDB returns YYYY-MM-DD strings; asyncpg wants datetime.date."""
-    if not s:
-        return None
-    try:
-        return date.fromisoformat(s[:10])
-    except Exception:
-        return None
+# If you connect to Render/hosted PG, you typically need SSL.
+# For asyncpg we pass ssl via connect_args and strip sslmode from URL.
+FORCE_ASYNCPG_SSL = os.getenv("FORCE_ASYNCPG_SSL", "1").lower() not in ("0", "false", "no")
 
 
-def _strip_sslmode(url: str) -> Tuple[str, bool]:
-    """
-    asyncpg doesn't accept sslmode=... inside the DSN query string.
-    We strip it and return a boolean indicating whether SSL should be enabled.
-    """
+def _strip_query_param(url: str, key: str) -> str:
+    """Remove a query parameter from a URL (case-insensitive key match)."""
+    if not url:
+        return url
     parts = urlsplit(url)
-    q = dict(parse_qsl(parts.query, keep_blank_values=True))
-
-    ssl_on = False
-    sslmode = (q.get("sslmode") or "").lower().strip()
-    if sslmode in {"require", "verify-ca", "verify-full"}:
-        ssl_on = True
-
-    if "sslmode" in q:
-        q.pop("sslmode", None)
-
-    new_query = urlencode(q, doseq=True)
-    new_url = urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-    return new_url, ssl_on
+    q = [(k, v) for (k, v) in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != key.lower()]
+    new_query = urlencode(q)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
 
-def _to_asyncpg(url: str) -> Tuple[str, Dict[str, Any]]:
+def _to_asyncpg(url: str) -> str:
     """
     Convert a sync psycopg URL -> asyncpg for async SQLAlchemy engine.
     Accepts postgres:// shorthand too.
-    Returns (async_url, engine_kwargs) where engine_kwargs may include connect_args.
+    Also strips sslmode=... because asyncpg doesn't accept it as a kwarg.
     """
     u = (url or "").strip()
     if not u:
-        return u, {}
+        return u
+
+    # remove sslmode from query for asyncpg
+    u = _strip_query_param(u, "sslmode")
 
     if u.startswith("postgres://"):
-        u = "postgresql://" + u[len("postgres://"):]
+        u = "postgresql://" + u[len("postgres://") :]
 
-    # Convert driver
     u = u.replace("postgresql+psycopg://", "postgresql+asyncpg://")
     u = u.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+
+    # If plain postgresql://, pick asyncpg
     if u.startswith("postgresql://"):
-        u = "postgresql+asyncpg://" + u[len("postgresql://"):]
+        u = "postgresql+asyncpg://" + u[len("postgresql://") :]
 
-    # Handle sslmode in query string (asyncpg doesn't like it)
-    u, ssl_on = _strip_sslmode(u)
+    return u
 
-    engine_kwargs: Dict[str, Any] = {}
-    if ssl_on:
-        # asyncpg accepts ssl=True (uses default SSL context)
-        engine_kwargs["connect_args"] = {"ssl": True}
 
-    return u, engine_kwargs
+def _parse_date_yyyy_mm_dd(s: Optional[str]) -> Optional[date]:
+    """Convert 'YYYY-MM-DD' -> datetime.date, else None."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        return None
 
 
 async def _tmdb_get_tv(tmdb_id: int, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
@@ -99,10 +87,12 @@ async def _tmdb_get_tv(tmdb_id: int, client: httpx.AsyncClient) -> Optional[Dict
             if r.status_code == 404:
                 return None
             if r.status_code == 429:
+                # TMDB rate limit: obey Retry-After if present
                 ra = r.headers.get("Retry-After")
                 sleep_s = float(ra) if ra and ra.isdigit() else (1.0 + attempt)
                 await asyncio.sleep(sleep_s)
                 continue
+
             last_err = RuntimeError(f"TMDB {r.status_code}: {r.text[:200]}")
         except Exception as e:
             last_err = e
@@ -118,19 +108,15 @@ def _extract_fields(data: Dict[str, Any]) -> Dict[str, Any]:
     genres = [g.get("name") for g in (data.get("genres") or []) if g and g.get("name")]
     networks = [n.get("name") for n in (data.get("networks") or []) if n and n.get("name")]
 
-    # Only overwrite numeric fields when TMDB actually has values (avoid writing 0s everywhere)
-    popularity = data.get("popularity")
-    vote_average = data.get("vote_average")
-    vote_count = data.get("vote_count")
-
     return {
         "overview": data.get("overview") or None,
         "genres": genres or None,
         "networks": networks or None,
-        "first_air_date": _parse_date(data.get("first_air_date") or None),  # datetime.date or None
-        "popularity": float(popularity) if popularity is not None else None,
-        "vote_average": float(vote_average) if vote_average is not None else None,
-        "vote_count": int(vote_count) if vote_count is not None else None,
+        # IMPORTANT: date object, not string (fixes asyncpg toordinal error)
+        "first_air_date": _parse_date_yyyy_mm_dd(data.get("first_air_date")),
+        "popularity": float(data.get("popularity") or 0.0),
+        "vote_average": float(data.get("vote_average") or 0.0),
+        "vote_count": int(data.get("vote_count") or 0),
         "poster_path": data.get("poster_path") or None,
     }
 
@@ -147,10 +133,6 @@ async def _fetch_rows_to_update(session: AsyncSession, limit: int) -> List[Tuple
         WHERE external_id IS NOT NULL
           AND (
               overview IS NULL
-              OR genres IS NULL
-              OR vote_count IS NULL
-              OR vote_average IS NULL
-              OR popularity IS NULL
               OR poster_path IS NULL
           )
         ORDER BY show_id
@@ -166,7 +148,6 @@ async def _fetch_rows_to_update(session: AsyncSession, limit: int) -> List[Tuple
 
 
 async def _update_show(session: AsyncSession, show_id: int, fields: Dict[str, Any]) -> None:
-    # NOTE: Do NOT CAST :first_air_date; asyncpg must bind a date object, not a str.
     q = text(
         """
         UPDATE shows
@@ -195,13 +176,20 @@ async def main() -> None:
     if not db_url:
         raise SystemExit("Set DATABASE_URL (preferred) or ALEMBIC_SYNC_URL so we can connect to Postgres.")
 
-    db_url_async, engine_kwargs = _to_asyncpg(db_url)
+    db_url_async = _to_asyncpg(db_url)
 
-    engine = create_async_engine(db_url_async, pool_pre_ping=True, **engine_kwargs)
+    connect_args = {}
+    if FORCE_ASYNCPG_SSL:
+        connect_args["ssl"] = True
+
+    engine = create_async_engine(db_url_async, pool_pre_ping=True, connect_args=connect_args)
     SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     total_updated = 0
     started = time.time()
+
+    # Prevent repeating the same TMDB id within a single run
+    seen_tmdb_ids: set[int] = set()
 
     async with httpx.AsyncClient(timeout=20) as client:
         while True:
@@ -216,6 +204,10 @@ async def main() -> None:
                     except Exception:
                         print(f"SKIP show_id={show_id} bad external_id={external_id!r} title={title}")
                         continue
+
+                    if tmdb_id in seen_tmdb_ids:
+                        continue
+                    seen_tmdb_ids.add(tmdb_id)
 
                     try:
                         data = await _tmdb_get_tv(tmdb_id, client)
@@ -232,7 +224,7 @@ async def main() -> None:
 
                     except Exception as e:
                         await session.rollback()
-                        print(f"ERR  show_id={show_id} tmdb_id={external_id} title={title} err={e}")
+                        print(f"ERR  show_id={show_id} tmdb_id={tmdb_id} title={title} err={e}")
 
                     await asyncio.sleep(REQUEST_DELAY_S)
 

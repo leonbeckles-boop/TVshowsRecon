@@ -15,7 +15,8 @@ if PROJECT_PARENT not in sys.path:
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # IMPORTANT: do NOT override shell env vars
+    load_dotenv(override=False)
 except Exception:
     pass
 
@@ -25,6 +26,10 @@ from app.db_models import Base          # noqa: E402
 target_metadata = Base.metadata
 config = context.config
 
+
+# ----------------------------
+# URL normalization helpers
+# ----------------------------
 
 def _to_sync_psycopg(url: str) -> str:
     """Normalize to sync psycopg v3 URL for Alembic."""
@@ -59,21 +64,30 @@ def _choose_sync_url() -> str:
     3) DATABASE_URL
     4) settings.database_url
     """
+
     for key in ("ALEMBIC_SYNC_URL", "DATABASE_URL_SYNC", "DATABASE_URL"):
         v = os.getenv(key)
         if v:
+            print(f"ALEMBIC picked env var {key}")
             return _to_sync_psycopg(v)
 
     if getattr(settings, "database_url", None):
+        print("ALEMBIC fell back to settings.database_url")
         return _to_sync_psycopg(settings.database_url)
 
     return ""
 
 
+# ----------------------------
+# Final URL selection
+# ----------------------------
+
 url_sync = _choose_sync_url()
+
 if not url_sync:
     raise RuntimeError(
-        "No DB URL found for Alembic. Set ALEMBIC_SYNC_URL (recommended) "
+        "No DB URL found for Alembic. "
+        "Set ALEMBIC_SYNC_URL (recommended) "
         "or DATABASE_URL_SYNC, or DATABASE_URL."
     )
 
@@ -81,10 +95,18 @@ config.set_main_option("sqlalchemy.url", url_sync)
 
 print("ALEMBIC using database URL:", config.get_main_option("sqlalchemy.url"))
 
+
+# ----------------------------
 # Logging
+# ----------------------------
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+
+# ----------------------------
+# Migration runners
+# ----------------------------
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
@@ -103,8 +125,10 @@ def run_migrations_online() -> None:
         config.get_main_option("sqlalchemy.url"),
         poolclass=pool.NullPool,
     )
+
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
+
         with context.begin_transaction():
             context.run_migrations()
 

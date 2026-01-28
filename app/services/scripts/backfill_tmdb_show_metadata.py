@@ -159,7 +159,7 @@ async def _update_show(session: AsyncSession, show_id: int, fields: Dict[str, An
           popularity = COALESCE(:popularity, popularity),
           vote_average = COALESCE(:vote_average, vote_average),
           vote_count = COALESCE(:vote_count, vote_count),
-          poster_path = COALESCE(:poster_path, poster_path)
+          poster_path = COALESCE(:poster_path, poster_path),
           tmdb_checked_at = now()
         WHERE show_id = :show_id
         """

@@ -312,13 +312,12 @@ async def _fetch_embeddings_for_tmdb_ids(
     if not tmdb_ids:
         return []
 
-    sql = text(
-        """
+    sql = text("""
         SELECT tmdb_id, embedding
         FROM show_embeddings
-        WHERE tmdb_id IN (:ids)
-        """
-    ).bindparams(bindparam("ids", expanding=True))
+        WHERE tmdb_id IN :ids
+    """).bindparams(bindparam("ids", expanding=True))
+
 
     res = await session.execute(sql, {"ids": tmdb_ids})
     rows = res.mappings().all()

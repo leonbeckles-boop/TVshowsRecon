@@ -449,14 +449,11 @@ async def _fetch_reddit_candidates_from_pairs(
 
     try:
         res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
-    except Exception:
-        # If table doesn't exist or SQL error, just skip reddit influence
-        try:
-            print("reddit_pairs query failed; skipping reddit candidates", flush=True)
-        except Exception:
-            pass
-        log.exception("reddit_pairs query failed; skipping reddit candidates")
-        return []
+    except Exception as e:
+        print("reddit_pairs query failed; skipping reddit candidates:", repr(e))
+    await session.rollback()   # <<< CRITICAL
+    return {}
+
 
     rows = res.mappings().all()
     items: List[Dict[str, Any]] = []

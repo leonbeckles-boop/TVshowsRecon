@@ -269,6 +269,146 @@ async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int
             continue
     return favs
 
+# ---------------------------------------------------------------------------
+# Semantic (pgvector) helpers
+# ---------------------------------------------------------------------------
+
+EMBED_DIM = 384  # you migrated show_embeddings/user_profiles to vector(384)
+
+def _vec_to_pgvector_literal(vec: List[float]) -> str:
+    """
+    pgvector accepts '[0.1,0.2,...]' string literal.
+    Keep it compact + deterministic.
+    """
+    return "[" + ",".join(f"{float(x):.6f}" for x in vec) + "]"
+
+
+def _avg_vectors(vectors: List[List[float]]) -> List[float]:
+    if not vectors:
+        return []
+    dim = len(vectors[0])
+    out = [0.0] * dim
+    n = 0
+    for v in vectors:
+        if not v or len(v) != dim:
+            continue
+        for i, x in enumerate(v):
+            out[i] += float(x)
+        n += 1
+    if n <= 0:
+        return []
+    inv = 1.0 / n
+    return [x * inv for x in out]
+
+
+async def _fetch_embeddings_for_tmdb_ids(
+    session: AsyncSession,
+    tmdb_ids: List[int],
+) -> List[List[float]]:
+    """
+    Pull embeddings for a list of TMDB ids from show_embeddings.
+    Returns list of vectors (python lists).
+    """
+    if not tmdb_ids:
+        return []
+
+    sql = text(
+        """
+        SELECT tmdb_id, embedding
+        FROM show_embeddings
+        WHERE tmdb_id IN (:ids)
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+
+    res = await session.execute(sql, {"ids": tmdb_ids})
+    rows = res.mappings().all()
+
+    vectors: List[List[float]] = []
+    for r in rows:
+        emb = r.get("embedding")
+        if emb is None:
+            continue
+        # pgvector usually comes back as list-like already; keep it defensive
+        try:
+            vec = list(emb)
+            if vec:
+                vectors.append([float(x) for x in vec])
+        except Exception:
+            continue
+    return vectors
+
+
+async def _user_profile_embedding_from_favs(session: AsyncSession, fav_ids: List[int]) -> List[float]:
+    """
+    Simple user profile embedding = mean of favourite show embeddings.
+    """
+    vecs = await _fetch_embeddings_for_tmdb_ids(session, fav_ids)
+    return _avg_vectors(vecs)
+
+
+async def _semantic_candidates(
+    session: AsyncSession,
+    user_vec: List[float],
+    block_ids: set[int],
+    limit: int,
+) -> Dict[int, float]:
+    """
+    Return {tmdb_id: semantic_sim} where semantic_sim is ~0..1.
+    Uses cosine distance (<=>). Similarity = 1 - distance.
+    """
+    if not user_vec:
+        return {}
+
+    # Overfetch to allow later dedupe/filtering
+    raw_limit = max(limit * 6, limit * 3, limit)
+
+    vlit = _vec_to_pgvector_literal(user_vec)
+
+    sql = text(
+        """
+        SELECT tmdb_id, (embedding <=> (:v)::vector) AS dist
+        FROM show_embeddings
+        ORDER BY embedding <=> (:v)::vector ASC
+        LIMIT :lim
+        """
+    )
+
+    res = await session.execute(sql, {"v": vlit, "lim": raw_limit})
+    rows = res.mappings().all()
+
+    out: Dict[int, float] = {}
+    for r in rows:
+        tid = r.get("tmdb_id")
+        if tid is None:
+            continue
+        try:
+            tid_i = int(tid)
+        except Exception:
+            continue
+        if tid_i in block_ids:
+            continue
+
+        dist = r.get("dist")
+        try:
+            d = float(dist)
+        except Exception:
+            d = 1.0
+
+        # cosine distance is 0..2 (usually 0..1-ish when normalized); clamp anyway
+        sim = 1.0 - d
+        if sim < 0.0:
+            sim = 0.0
+        if sim > 1.0:
+            sim = 1.0
+
+        # keep best (closest) only
+        prev = out.get(tid_i)
+        if prev is None or sim > prev:
+            out[tid_i] = sim
+
+    return out
+
+
 
 async def _fetch_reddit_candidates_from_pairs(
     session: AsyncSession,
@@ -476,6 +616,7 @@ async def get_recs_v3(
     w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
     w_reddit: float = Query(0.5, ge=0.0, le=1.0),
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
+    w_semantic: float = Query(0.25, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
     _: Any = Depends(require_user_match),
@@ -527,6 +668,11 @@ async def get_recs_v3(
 
         # 4) Favourite details for language/genre profile
         fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
+
+                # 4b) Semantic profile + semantic candidates (pgvector)
+        user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
+        semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
+
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
@@ -593,6 +739,7 @@ async def get_recs_v3(
             merged.setdefault("tmdb_id", base_item["tmdb_id"])
             merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
             merged["source"] = base_item.get("source", "reddit_pairs")
+            merged["semantic_sim"] = float(semantic_map.get(int(merged["tmdb_id"]), 0.0))
 
             lang = merged.get("original_language")
             if allowed_langs and lang not in allowed_langs:
@@ -614,15 +761,24 @@ async def get_recs_v3(
                 merged.setdefault("tmdb_id", base_item["tmdb_id"])
                 merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
                 merged["source"] = base_item.get("source", "reddit_pairs")
+                merged["semantic_sim"] = float(semantic_map.get(int(merged["tmdb_id"]), 0.0))
                 items.append(merged)
 
         # 10) Build Reddit + TMDB score vectors and personalisation
         reddit_vals: List[float] = []
         tmdb_vals: List[float] = []
         personal_raw_vals: List[float] = []
+        semantic_vals: List[float] = []
 
         for it in items:
             # Reddit score: log-squashed score_raw
+                        # Semantic similarity (already ~0..1)
+            try:
+                sem = float(it.get("semantic_sim") or 0.0)
+            except Exception:
+                sem = 0.0
+            semantic_vals.append(max(0.0, min(sem, 1.0)))
+
             try:
                 raw = float(it.get("score_raw") or 0.0)
             except Exception:
@@ -660,9 +816,11 @@ async def get_recs_v3(
         reddit_norm = _normalise(reddit_vals)
         tmdb_norm = _normalise(tmdb_vals)
         personal_norm = _normalise(personal_raw_vals)
+        semantic_norm = _normalise(semantic_vals)
 
         # 11) Weighting
-        total_w = w_tmdb + w_reddit + w_personal
+        total_w = w_tmdb + w_reddit + w_personal + w_semantic
+
         if total_w <= 0:
             w_reddit = 1.0
             w_tmdb = 0.0
@@ -673,14 +831,35 @@ async def get_recs_v3(
         w_tmdb_eff = w_tmdb * scale
         w_reddit_eff = w_reddit * scale
         w_personal_eff = w_personal * scale
+        w_semantic_eff = w_semantic * scale
 
         combined_items: List[Dict[str, Any]] = []
-        for it, r_n, t_n, p_n in zip(items, reddit_norm, tmdb_norm, personal_norm):
+        for it, r_n, t_n, p_n, s_n in zip(items, reddit_norm, tmdb_norm, personal_norm, semantic_norm):
+
+            score_semantic = s_n
+            score = (
+                (w_reddit_eff * score_reddit)
+                + (w_tmdb_eff * score_tmdb)
+                + (w_personal_eff * score_personal)
+                + (w_semantic_eff * score_semantic)
+            )
+
+
             score_reddit = r_n
             score_tmdb = t_n
             score_personal = p_n
 
             score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
+
+            enriched["score_semantic"] = score_semantic
+            enriched["score_weights"] = {
+                "tmdb": w_tmdb_eff,
+                "reddit": w_reddit_eff,
+                "personal": w_personal_eff,
+                "semantic": w_semantic_eff,
+            }
+
+
 
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit
@@ -689,6 +868,24 @@ async def get_recs_v3(
             enriched["score"] = score
             enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
             combined_items.append(enriched)
+
+        from app.services.llm_rerank import rerank_candidates
+
+        # after combined_items is built
+        combined_items = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+
+        top_n = min(len(combined_items), int(os.getenv("LLM_RERANK_CANDIDATES", "60")))
+        top_slice = combined_items[:top_n]
+
+        fav_titles = [d.get("title") or d.get("name") for d in fav_details if (d.get("title") or d.get("name"))]
+        order = rerank_candidates(favorite_titles=fav_titles, candidates=top_slice)
+
+        if order:
+            by_id = {int(x["tmdb_id"]): x for x in top_slice}
+            reranked = [by_id[i] for i in order if i in by_id]
+            # append anything not in slice
+        combined_items = reranked + combined_items[top_n:]
+
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:
@@ -709,6 +906,7 @@ async def get_recs_v3(
                 "w_reddit": w_reddit,
                 "w_personal": w_personal,
                 "mmr_lambda": mmr_lambda,
+                "w_semantic": w_semantic,
             },
         }
 

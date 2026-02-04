@@ -857,21 +857,34 @@ async def get_recs_v3(
             combined_items.append(enriched)
     
 
-        from app.services.llm_rerank import rerank_candidates
+        try:
+            from app.services.llm_rerank import rerank_candidates  # type: ignore
+        except Exception:
+            rerank_candidates = None
 
-        # after combined_items is built
-        combined_items = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+        if rerank_candidates is not None and len(combined_items) >= 5:
+            # Sort by current blended score and rerank only the top slice
+            combined_items = sorted(
+                combined_items,
+                key=lambda x: float(x.get("score", 0.0)),
+                reverse=True,
+            )
 
-        top_n = min(len(combined_items), int(os.getenv("LLM_RERANK_CANDIDATES", "60")))
-        top_slice = combined_items[:top_n]
+            top_n = min(len(combined_items), int(os.getenv("LLM_RERANK_CANDIDATES", "60")))
+            top_slice = combined_items[:top_n]
 
-        fav_titles = [d.get("title") or d.get("name") for d in fav_details if (d.get("title") or d.get("name"))]
-        order = rerank_candidates(favorite_titles=fav_titles, candidates=top_slice)
+            fav_titles = [
+                d.get("title") or d.get("name")
+                for d in fav_details
+                if (d.get("title") or d.get("name"))
+            ]
 
-        if order:
-            by_id = {int(x["tmdb_id"]): x for x in top_slice}
-            reranked = [by_id[i] for i in order if i in by_id]
-            combined_items = reranked + combined_items[top_n:]
+            order = rerank_candidates(favorite_titles=fav_titles, candidates=top_slice)
+
+            if order:
+                by_id = {int(x["tmdb_id"]): x for x in top_slice}
+                reranked = [by_id[i] for i in order if i in by_id]
+                combined_items = reranked + combined_items[top_n:]
 
 
 

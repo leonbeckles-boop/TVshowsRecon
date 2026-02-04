@@ -450,9 +450,8 @@ async def _fetch_reddit_candidates_from_pairs(
         res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
     except Exception as e:
         print("reddit_pairs query failed; skipping reddit candidates:", repr(e))
-    await session.rollback()   # <<< CRITICAL
-    return {}
-
+        await session.rollback()   # <<< CRITICAL
+        return []
 
     rows = res.mappings().all()
     items: List[Dict[str, Any]] = []
@@ -663,9 +662,9 @@ async def get_recs_v3(
         reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
         # 4) Favourite details for language/genre profile
-        fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
+        fav_details:  List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
 
-                # 4b) Semantic profile + semantic candidates (pgvector)
+        # 4b) Semantic profile + semantic candidates (pgvector)
         user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
         semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
 
@@ -809,10 +808,10 @@ async def get_recs_v3(
 
             personal_raw_vals.append(personal_raw)
 
-        reddit_norm = _normalise(reddit_vals)
-        tmdb_norm = _normalise(tmdb_vals)
-        personal_norm = _normalise(personal_raw_vals)
-        semantic_norm = _normalise(semantic_vals)
+            reddit_norm = _normalise(reddit_vals)
+            tmdb_norm = _normalise(tmdb_vals)
+            personal_norm = _normalise(personal_raw_vals)
+            semantic_norm = _normalise(semantic_vals)
 
         # 11) Weighting
         total_w = w_tmdb + w_reddit + w_personal + w_semantic
@@ -831,8 +830,11 @@ async def get_recs_v3(
 
         combined_items: List[Dict[str, Any]] = []
         for it, r_n, t_n, p_n, s_n in zip(items, reddit_norm, tmdb_norm, personal_norm, semantic_norm):
+            score_reddit = float(r_n or 0.0)
+            score_tmdb = float(t_n or 0.0)
+            score_personal = float(p_n or 0.0)
+            score_semantic = float(s_n or 0.0)
 
-            score_semantic = s_n
             score = (
                 (w_reddit_eff * score_reddit)
                 + (w_tmdb_eff * score_tmdb)
@@ -840,30 +842,20 @@ async def get_recs_v3(
                 + (w_semantic_eff * score_semantic)
             )
 
-
-            score_reddit = r_n
-            score_tmdb = t_n
-            score_personal = p_n
-
-            score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
-
+            enriched = dict(it)
+            enriched["score_reddit"] = score_reddit
+            enriched["score_tmdb"] = score_tmdb
+            enriched["score_personal"] = score_personal
             enriched["score_semantic"] = score_semantic
+            enriched["score"] = score
             enriched["score_weights"] = {
                 "tmdb": w_tmdb_eff,
                 "reddit": w_reddit_eff,
                 "personal": w_personal_eff,
                 "semantic": w_semantic_eff,
             }
-
-
-
-            enriched = dict(it)
-            enriched["score_reddit"] = score_reddit
-            enriched["score_tmdb"] = score_tmdb
-            enriched["score_personal"] = score_personal
-            enriched["score"] = score
-            enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
             combined_items.append(enriched)
+    
 
         from app.services.llm_rerank import rerank_candidates
 
@@ -879,8 +871,8 @@ async def get_recs_v3(
         if order:
             by_id = {int(x["tmdb_id"]): x for x in top_slice}
             reranked = [by_id[i] for i in order if i in by_id]
-            # append anything not in slice
-        combined_items = reranked + combined_items[top_n:]
+            combined_items = reranked + combined_items[top_n:]
+
 
 
         # 12) Diversity (MMR) + final top-N

@@ -4,7 +4,8 @@ import asyncio
 import logging
 import math
 import os
-from typing import Any, Dict, List
+import ast
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -300,6 +301,37 @@ def _avg_vectors(vectors: List[List[float]]) -> List[float]:
     inv = 1.0 / n
     return [x * inv for x in out]
 
+def _embedding_to_list(emb: Any) -> Optional[List[float]]:
+    if emb is None:
+        return None
+
+    if hasattr(emb, "to_list"):
+        try:
+            return [float(x) for x in emb.to_list()]
+        except Exception:
+            pass
+    if hasattr(emb, "tolist"):
+        try:
+            return [float(x) for x in emb.tolist()]
+        except Exception:
+            pass
+
+    if isinstance(emb, (list, tuple)):
+        try:
+            return [float(x) for x in emb]
+        except Exception:
+            return None
+
+    if isinstance(emb, str):
+        try:
+            parsed = ast.literal_eval(emb)
+            if isinstance(parsed, (list, tuple)):
+                return [float(x) for x in parsed]
+        except Exception:
+            return None
+
+    return None
+
 
 async def _fetch_embeddings_for_tmdb_ids(
     session: AsyncSession,
@@ -324,17 +356,11 @@ async def _fetch_embeddings_for_tmdb_ids(
 
     vectors: List[List[float]] = []
     for r in rows:
-        emb = r.get("embedding")
-        if emb is None:
-            continue
-        # pgvector usually comes back as list-like already; keep it defensive
-        try:
-            vec = list(emb)
-            if vec:
-                vectors.append([float(x) for x in vec])
-        except Exception:
-            continue
+        vec = _embedding_to_list(r.get("embedding"))
+        if vec and len(vec) == EMBED_DIM:
+            vectors.append(vec)
     return vectors
+
 
 
 async def _user_profile_embedding_from_favs(session: AsyncSession, fav_ids: List[int]) -> List[float]:
@@ -667,7 +693,11 @@ async def get_recs_v3(
         # 4b) Semantic profile + semantic candidates (pgvector)
         user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
         semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
-
+        print("semantic debug", {
+            "fav_ids": len(fav_ids),
+            "user_vec_dim": len(user_vec) if user_vec else 0,
+            "semantic_map": len(semantic_map),
+        })
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}

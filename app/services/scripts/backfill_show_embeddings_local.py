@@ -64,8 +64,7 @@ def fetch_candidates(engine: Engine, limit: int) -> List[Dict[str, Any]]:
         FROM shows
         WHERE (tmdb_id IS NOT NULL OR external_id IS NOT NULL)
           AND title IS NOT NULL
-          AND (overview IS NOT NULL OR genres IS NOT NULL OR networks IS NOT NULL)
-          AND COALESCE(tmdb_id::bigint, external_id::bigint) NOT IN (
+              AND COALESCE(tmdb_id::bigint, external_id::bigint) NOT IN (
               SELECT tmdb_id FROM show_embeddings WHERE embedding IS NOT NULL
           )
         ORDER BY show_id

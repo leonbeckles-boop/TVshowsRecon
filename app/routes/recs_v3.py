@@ -693,12 +693,7 @@ async def get_recs_v3(
         # 4b) Semantic profile + semantic candidates (pgvector)
         user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
         semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
-        print("semantic debug", {
-            "fav_ids": len(fav_ids),
-            "user_vec_dim": len(user_vec) if user_vec else 0,
-            "semantic_map": len(semantic_map),
-        })
-
+        
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
 

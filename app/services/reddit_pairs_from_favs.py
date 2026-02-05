@@ -8,6 +8,7 @@ from typing import List, Tuple, Dict, Any, Optional, Set
 import httpx
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 # Reuse your resolver
 from app.services.title_to_tmdb import lookup_tmdb_id
@@ -20,6 +21,23 @@ log = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://tvuser:devpass1@db:5432/tvrecs")
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def safe_execute(session: AsyncSession, stmt, params, retries: int = 3):
+    """Execute a statement with simple retry for transient network/connection drops."""
+    for attempt in range(1, retries + 1):
+        try:
+            await session.execute(stmt, params)
+            return
+        except DBAPIError as e:
+            log.warning("DB write failed (attempt %s/%s): %r", attempt, retries, e)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            if attempt == retries:
+                raise
+            await asyncio.sleep(2 * attempt)
 
 # --- Config
 SUBREDDIT = os.getenv("REDDIT_REFRESH_SUBS", "televisionsuggestions")
@@ -249,9 +267,15 @@ async def upsert_pairs(
             updated_at = now()
         """
     )
+    written = 0
     for a, b in pairs:
-        await session.execute(sql, {"a": a, "b": b, "sub": subreddit})
-    await session.commit()
+        await safe_execute(session, sql, {"a": a, "b": b, "sub": subreddit})
+        written += 1
+        if written % 25 == 0:
+            await session.commit()
+
+    if written:
+        await session.commit()
 
 
 async def mine_for_favorite(session: AsyncSession, fav_tmdb: int) -> int:
@@ -299,7 +323,14 @@ async def mine_for_favorite(session: AsyncSession, fav_tmdb: int) -> int:
         ids = resolve_titles_to_ids(list(all_titles))
         if ids:
             found_total += len(ids)
-            await upsert_pairs(session, fav_tmdb, ids, SUBREDDIT)
+            try:
+                await upsert_pairs(session, fav_tmdb, ids, SUBREDDIT)
+            except Exception:
+                log.exception("[seed %s] failed writing pairs; continuing", fav_tmdb)
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
 
     log.info("[seed %s] total suggestions stored: %d", fav_tmdb, found_total)
     return found_total

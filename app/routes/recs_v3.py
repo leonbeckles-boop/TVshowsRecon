@@ -25,7 +25,14 @@ log = logging.getLogger("recs_v3")
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
 
+import time
+t0 = time.perf_counter()
+def mark(label: str):
+    dt = time.perf_counter() - t0
+    print(f"[recs_v3] +{dt:0.3f}s {label}")
 
+
+mark("start")
 # ---------------------------------------------------------------------------
 # TMDB helpers
 # ---------------------------------------------------------------------------
@@ -94,6 +101,7 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
         "popularity": data.get("popularity"),
     }
 
+mark("favs/ratings/blocks fetched")
 
 async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int = 20) -> List[int]:
     """
@@ -221,6 +229,7 @@ async def _fetch_tmdb_trending_candidates(
 
     return items
 
+mark("candidates built")
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -620,6 +629,7 @@ def _mmr_diversify(items: List[Dict[str, Any]], k: int, mmr_lambda: float) -> Li
 
     return selected
 
+mark("scored + mmr")
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -1163,6 +1173,7 @@ async def explain_recs_v3_for_show(
         log.exception("explain engine failed user_id=%s tmdb_id=%s", user_id, tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in explanation engine")
 
+mark("hydrated details")
 
 @router.get("/smart-similar/{tmdb_id}")
 async def get_smart_similar_for_show(
@@ -1207,9 +1218,13 @@ async def get_smart_similar_for_show(
                 break
 
         return items
+    
+
 
     except HTTPException:
         raise
     except Exception:
         log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in smart-similar")
+    mark("response ready")
+    

@@ -11,13 +11,7 @@ from fastapi.responses import JSONResponse
 import time
 from fastapi import Request
 
-@app.middleware("http")
-async def log_request_time(request: Request, call_next):
-    t0 = time.perf_counter()
-    resp = await call_next(request)
-    dt = (time.perf_counter() - t0) * 1000
-    print(f"[http] {request.method} {request.url.path}?{request.url.query} -> {resp.status_code} in {dt:.1f}ms")
-    return resp
+
 
 
 
@@ -46,7 +40,13 @@ app.add_middleware(
     max_age=86400,
 )
 
-
+@app.middleware("http")
+async def log_request_time(request: Request, call_next):
+    t0 = time.perf_counter()
+    resp = await call_next(request)
+    dt = (time.perf_counter() - t0) * 1000
+    print(f"[http] {request.method} {request.url.path}?{request.url.query} -> {resp.status_code} in {dt:.1f}ms")
+    return resp
 
 
 # ---- Health & route debug ----

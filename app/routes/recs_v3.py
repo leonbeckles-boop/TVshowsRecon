@@ -462,21 +462,19 @@ async def _fetch_reddit_candidates_from_pairs(
     raw_limit = max(limit * 6, limit * 3, limit)
 
     # We use expanding IN (...) params to avoid asyncpg ARRAY/ANY edge cases.
-    sql = text(
-        """
+    sql = text("""
         SELECT
             CASE
-                WHEN rp.tmdb_id_a IN (:favs) THEN rp.tmdb_id_b
+                WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
                 ELSE rp.tmdb_id_a
             END AS tmdb_id,
             SUM(rp.pair_weight) AS weight
         FROM reddit_pairs rp
-        WHERE (rp.tmdb_id_a IN (:favs) OR rp.tmdb_id_b IN (:favs))
+        WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
         GROUP BY 1
         ORDER BY weight DESC NULLS LAST
         LIMIT :limit
-        """
-    ).bindparams(
+        """).bindparams(
         bindparam("favs", expanding=True),
         bindparam("limit"),
     )
@@ -1227,4 +1225,4 @@ async def get_smart_similar_for_show(
         log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in smart-similar")
     mark("response ready")
-    
+

@@ -841,10 +841,10 @@ async def get_recs_v3(
 
             personal_raw_vals.append(personal_raw)
 
-            reddit_norm = _normalise(reddit_vals)
-            tmdb_norm = _normalise(tmdb_vals)
-            personal_norm = _normalise(personal_raw_vals)
-            semantic_norm = _normalise(semantic_vals)
+        reddit_norm = _normalise(reddit_vals)
+        tmdb_norm = _normalise(tmdb_vals)
+        personal_norm = _normalise(personal_raw_vals)
+        semantic_norm = _normalise(semantic_vals)
 
         # 11) Weighting
         total_w = w_tmdb + w_reddit + w_personal + w_semantic

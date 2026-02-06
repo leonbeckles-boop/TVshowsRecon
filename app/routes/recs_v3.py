@@ -672,8 +672,8 @@ async def diag_ez() -> Dict[str, Any]:
 
 @router.get("/{user_id}")
 async def get_recs_v3(
-    request: Request,
     user_id: int,
+    request: Request,
     limit: int = Query(36, ge=1, le=200),
     w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
     w_reddit: float = Query(0.5, ge=0.0, le=1.0),
@@ -757,10 +757,23 @@ async def get_recs_v3(
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites
-        tmdb_base = await _fetch_tmdb_candidates(
-                fav_ids=fav_ids,
-                block_ids=block_ids,
-                limit=limit,)
+        tmdb_client = getattr(request.app.state, "tmdb_client", None)
+
+        tmdb_base = await _fetch_tmdb_candidates(client=tmdb_client,
+            fav_ids=fav_ids,
+            block_ids=block_ids,
+            limit=limit,
+        )
+        
+        tmdb_base = []
+        if tmdb_client is not None:
+            tmdb_base = await _fetch_tmdb_candidates(
+            client=tmdb_client,
+            fav_ids=fav_ids,
+            block_ids=block_ids,
+            limit=limit,
+            )
+
 
         # 6) TMDB trending, filtered by taste
         trending_base = await _fetch_tmdb_trending_candidates(

@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 import time
 from fastapi import Request
 
+from contextlib import asynccontextmanager
+import httpx
 
 
 
@@ -39,6 +41,33 @@ app.add_middleware(
     allow_headers=["*"],  # includes Authorization
     max_age=86400,
 )
+
+@app.on_event("startup")
+async def _startup():
+    app.state.tmdb_client = httpx.AsyncClient(timeout=10)
+
+@app.on_event("shutdown")
+async def _shutdown():
+    await app.state.tmdb_client.aclose()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
+    timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+
+    app.state.tmdb_client = httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        http2=True,
+        headers={"Accept": "application/json"},
+    )
+    try:
+        yield
+    finally:
+        await app.state.tmdb_client.aclose()
+
+app = FastAPI(lifespan=lifespan)
 
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):

@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
 from app.security import require_user_match
+from fastapi import Request
+import httpx
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
@@ -45,23 +47,29 @@ def _tmdb_api_key() -> str | None:
     return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
 
 
-async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
-    """
-    Fetch TV details for a tmdb_id from TMDB.
-    Returns a dict with the same shape v1/v2 use:
-      tmdb_id, name/title, overview, poster_path/url, genres, genre_ids, etc.
-    """
+import asyncio
+import httpx
+from typing import Any, Dict
+
+async def _tmdb_details(
+    client: httpx.AsyncClient,
+    tmdb_id: int,
+    sem: asyncio.Semaphore | None = None,
+) -> Dict[str, Any]:
     api_key = _tmdb_api_key()
     if not api_key:
         return {"tmdb_id": tmdb_id}
 
-    url = f"{TMDB_API}/tv/{tmdb_id}?api_key={api_key}"
+    url = f"{TMDB_API}/tv/{tmdb_id}"
+    params = {"api_key": api_key}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
+        if sem is None:
+            r = await client.get(url, params=params)
+        else:
+            async with sem:
+                r = await client.get(url, params=params)
     except Exception:
-        # Network error – return minimal
         return {"tmdb_id": tmdb_id}
 
     if r.status_code != 200:
@@ -75,12 +83,9 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     genres_arr = data.get("genres") or []
     genre_names = [str(g.get("name")).strip() for g in genres_arr if g and g.get("name")]
 
-    # TMDB genre ids are ints, but keep the guard anyway
     genre_ids: list[int] = []
     for g in genres_arr:
-        if not g:
-            continue
-        gid = g.get("id")
+        gid = (g or {}).get("id")
         if isinstance(gid, int):
             genre_ids.append(gid)
 
@@ -101,17 +106,29 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
         "popularity": data.get("popularity"),
     }
 
+
 mark("favs/ratings/blocks fetched")
 
-async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int = 20) -> List[int]:
+async def _tmdb_recommendations_for_fav(
+    client: httpx.AsyncClient,
+    tmdb_id: int,
+    api_key: str,
+    max_n: int = 20,
+    sem: asyncio.Semaphore | None = None,
+) -> List[int]:
     """
     Fetch TMDB recommendations for a single favourite show.
     Returns a list of recommended tmdb_ids (TV).
     """
-    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations?api_key={api_key}"
+    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations"
+    params = {"api_key": api_key}
+
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
+        if sem:
+            async with sem:
+                r = await client.get(url, params=params)
+        else:
+            r = await client.get(url, params=params)
     except Exception:
         return []
 
@@ -120,15 +137,23 @@ async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int =
 
     data = r.json() or {}
     results = data.get("results") or []
+
     out: List[int] = []
     for row in results[:max_n]:
         tid = row.get("id")
         if isinstance(tid, int):
             out.append(tid)
+
     return out
 
 
-async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit: int) -> List[Dict[str, Any]]:
+
+async def _fetch_tmdb_candidates(
+    client: httpx.AsyncClient,
+    fav_ids: List[int],
+    block_ids: set[int],
+    limit: int,
+) -> List[Dict[str, Any]]:
     """
     Build TMDB-based candidate list from favourites using /tv/{id}/recommendations.
     Returns [{ tmdb_id, score_raw, source="tmdb_recs" }, ...].
@@ -140,7 +165,13 @@ async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit:
     # Limit how many favourites we query to avoid spamming TMDB
     fav_slice = fav_ids[: min(len(fav_ids), 10)]
 
-    tasks = [_tmdb_recommendations_for_fav(fid, api_key, max_n=20) for fid in fav_slice]
+    # Concurrency cap so we don’t blast TMDB / overload Render
+    sem = asyncio.Semaphore(5)
+
+    tasks = [
+        _tmdb_recommendations_for_fav(client, fid, api_key, max_n=20, sem=sem)
+        for fid in fav_slice
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     tmdb_ids: set[int] = set()
@@ -158,6 +189,7 @@ async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit:
     for tid in list(tmdb_ids)[: max(limit * 3, limit)]:
         items.append({"tmdb_id": tid, "score_raw": 1.0, "source": "tmdb_recs"})
     return items
+
 
 
 async def _fetch_tmdb_trending_candidates(
@@ -640,6 +672,7 @@ async def diag_ez() -> Dict[str, Any]:
 
 @router.get("/{user_id}")
 async def get_recs_v3(
+    request: Request,
     user_id: int,
     limit: int = Query(36, ge=1, le=200),
     w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
@@ -667,6 +700,9 @@ async def get_recs_v3(
       - combine with weights + optional MMR diversity
     """
     try:
+        client: httpx.AsyncClient = request.app.state.tmdb_client
+        sem = asyncio.Semaphore(8)  # 5-10 is a good Render range
+
         # 1) Blocked IDs (favourites + not-interested)
         block_ids = await _get_block_ids(session, user_id)
 
@@ -696,7 +732,10 @@ async def get_recs_v3(
         reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
         # 4) Favourite details for language/genre profile
-        fav_details:  List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
+        fav_tasks = [_tmdb_details(client, fid, sem=sem) for fid in fav_ids]
+        fav_results = await asyncio.gather(*fav_tasks, return_exceptions=True)
+        fav_details: List[Dict[str, Any]] = [r for r in fav_results if not isinstance(r, Exception)]
+
 
         # 4b) Semantic profile + semantic candidates (pgvector)
         user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
@@ -758,7 +797,13 @@ async def get_recs_v3(
 
         # 8) Fetch TMDB details for candidates
         tmdb_ids = [b["tmdb_id"] for b in base]
-        details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
+        detail_tasks = [_tmdb_details(client, tid, sem=sem) for tid in tmdb_ids]
+        details_list_raw = await asyncio.gather(*detail_tasks, return_exceptions=True)
+        details_list: List[Dict[str, Any]] = [
+            ({"tmdb_id": tmdb_ids[i]} if isinstance(res, Exception) else (res or {"tmdb_id": tmdb_ids[i]}))
+            for i, res in enumerate(details_list_raw)
+        ]
+
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []
@@ -1173,8 +1218,11 @@ async def explain_recs_v3_for_show(
 
 mark("hydrated details")
 
+
+
 @router.get("/smart-similar/{tmdb_id}")
 async def get_smart_similar_for_show(
+    request: Request,
     tmdb_id: int,
     limit: int = Query(20, ge=1, le=50),
 ) -> Any:
@@ -1186,17 +1234,19 @@ async def get_smart_similar_for_show(
     if not api_key:
         return []
 
+    # Use shared client
+    client: httpx.AsyncClient = request.app.state.tmdb_client
+
     try:
         rec_ids = await _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=limit * 2)
         if not rec_ids:
             return []
 
-        seen: set[int] = set()
+        # de-dupe while preserving order
+        seen: set[int] = {tmdb_id}
         ordered_ids: list[int] = []
         for rid in rec_ids:
             if not isinstance(rid, int):
-                continue
-            if rid == tmdb_id:
                 continue
             if rid in seen:
                 continue
@@ -1205,17 +1255,32 @@ async def get_smart_similar_for_show(
             if len(ordered_ids) >= limit * 2:
                 break
 
+        if not ordered_ids:
+            return []
+
+        # bounded concurrency for details hydration
+        sem = asyncio.Semaphore(8)  # 5–10 is a sensible range on Render
+
+        tasks = [_tmdb_details(client, rid, sem=sem) for rid in ordered_ids]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
         items: list[dict[str, Any]] = []
-        for rid in ordered_ids:
-            details = await _tmdb_details(rid)
-            title = details.get("title") or details.get("name")
+        for rid, res in zip(ordered_ids, results):
+            if isinstance(res, Exception):
+                continue
+            title = (res.get("title") or res.get("name") or "").strip()
             if not title:
                 continue
-            items.append(details)
+            items.append(res)
             if len(items) >= limit:
                 break
 
         return items
+
+    except Exception:
+        # keep endpoint “lightweight”: don’t throw 500s for TMDB hiccups
+        return []
+
     
 
 

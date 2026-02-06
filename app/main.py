@@ -56,12 +56,8 @@ async def lifespan(app: FastAPI):
     limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
     timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
-    app.state.tmdb_client = httpx.AsyncClient(
-        timeout=timeout,
-        limits=limits,
-        http2=True,
-        headers={"Accept": "application/json"},
-    )
+    app.state.tmdb_client = httpx.AsyncClient(timeout=10)
+
     try:
         yield
     finally:

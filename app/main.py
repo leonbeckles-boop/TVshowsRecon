@@ -1,23 +1,31 @@
-# app/main.py  — full, safe include of all routers under /api
+# app/main.py — single FastAPI app, CORS fixed, lifespan client, /api mounted once
 
 from __future__ import annotations
+
 import logging
-from typing import List, Dict, Any
-
-from fastapi import FastAPI, APIRouter
-
-from fastapi.responses import JSONResponse
-
 import time
-from fastapi import Request
-
 from contextlib import asynccontextmanager
+from typing import Any, Dict, List
+
 import httpx
-
-
-
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 log = logging.getLogger("startup")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Reusable TMDB client for the whole app lifetime
+    limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
+    timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+
+    app.state.tmdb_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+    try:
+        yield
+    finally:
+        await app.state.tmdb_client.aclose()
+
 
 app = FastAPI(
     title="TVshowsRecon API",
@@ -25,52 +33,33 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     docs_url="/api/docs",
     redoc_url=None,
+    lifespan=lifespan,
 )
-from fastapi.middleware.cors import CORSMiddleware
 
+# ---- CORS (fixes OPTIONS preflights) ----
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
-        "https://whatnexttv.vercel.app",  # your production frontend domain (exact)
+        "https://whatnexttv.vercel.app",
     ],
-    allow_origin_regex=r"^https://.*\.vercel\.app$",  # allows ALL preview deployments
-    allow_credentials=False,  # set True ONLY if you use cookies
+    allow_origin_regex=r"^https://.*\.vercel\.app$",
+    allow_credentials=False,  # keep False for Bearer-token auth
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],  # includes Authorization
     max_age=86400,
 )
 
-@app.on_event("startup")
-async def _startup():
-    app.state.tmdb_client = httpx.AsyncClient(timeout=10)
-
-@app.on_event("shutdown")
-async def _shutdown():
-    await app.state.tmdb_client.aclose()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
-    timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
-
-    app.state.tmdb_client = httpx.AsyncClient(timeout=10)
-
-    try:
-        yield
-    finally:
-        await app.state.tmdb_client.aclose()
-
-app = FastAPI(lifespan=lifespan)
 
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):
     t0 = time.perf_counter()
     resp = await call_next(request)
     dt = (time.perf_counter() - t0) * 1000
-    print(f"[http] {request.method} {request.url.path}?{request.url.query} -> {resp.status_code} in {dt:.1f}ms")
+    print(
+        f"[http] {request.method} {request.url.path}?{request.url.query} -> {resp.status_code} in {dt:.1f}ms"
+    )
     return resp
 
 
@@ -79,9 +68,11 @@ async def log_request_time(request: Request, call_next):
 def root():
     return {"status": "ok", "service": "whatnext-api"}
 
+
 @app.get("/api/health", tags=["default"])
 async def health() -> Dict[str, Any]:
     return {"ok": True}
+
 
 @app.get("/api/_debug/routes", tags=["default"])
 async def list_routes() -> List[Dict[str, Any]]:
@@ -91,8 +82,10 @@ async def list_routes() -> List[Dict[str, Any]]:
         out.append({"path": r.path, "methods": methods, "name": getattr(r, "name", "")})
     return out
 
-# The single API namespace prefix. Everything else goes under here.
+
+# ---- /api namespace ----
 api = APIRouter(prefix="/api")
+
 
 def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -> None:
     """Import a router lazily and include it; log but don't crash if missing."""
@@ -104,20 +97,10 @@ def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -
     except Exception as e:
         log.warning("Skipping router %s: %s", name_hint or router_import, e)
 
-# ---- Mount routers (no /api duplication!) ----
-# Each of these router modules should define their OWN local prefix (e.g. "/recs", "/recs/v2", "/auth", etc.)
-# Do NOT include "/api" inside those modules.
 
-# v1 recs
-#_include("app.routes.recs", name_hint="recs v1")
-
-# v2 recs (diag + wrapper + full)
-#_include("app.routes.recs_v2", name_hint="recs v2")
+# ---- Mount routers (no /api duplication inside the route modules) ----
 _include("app.routes.recs_v3", name_hint="recs v3")
 _include("app.routes.discover", name_hint="discover")
-
-# library/favorites/ratings/users/shows/tmdb/auth/admin (only if present in your repo)
-##_include("app.routes.library", name_hint="library")
 _include("app.routes.ratings", name_hint="ratings")
 _include("app.routes.users", name_hint="users")
 _include("app.routes.shows", name_hint="shows")
@@ -128,24 +111,5 @@ _include("app.routes.not_interested", name_hint="not_interested")
 _include("app.routes.wrapped", name_hint="wrapped")
 _include("app.routes.admin", name_hint="admin")
 
-
-
-
 # Attach the /api router once (prevents /api/api duplication)
 app.include_router(api)
-
-# ---- (Optional) startup tasks kept minimal here; your ensure_schema / reddit boot can live elsewhere ----
-# If you need them, re-add with robust error handling, e.g.:
-# @app.on_event("startup")
-# async def _on_startup():
-#     try:
-#         from app.db.ensure_schema import ensure_schema
-#         from app.db.session import async_engine
-#         await ensure_schema(async_engine)
-#     except Exception as e:
-#         log.error("ensure_schema failed: %s", e)
-#     try:
-#         from app.services import reddit_scheduler
-#         reddit_scheduler.refresh_from_env()  # or a safe no-op if not available
-#     except Exception as e:
-#         log.warning("Reddit refresh skipped: %s", e)

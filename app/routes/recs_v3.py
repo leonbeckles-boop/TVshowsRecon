@@ -757,7 +757,7 @@ async def get_recs_v3(
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites
-        tmdb_base = await _fetch_tmdb_candidates(session=session,
+        tmdb_base = await _fetch_tmdb_candidates(
                 fav_ids=fav_ids,
                 block_ids=block_ids,
                 limit=limit,)

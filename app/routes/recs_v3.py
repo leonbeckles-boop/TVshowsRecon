@@ -27,6 +27,47 @@ log = logging.getLogger("recs_v3")
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
 
+
+
+# Quality floor to avoid junk results (0 votes, 0 rating, missing posters, etc.)
+# Tunable via env vars so you can tweak without code changes.
+RECS_V3_MIN_VOTE_COUNT = int(os.getenv("RECS_V3_MIN_VOTE_COUNT", "50"))
+RECS_V3_MIN_VOTE_AVG = float(os.getenv("RECS_V3_MIN_VOTE_AVG", "6.8"))
+RECS_V3_MIN_POPULARITY = float(os.getenv("RECS_V3_MIN_POPULARITY", "5.0"))
+RECS_V3_DROP_NO_POSTER = os.getenv("RECS_V3_DROP_NO_POSTER", "1").strip() not in {"0", "false", "False"}
+
+
+def _passes_quality_floor(it: Dict[str, Any]) -> bool:
+    """Return False for low-quality / low-signal items."""
+    try:
+        vote_count = int(it.get("vote_count") or 0)
+    except Exception:
+        vote_count = 0
+    try:
+        vote_avg = float(it.get("vote_average") or 0.0)
+    except Exception:
+        vote_avg = 0.0
+    try:
+        pop = float(it.get("popularity") or 0.0)
+    except Exception:
+        pop = 0.0
+
+    poster_path = it.get("poster_path")
+    has_poster = bool(poster_path)
+
+    # Hard drop: no poster + basically no metadata (often junk/obscure entries)
+    if RECS_V3_DROP_NO_POSTER and (not has_poster) and vote_count == 0 and pop < RECS_V3_MIN_POPULARITY:
+        return False
+
+    # If we have enough votes, require a minimum average rating
+    if vote_count >= RECS_V3_MIN_VOTE_COUNT and vote_avg < RECS_V3_MIN_VOTE_AVG:
+        return False
+
+    # If we have very few votes, require some minimum popularity
+    if vote_count < RECS_V3_MIN_VOTE_COUNT and pop < RECS_V3_MIN_POPULARITY:
+        return False
+
+    return True
 import time
 t0 = time.perf_counter()
 def mark(label: str):
@@ -829,6 +870,10 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
+            # Quality floor
+            if not _passes_quality_floor(merged):
+                continue
+
             items.append(merged)
 
         # If filters removed everything, fall back to unfiltered merged candidates
@@ -839,6 +884,11 @@ async def get_recs_v3(
                 merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
                 merged["source"] = base_item.get("source", "reddit_pairs")
                 merged["semantic_sim"] = float(semantic_map.get(int(merged["tmdb_id"]), 0.0))
+
+                # Quality floor
+                if not _passes_quality_floor(merged):
+                    continue
+
                 items.append(merged)
 
         # 10) Build Reddit + TMDB score vectors and personalisation
@@ -1002,6 +1052,7 @@ async def get_recs_v3(
 async def explain_recs_v3_for_show(
     user_id: int,
     tmdb_id: int,
+    request: Request,
     _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Dict[str, Any]:
@@ -1013,8 +1064,10 @@ async def explain_recs_v3_for_show(
         raise HTTPException(status_code=400, detail="Invalid user_id or tmdb_id")
 
     try:
+        client: httpx.AsyncClient = request.app.state.tmdb_client
+        sem = asyncio.Semaphore(8)
         fav_ids = await _fetch_user_favorites(session, user_id)
-        target = await _tmdb_details(tmdb_id)
+        target = await _tmdb_details(client, tmdb_id, sem=sem)
         target_genres = set(target.get("genres") or [])
 
         if not fav_ids:
@@ -1075,7 +1128,7 @@ async def explain_recs_v3_for_show(
                 pair_by_other[o_id] = w_f
 
         fav_subset = fav_ids[: min(len(fav_ids), 30)]
-        results = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_subset], return_exceptions=True)
+        results = await asyncio.gather(*[_tmdb_details(client, fid, sem=sem) for fid in fav_subset], return_exceptions=True)
 
         anchors: List[Dict[str, Any]] = []
         for fav_id, det in zip(fav_subset, results):
@@ -1219,8 +1272,8 @@ mark("hydrated details")
 
 @router.get("/smart-similar/{tmdb_id}")
 async def get_smart_similar_for_show(
-    request: Request,
     tmdb_id: int,
+    request: Request,
     limit: int = Query(20, ge=1, le=50),
 ) -> Any:
     """
@@ -1231,19 +1284,30 @@ async def get_smart_similar_for_show(
     if not api_key:
         return []
 
-    # Use shared client
-    client: httpx.AsyncClient = request.app.state.tmdb_client
+    tmdb_client: httpx.AsyncClient | None = getattr(request.app.state, "tmdb_client", None)
+    if tmdb_client is None:
+        return []
+
+    # Keep this fairly low so we don’t blow up Render or TMDB
+    sem = asyncio.Semaphore(8)
 
     try:
-        rec_ids = await _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=limit * 2)
+        rec_ids = await _tmdb_recommendations_for_fav(
+            client=tmdb_client,
+            tmdb_id=tmdb_id,
+            api_key=api_key,
+            max_n=limit * 2,
+            sem=sem,
+        )
         if not rec_ids:
             return []
 
-        # de-dupe while preserving order
-        seen: set[int] = {tmdb_id}
+        seen: set[int] = set()
         ordered_ids: list[int] = []
         for rid in rec_ids:
             if not isinstance(rid, int):
+                continue
+            if rid == tmdb_id:
                 continue
             if rid in seen:
                 continue
@@ -1252,39 +1316,22 @@ async def get_smart_similar_for_show(
             if len(ordered_ids) >= limit * 2:
                 break
 
-        if not ordered_ids:
-            return []
-
-        # bounded concurrency for details hydration
-        sem = asyncio.Semaphore(8)  # 5–10 is a sensible range on Render
-
-        tasks = [_tmdb_details(client, rid, sem=sem) for rid in ordered_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
         items: list[dict[str, Any]] = []
-        for rid, res in zip(ordered_ids, results):
-            if isinstance(res, Exception):
-                continue
-            title = (res.get("title") or res.get("name") or "").strip()
+        for rid in ordered_ids:
+            details = await _tmdb_details(tmdb_client, rid, sem=sem)
+            title = details.get("title") or details.get("name")
             if not title:
                 continue
-            items.append(res)
+            items.append(details)
             if len(items) >= limit:
                 break
 
         return items
 
     except Exception:
-        # keep endpoint “lightweight”: don’t throw 500s for TMDB hiccups
+        # Fail closed for ShowDetails; don’t blow the whole page up
+        try:
+            log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
+        except Exception:
+            pass
         return []
-
-    
-
-
-    except HTTPException:
-        raise
-    except Exception:
-        log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
-        raise HTTPException(status_code=500, detail="Internal error in smart-similar")
-    mark("response ready")
-

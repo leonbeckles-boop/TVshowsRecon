@@ -468,6 +468,197 @@ def _mmr_diversify(items: List[Dict[str, Any]], k: int, mmr_lambda: float) -> Li
 async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
+from statistics import median
+from fastapi import Request
+
+# Simple “buckets” (non-hardcoded taste; just categorisation)
+REALITY_GENRES = {10764}         # Reality
+DOC_GENRES = {99}               # Documentary
+ANIMATION_GENRES = {16}         # Animation
+TALK_SOAP_GENRES = {10766, 10767}
+
+def _safe_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+def _pct(n: int, d: int) -> float:
+    return (float(n) / float(d)) if d else 0.0
+
+
+@router.get("/diag/profile/{user_id}")
+async def diag_profile(
+    user_id: int,
+    request: Request,
+    _: Any = Depends(require_user_match),
+    session: AsyncSession = Depends(get_async_session),
+) -> Any:
+    """
+    Debug endpoint: builds a per-user taste profile from favourites.
+    Used to tune quality filters + genre drift controls safely per user.
+    """
+    fav_ids = await _fetch_user_favorites(session, user_id)
+    if not fav_ids:
+        return {
+            "user_id": user_id,
+            "n_favorites": 0,
+            "favorite_tmdb_ids": [],
+            "top_genres": [],
+            "top_languages": [],
+            "year_stats": {},
+            "rating_stats": {},
+            "vote_count_stats": {},
+            "content_mix": {},
+            "quality_threshold_suggestions": {},
+        }
+
+    client: httpx.AsyncClient = request.app.state.tmdb_client
+    sem = asyncio.Semaphore(8)
+
+    fav_tasks = [_tmdb_details(client, tid, sem=sem) for tid in fav_ids]
+    fav_raw = await asyncio.gather(*fav_tasks, return_exceptions=True)
+    fav_details: list[dict[str, Any]] = []
+    for i, r in enumerate(fav_raw):
+        if isinstance(r, Exception):
+            fav_details.append({"tmdb_id": fav_ids[i]})
+        else:
+            fav_details.append(r or {"tmdb_id": fav_ids[i]})
+
+    # --- aggregate ---
+    genre_counts: dict[int, int] = {}
+    lang_counts: dict[str, int] = {}
+
+    years: list[int] = []
+    avgs: list[float] = []
+    votes: list[int] = []
+
+    # weighted avg vote_average by vote_count
+    w_sum = 0.0
+    w_den = 0.0
+
+    n_doc = 0
+    n_reality = 0
+    n_animation = 0
+    n_talksoap = 0
+    n_total_with_genres = 0
+
+    for d in fav_details:
+        gids = [g for g in (d.get("genre_ids") or []) if isinstance(g, int)]
+        if gids:
+            n_total_with_genres += 1
+        for g in gids:
+            genre_counts[g] = genre_counts.get(g, 0) + 1
+
+        lang = d.get("original_language")
+        if isinstance(lang, str) and lang.strip():
+            lang_counts[lang.strip()] = lang_counts.get(lang.strip(), 0) + 1
+
+        # year from first_air_date
+        fad = d.get("first_air_date") or ""
+        if isinstance(fad, str) and len(fad) >= 4 and fad[:4].isdigit():
+            years.append(int(fad[:4]))
+
+        va = _safe_float(d.get("vote_average"), 0.0)
+        vc = _safe_int(d.get("vote_count"), 0)
+        avgs.append(va)
+        votes.append(vc)
+
+        if vc > 0:
+            w_sum += va * vc
+            w_den += vc
+
+        gid_set = set(gids)
+        if gid_set & DOC_GENRES:
+            n_doc += 1
+        if gid_set & REALITY_GENRES:
+            n_reality += 1
+        if gid_set & ANIMATION_GENRES:
+            n_animation += 1
+        if gid_set & TALK_SOAP_GENRES:
+            n_talksoap += 1
+
+    # sort top genres/languages
+    top_genres = sorted(
+        [{"genre_id": gid, "count": c, "pct": _pct(c, len(fav_ids))} for gid, c in genre_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:15]
+
+    top_langs = sorted(
+        [{"lang": k, "count": v, "pct": _pct(v, len(fav_ids))} for k, v in lang_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:10]
+
+    # stats helpers
+    def _stats_int(xs: list[int]) -> dict[str, Any]:
+        xs2 = [x for x in xs if isinstance(x, int)]
+        if not xs2:
+            return {}
+        xs2.sort()
+        return {"min": xs2[0], "median": int(median(xs2)), "max": xs2[-1]}
+
+    def _stats_float(xs: list[float]) -> dict[str, Any]:
+        xs2 = [float(x) for x in xs if x is not None]
+        if not xs2:
+            return {}
+        xs2.sort()
+        return {"min": xs2[0], "median": float(median(xs2)), "max": xs2[-1]}
+
+    year_stats = _stats_int(years)
+    rating_stats = _stats_float(avgs)
+    vote_stats = _stats_int(votes)
+
+    weighted_avg = (w_sum / w_den) if w_den > 0 else None
+
+    # --- suggest defaults based on favourites ---
+    # Conservative “quality floors” derived from your own fav distribution:
+    # - vote_average floor = max(6.5, (median - 0.8))
+    # - vote_count floor = max(50, (median_votes * 0.15))
+    med_avg = rating_stats.get("median")
+    med_votes = vote_stats.get("median")
+
+    suggested_min_vote_avg = None
+    suggested_min_votes = None
+    if isinstance(med_avg, (int, float)):
+        suggested_min_vote_avg = max(6.5, float(med_avg) - 0.8)
+    if isinstance(med_votes, int):
+        suggested_min_votes = max(50, int(med_votes * 0.15))
+
+    content_mix = {
+        "documentary_pct": _pct(n_doc, max(1, n_total_with_genres)),
+        "reality_pct": _pct(n_reality, max(1, n_total_with_genres)),
+        "animation_pct": _pct(n_animation, max(1, n_total_with_genres)),
+        "talk_or_soap_pct": _pct(n_talksoap, max(1, n_total_with_genres)),
+    }
+
+    return {
+        "user_id": user_id,
+        "n_favorites": len(fav_ids),
+        "favorite_tmdb_ids": fav_ids,
+        "top_genres": top_genres,
+        "top_languages": top_langs,
+        "year_stats": year_stats,
+        "rating_stats": {
+            **rating_stats,
+            "weighted_avg_by_votes": weighted_avg,
+        },
+        "vote_count_stats": vote_stats,
+        "content_mix": content_mix,
+        "quality_threshold_suggestions": {
+            "min_vote_average": suggested_min_vote_avg,
+            "min_vote_count": suggested_min_votes,
+            "note": "Suggested floors derived from your favourites; safe starting defaults for per-user quality filters.",
+        },
+    }
+
 
 
 @router.get("/diag/quality-filter/{user_id}")

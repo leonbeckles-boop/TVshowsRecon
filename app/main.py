@@ -1,115 +1,114 @@
-# app/main.py — single FastAPI app, CORS fixed, lifespan client, /api mounted once
-
-from __future__ import annotations
-
+import os
 import logging
-import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRouter
 
-log = logging.getLogger("startup")
+# Routers
+from app.routes import auth, tmdb, discover, ratings, users, shows
+from app.routes import recs_v3
+from app.routes import admin, wrapped
+
+log = logging.getLogger("uvicorn.error")
+
+
+def _cors_origins() -> list[str]:
+    """
+    Read allowed CORS origins from env, falling back to sensible defaults.
+    Set in Render as:
+      CORS_ORIGINS=https://your-frontend.vercel.app,http://localhost:5173
+    """
+    raw = (os.getenv("CORS_ORIGINS") or "").strip()
+    if raw:
+        return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+
+    # Defaults (safe + practical)
+    return [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        # Add your custom domain here if you have one:
+        # "https://whatnext.yourdomain.com",
+    ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Reusable TMDB client for the whole app lifetime
+    # Shared TMDB client (connection pooling)
     limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
     timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
-    app.state.tmdb_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+    app.state.tmdb_client = httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        headers={"Accept": "application/json"},
+        http2=False,  # keep False unless you install httpx[http2]
+    )
+
     try:
         yield
     finally:
-        await app.state.tmdb_client.aclose()
+        try:
+            await app.state.tmdb_client.aclose()
+        except Exception:
+            pass
 
 
-app = FastAPI(
-    title="TVshowsRecon API",
-    version="1.0.0",
-    openapi_url="/api/openapi.json",
-    docs_url="/api/docs",
-    redoc_url=None,
-    lifespan=lifespan,
-)
+app = FastAPI(title="WhatNext API", lifespan=lifespan)
 
-# ---- CORS (fixes OPTIONS preflights) ----
+# ✅ CORS MUST be installed on `app` (not the APIRouter)
+cors_origins = _cors_origins()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://whatnexttv.vercel.app",
-    ],
-    allow_origin_regex=r"^https://.*\.vercel\.app$",
-    allow_credentials=False,  # keep False for Bearer-token auth
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*"],  # includes Authorization
-    max_age=86400,
+    allow_origins=cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # allows preview deploys
+    allow_credentials=True,
+    allow_methods=["*"],  # includes OPTIONS (preflight)
+    allow_headers=["*"],  # includes Authorization, Content-Type, etc.
 )
 
 
-@app.middleware("http")
-async def log_request_time(request: Request, call_next):
-    t0 = time.perf_counter()
-    resp = await call_next(request)
-    dt = (time.perf_counter() - t0) * 1000
-    print(
-        f"[http] {request.method} {request.url.path}?{request.url.query} -> {resp.status_code} in {dt:.1f}ms"
-    )
-    return resp
-
-
-# ---- Health & route debug ----
 @app.get("/")
-def root():
-    return {"status": "ok", "service": "whatnext-api"}
+def root() -> dict[str, Any]:
+    return {"ok": True, "service": "whatnext-api"}
 
 
-@app.get("/api/health", tags=["default"])
-async def health() -> Dict[str, Any]:
+@app.get("/api/health")
+def health() -> dict[str, Any]:
     return {"ok": True}
 
 
-@app.get("/api/_debug/routes", tags=["default"])
-async def list_routes() -> List[Dict[str, Any]]:
+@app.get("/api/_debug/routes")
+def list_routes() -> list[dict[str, Any]]:
     out = []
-    for r in app.routes:
-        methods = sorted(getattr(r, "methods", []) or [])
-        out.append({"path": r.path, "methods": methods, "name": getattr(r, "name", "")})
+    for r in app.router.routes:
+        try:
+            methods = sorted(list(getattr(r, "methods", []) or []))
+            out.append({"path": getattr(r, "path", ""), "methods": methods, "name": getattr(r, "name", "")})
+        except Exception:
+            continue
     return out
 
 
-# ---- /api namespace ----
+# -----------------------------
+# API router mount
+# -----------------------------
 api = APIRouter(prefix="/api")
 
+api.include_router(auth.router)
+api.include_router(tmdb.router)
+api.include_router(discover.router)
+api.include_router(ratings.router)
+api.include_router(users.router)
+api.include_router(shows.router)
+api.include_router(recs_v3.router)
+api.include_router(admin.router)
+api.include_router(wrapped.router)
 
-def _include(router_import: str, attr: str = "router", *, name_hint: str = "") -> None:
-    """Import a router lazily and include it; log but don't crash if missing."""
-    try:
-        mod = __import__(router_import, fromlist=[attr])
-        router = getattr(mod, attr)
-        api.include_router(router)
-        log.info("Mounted router: %s (%s)", name_hint or router_import, getattr(router, "prefix", ""))
-    except Exception as e:
-        log.warning("Skipping router %s: %s", name_hint or router_import, e)
-
-
-# ---- Mount routers (no /api duplication inside the route modules) ----
-_include("app.routes.recs_v3", name_hint="recs v3")
-_include("app.routes.discover", name_hint="discover")
-_include("app.routes.ratings", name_hint="ratings")
-_include("app.routes.users", name_hint="users")
-_include("app.routes.shows", name_hint="shows")
-_include("app.routes.tmdb", name_hint="tmdb")
-_include("app.routes.auth", name_hint="auth")
-_include("app.routes.admin_reddit", name_hint="admin_reddit")
-_include("app.routes.not_interested", name_hint="not_interested")
-_include("app.routes.wrapped", name_hint="wrapped")
-_include("app.routes.admin", name_hint="admin")
-
-# Attach the /api router once (prevents /api/api duplication)
 app.include_router(api)

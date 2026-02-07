@@ -193,25 +193,21 @@ async def _fetch_tmdb_candidates(
 
 
 async def _fetch_tmdb_trending_candidates(
+    client: httpx.AsyncClient,
     allowed_langs: set[str],
     fav_genres: set[int],
     block_ids: set[int],
     limit: int,
 ) -> List[Dict[str, Any]]:
-    """
-    Build candidate list from TMDB /trending/tv/week, filtered by
-    user's languages + favourite genres.
-
-    Returns [{ tmdb_id, score_raw, source="tmdb_trending" }, ...].
-    """
     api_key = _tmdb_api_key()
     if not api_key:
         return []
 
-    url = f"{TMDB_API}/trending/tv/week?api_key={api_key}"
+    url = f"{TMDB_API}/trending/tv/week"
+    params = {"api_key": api_key}
+
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
+        r = await client.get(url, params=params)
     except Exception:
         return []
 
@@ -253,13 +249,15 @@ async def _fetch_tmdb_trending_candidates(
             pop = 0.0
 
         base = math.log10(1.0 + max(pop, 0.0))
-        score_raw = 0.3 + 0.4 * base  # trending should be a nudge
+        score_raw = 0.3 + 0.4 * base
 
         items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
         if len(items) >= max_items:
             break
 
     return items
+
+
 
 mark("candidates built")
 
@@ -700,7 +698,7 @@ async def get_recs_v3(
       - combine with weights + optional MMR diversity
     """
     try:
-        client: httpx.AsyncClient = request.app.state.tmdb_client
+        tmdb_client: httpx.AsyncClient = request.app.state.tmdb_client
         sem = asyncio.Semaphore(8)  # 5-10 is a good Render range
 
         # 1) Blocked IDs (favourites + not-interested)
@@ -725,22 +723,22 @@ async def get_recs_v3(
                     "w_reddit": w_reddit,
                     "w_personal": w_personal,
                     "mmr_lambda": mmr_lambda,
+                    "w_semantic": w_semantic,
                 },
             }
 
         # 3) Reddit candidates (from global reddit_pairs anchored on favourites)
         reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
-        # 4) Favourite details for language/genre profile
-        fav_tasks = [_tmdb_details(client, fid, sem=sem) for fid in fav_ids]
+        # 4) Favourite details for language/genre profile (reuse shared tmdb_client + semaphore)
+        fav_tasks = [_tmdb_details(tmdb_client, fid, sem=sem) for fid in fav_ids]
         fav_results = await asyncio.gather(*fav_tasks, return_exceptions=True)
         fav_details: List[Dict[str, Any]] = [r for r in fav_results if not isinstance(r, Exception)]
-
 
         # 4b) Semantic profile + semantic candidates (pgvector)
         user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
         semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
-        
+
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
 
@@ -756,27 +754,17 @@ async def get_recs_v3(
         fav_genres_all = set(fav_genre_counts.keys())
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
-        # 5) TMDB recs from favourites
-        tmdb_client = getattr(request.app.state, "tmdb_client", None)
-
-        tmdb_base = await _fetch_tmdb_candidates(client=tmdb_client,
-            fav_ids=fav_ids,
-            block_ids=block_ids,
-            limit=limit,
-        )
-        
-        tmdb_base = []
-        if tmdb_client is not None:
-            tmdb_base = await _fetch_tmdb_candidates(
+        # 5) TMDB recs from favourites (reuse shared tmdb_client)
+        tmdb_base = await _fetch_tmdb_candidates(
             client=tmdb_client,
             fav_ids=fav_ids,
             block_ids=block_ids,
             limit=limit,
-            )
+        )
 
-
-        # 6) TMDB trending, filtered by taste
+        # 6) TMDB trending, filtered by taste (IMPORTANT: pass shared client)
         trending_base = await _fetch_tmdb_trending_candidates(
+            client=tmdb_client,
             allowed_langs=allowed_langs,
             fav_genres=fav_genres_all,
             block_ids=block_ids,
@@ -807,19 +795,19 @@ async def get_recs_v3(
                     "w_reddit": w_reddit,
                     "w_personal": w_personal,
                     "mmr_lambda": mmr_lambda,
+                    "w_semantic": w_semantic,
                     "reason": "no_candidates",
                 },
             }
 
-        # 8) Fetch TMDB details for candidates
+        # 8) Fetch TMDB details for candidates (reuse shared tmdb_client + semaphore)
         tmdb_ids = [b["tmdb_id"] for b in base]
-        detail_tasks = [_tmdb_details(client, tid, sem=sem) for tid in tmdb_ids]
+        detail_tasks = [_tmdb_details(tmdb_client, tid, sem=sem) for tid in tmdb_ids]
         details_list_raw = await asyncio.gather(*detail_tasks, return_exceptions=True)
         details_list: List[Dict[str, Any]] = [
             ({"tmdb_id": tmdb_ids[i]} if isinstance(res, Exception) else (res or {"tmdb_id": tmdb_ids[i]}))
             for i, res in enumerate(details_list_raw)
         ]
-
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []
@@ -860,14 +848,14 @@ async def get_recs_v3(
         semantic_vals: List[float] = []
 
         for it in items:
-            # Reddit score: log-squashed score_raw
-                        # Semantic similarity (already ~0..1)
+            # Semantic similarity (already ~0..1)
             try:
-                sem = float(it.get("semantic_sim") or 0.0)
+                sem_v = float(it.get("semantic_sim") or 0.0)
             except Exception:
-                sem = 0.0
-            semantic_vals.append(max(0.0, min(sem, 1.0)))
+                sem_v = 0.0
+            semantic_vals.append(max(0.0, min(sem_v, 1.0)))
 
+            # Reddit score: log-squashed score_raw
             try:
                 raw = float(it.get("score_raw") or 0.0)
             except Exception:
@@ -914,6 +902,7 @@ async def get_recs_v3(
             w_reddit = 1.0
             w_tmdb = 0.0
             w_personal = 0.0
+            w_semantic = 0.0
             total_w = 1.0
 
         scale = 1.0 / total_w
@@ -949,7 +938,6 @@ async def get_recs_v3(
                 "semantic": w_semantic_eff,
             }
             combined_items.append(enriched)
-    
 
         try:
             from app.services.llm_rerank import rerank_candidates  # type: ignore
@@ -957,12 +945,7 @@ async def get_recs_v3(
             rerank_candidates = None
 
         if rerank_candidates is not None and len(combined_items) >= 5:
-            # Sort by current blended score and rerank only the top slice
-            combined_items = sorted(
-                combined_items,
-                key=lambda x: float(x.get("score", 0.0)),
-                reverse=True,
-            )
+            combined_items = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)
 
             top_n = min(len(combined_items), int(os.getenv("LLM_RERANK_CANDIDATES", "60")))
             top_slice = combined_items[:top_n]
@@ -976,11 +959,9 @@ async def get_recs_v3(
             order = rerank_candidates(favorite_titles=fav_titles, candidates=top_slice)
 
             if order:
-                by_id = {int(x["tmdb_id"]): x for x in top_slice}
-                reranked = [by_id[i] for i in order if i in by_id]
+                by_id2 = {int(x["tmdb_id"]): x for x in top_slice}
+                reranked = [by_id2[i] for i in order if i in by_id2]
                 combined_items = reranked + combined_items[top_n:]
-
-
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:
@@ -1000,21 +981,21 @@ async def get_recs_v3(
                 "w_tmdb": w_tmdb,
                 "w_reddit": w_reddit,
                 "w_personal": w_personal,
-                "mmr_lambda": mmr_lambda,
                 "w_semantic": w_semantic,
+                "mmr_lambda": mmr_lambda,
             },
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        # Ensure something shows up even if logging config is minimal on Render
         try:
             print("recs_v3 exception:", repr(e), flush=True)
         except Exception:
             pass
         log.exception("recs_v3 failed user_id=%s limit=%s flat=%s", user_id, limit, flat)
         raise HTTPException(status_code=500, detail="Internal error in recs_v3")
+
 
 
 @router.get("/explain/{user_id}/{tmdb_id}")

@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, Body, Query, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,14 +17,13 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 from fastapi import Depends, HTTPException, status
 from app.routes.auth import get_current_user
 
-async def require_admin(user=Depends(get_current_user)):
+async def require_admin(user: Any = Depends(get_current_user)) -> Any:
     if not getattr(user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
     return user
-
 
 def _get_password_hasher():
     """

@@ -1,38 +1,23 @@
-# app/routes/admin.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, List
-import anyio
-from datetime import datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, text
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
 
-# --- Auth / DB imports ---
-from app.routes.auth import (
-    get_current_user,
-    get_db,
-    pwd_context,
-)
-from app.models_auth import AuthUser
-
-# --- DBs & models for Reddit admin ---
-# Use the SAME sync session as the ingestor to avoid cross-engine mismatches
-from app.database import SessionLocal  # sync session used by ingest
-from app.db_models import RedditPost
-
-try:
-    from app.services.reddit_ingest import ingest_once as _ingest
-except Exception:
-    _ingest = None
-
-router = APIRouter(prefix="/admin", tags=["Admin"])
+from app.db.session import get_async_session
 
 
-# ───────────────── Admin guard ─────────────────
-async def require_admin(user = Depends(get_current_user)):
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+from fastapi import Depends, HTTPException, status
+from app.routes.auth import get_current_user
+
+async def require_admin(user=Depends(get_current_user)):
     if not getattr(user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -41,191 +26,170 @@ async def require_admin(user = Depends(get_current_user)):
     return user
 
 
-# ───────────────── Reddit admin endpoints ─────────────────
-@router.post("/reddit/refresh", summary="Refresh Reddit snapshot (ingest)")
-async def reddit_refresh(
-    limit_posts: int = Query(80, ge=10, le=500),
-    subs: Optional[str] = Query(
-        None, description="Comma separated subreddits, e.g. televisionsuggestions,netflix"
-    ),
-    timespan: str = Query("month", regex="^(hour|day|week|month|year|all)$"),
-    _admin: Any = Depends(require_admin),
-) -> Dict[str, Any]:
-    if _ingest is None:
-        raise HTTPException(
-            status_code=503, detail="reddit_ingest not importable in this build"
-        )
+def _get_password_hasher():
+    """
+    Prefer project's canonical hashing helper if present.
+    Falls back to passlib bcrypt (requires passlib[bcrypt]).
+    """
     try:
-        subs_list: Optional[List[str]] = None
-        if subs:
-            subs_list = [s.strip() for s in subs.split(",") if s.strip()]
-        result = await anyio.to_thread.run_sync(
-            _ingest, limit_posts, subs_list, timespan
-        )
+        from app.auth.security import get_password_hash  # type: ignore
+        return get_password_hash
+    except Exception:
+        pass
+
+    try:
+        from app.auth.utils import get_password_hash  # type: ignore
+        return get_password_hash
+    except Exception:
+        pass
+
+    try:
+        from passlib.context import CryptContext  # type: ignore
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+        def _hash(pw: str) -> str:
+            return pwd_context.hash(pw)
+
+        return _hash
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"reddit refresh failed: {e}")
-    return {"ok": bool(result), "result": result}
+        raise RuntimeError(
+            "No password hashing function found. "
+            "Add app.auth.security.get_password_hash or install passlib[bcrypt]."
+        ) from e
 
 
-@router.get("/reddit/status", summary="Status of Reddit snapshot")
-async def reddit_status(_admin: Any = Depends(require_admin)) -> Dict[str, Any]:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    is_admin: bool = False
+    created_at: Optional[datetime] = None
+
+
+class AdminStatsOut(BaseModel):
+    total_users: int
+    new_users_last_7_days: int
+    total_favorites: int
+    users_with_favorites: int
+    total_ratings: int
+    users_with_ratings: int
+    total_not_interested: int
+
+
+class ResetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=6, max_length=256)
+
+
+@router.get("/stats", response_model=AdminStatsOut, dependencies=[Depends(require_admin)])
+async def admin_stats(session: AsyncSession = Depends(get_async_session)) -> Any:
     """
-    Count rows using the SAME sync SessionLocal as ingest.
-    Returns both ORM and RAW counts to avoid mapping/metadata surprises.
+    Lightweight admin stats for dashboard.
+    Uses SQL for speed and avoids ORM coupling.
     """
+    seven_days_ago = _utc_now() - timedelta(days=7)
 
-    def _read_status_sync() -> Dict[str, Any]:
-        with SessionLocal() as db:
-            count_orm = 0
-            count_raw = 0
-            last_epoch: Optional[float] = None
-
-            # ORM first
-            try:
-                count_orm = int(
-                    db.execute(
-                        select(func.count()).select_from(RedditPost)
-                    ).scalar_one()
-                    or 0
-                )
-            except Exception:
-                count_orm = 0
-
-            # Raw fallback — adjust table name if your model uses a different one
-            try:
-                count_raw = int(
-                    db.execute(text("SELECT COUNT(*) FROM reddit_posts")).scalar_one()
-                    or 0
-                )
-            except Exception:
-                count_raw = 0
-
-            # best-effort last refresh from common columns
-            for col_name in (
-                "created_utc",
-                "created_at",
-                "ingested_at",
-                "updated_at",
-            ):
-                col = getattr(RedditPost, col_name, None)
-                if col is None:
-                    continue
-                try:
-                    val = db.execute(select(func.max(col))).scalar_one()
-                    if val:
-                        if hasattr(val, "timestamp"):
-                            last_epoch = float(val.timestamp())
-                        elif isinstance(val, (int, float)):
-                            last_epoch = float(val)
-                        break
-                except Exception:
-                    pass
-
-            # prefer ORM count if non-zero, else raw
-            sample = count_orm or count_raw
-            return {
-                "last_refresh_epoch": last_epoch,
-                "has_snapshot": bool(sample > 0),
-                "sample_size": int(sample),
-                "debug": {"count_orm": count_orm, "count_raw": count_raw},
-            }
-
-    return await anyio.to_thread.run_sync(_read_status_sync)
+    q = text(
+        """
+        WITH users AS (
+            SELECT id, created_at
+            FROM auth_users
+        )
+        SELECT
+            (SELECT COUNT(*) FROM users)                                      AS total_users,
+            (SELECT COUNT(*) FROM users WHERE created_at >= :since)           AS new_users_last_7_days,
+            (SELECT COUNT(*) FROM user_favorites)                             AS total_favorites,
+            (SELECT COUNT(DISTINCT user_id) FROM user_favorites)              AS users_with_favorites,
+            (SELECT COUNT(*) FROM ratings)                                    AS total_ratings,
+            (SELECT COUNT(DISTINCT user_id) FROM ratings)                     AS users_with_ratings,
+            (SELECT COUNT(*) FROM not_interested)                             AS total_not_interested
+        """
+    )
+    row = (await session.execute(q, {"since": seven_days_ago})).mappings().first()
+    if not row:
+        return AdminStatsOut(
+            total_users=0,
+            new_users_last_7_days=0,
+            total_favorites=0,
+            users_with_favorites=0,
+            total_ratings=0,
+            users_with_ratings=0,
+            total_not_interested=0,
+        )
+    return AdminStatsOut(**row)
 
 
-# ───────────────── User management & stats ─────────────────
-@router.get("/users", summary="List all users")
-async def list_users(
-    db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
-):
-    res = await db.execute(select(AuthUser))
-    users = res.scalars().all()
-    return [
-        {
-            "id": u.id,
-            "email": u.email,
-            "username": u.username,
-            "created_at": u.created_at,
-            "is_admin": getattr(u, "is_admin", False),
-        }
-        for u in users
-    ]
+@router.get("/users", response_model=List[AdminUserOut], dependencies=[Depends(require_admin)])
+async def admin_list_users(
+    q: str = Query("", max_length=200, description="Search by email/username"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_async_session),
+) -> Any:
+    """
+    List users for admin panel (supports simple search + pagination).
+    """
+    like = f"%{q.strip()}%" if q and q.strip() else None
+
+    sql = text(
+        """
+        SELECT id, email, username, is_admin, created_at
+        FROM auth_users
+        WHERE (:like IS NULL)
+           OR (email ILIKE :like)
+           OR (username ILIKE :like)
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT :limit
+        OFFSET :offset
+        """
+    )
+    rows = (await session.execute(sql, {"like": like, "limit": limit, "offset": offset})).mappings().all()
+    return [AdminUserOut(**r) for r in rows]
 
 
-@router.delete("/users/{user_id}", status_code=204, summary="Delete user")
-async def delete_user(
-    user_id: int,
-    db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
-):
-    user = await db.get(AuthUser, user_id)
-    if not user:
+@router.delete("/users/{user_id}", status_code=204, dependencies=[Depends(require_admin)])
+async def admin_delete_user(user_id: int, session: AsyncSession = Depends(get_async_session)) -> Any:
+    """
+    Deletes a user and associated user-owned rows.
+    """
+    if user_id == 1 and os.getenv("ADMIN_PROTECT_USER1", "1") == "1":
+        raise HTTPException(status_code=400, detail="Primary admin user cannot be deleted")
+
+    exists = (await session.execute(text("SELECT 1 FROM auth_users WHERE id=:id"), {"id": user_id})).first()
+    if not exists:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await db.delete(user)
-    await db.commit()
-    return
+    await session.execute(text("DELETE FROM user_favorites WHERE user_id=:id"), {"id": user_id})
+    await session.execute(text("DELETE FROM ratings WHERE user_id=:id"), {"id": user_id})
+    await session.execute(text("DELETE FROM not_interested WHERE user_id=:id"), {"id": user_id})
+
+    await session.execute(text("DELETE FROM auth_users WHERE id=:id"), {"id": user_id})
+    await session.commit()
+    return None
 
 
-class ResetPasswordBody(BaseModel):
-    new_password: str
-
-
-@router.post(
-    "/users/{user_id}/reset-password",
-    summary="Admin: reset user password",
-)
-async def reset_password(
+@router.post("/users/{user_id}/reset-password", status_code=204, dependencies=[Depends(require_admin)])
+async def admin_reset_password(
     user_id: int,
-    body: ResetPasswordBody,
-    db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
-):
-    user = await db.get(AuthUser, user_id)
-    if not user:
+    payload: ResetPasswordIn = Body(...),
+    session: AsyncSession = Depends(get_async_session),
+) -> Any:
+    """
+    Reset a user's password (admin-only).
+    """
+    row = (await session.execute(text("SELECT id FROM auth_users WHERE id=:id"), {"id": user_id})).first()
+    if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.password_hash = pwd_context.hash(body.new_password)
-    db.add(user)
-    await db.commit()
-    return {"detail": "Password updated"}
+    hash_fn = _get_password_hasher()
+    pw_hash = hash_fn(payload.new_password)
 
-
-@router.get("/stats", summary="Basic user analytics")
-async def admin_stats(
-    db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
-):
-    # Total users
-    total_users = await db.scalar(select(func.count(AuthUser.id)))
-
-    # New users in last 7 days (new accounts)
-    last_7 = datetime.utcnow() - timedelta(days=7)
-    new_users = await db.scalar(
-        select(func.count(AuthUser.id)).where(AuthUser.created_at >= last_7)
+    await session.execute(
+        text("UPDATE auth_users SET password_hash=:pw, updated_at=:now WHERE id=:id"),
+        {"pw": pw_hash, "now": _utc_now(), "id": user_id},
     )
-
-    # Usage from core tables — using raw SQL for simplicity
-    total_favorites = await db.scalar(text("SELECT COUNT(*) FROM user_favorites"))
-    total_ratings = await db.scalar(text("SELECT COUNT(*) FROM ratings"))
-    total_not_interested = await db.scalar(
-        text("SELECT COUNT(*) FROM not_interested")
-    )
-
-    users_with_favorites = await db.scalar(
-        text("SELECT COUNT(DISTINCT user_id) FROM user_favorites")
-    )
-    users_with_ratings = await db.scalar(
-        text("SELECT COUNT(DISTINCT user_id) FROM ratings")
-    )
-
-    return {
-        "total_users": int(total_users or 0),
-        "new_users_last_7_days": int(new_users or 0),
-        "total_favorites": int(total_favorites or 0),
-        "total_ratings": int(total_ratings or 0),
-        "total_not_interested": int(total_not_interested or 0),
-        "users_with_favorites": int(users_with_favorites or 0),
-        "users_with_ratings": int(users_with_ratings or 0),
-    }
+    await session.commit()
+    return None

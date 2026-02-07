@@ -4,18 +4,15 @@ import asyncio
 import logging
 import math
 import os
-import ast
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
 from app.security import require_user_match
-from fastapi import Request
-import httpx
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
@@ -28,54 +25,6 @@ log = logging.getLogger("recs_v3")
 MIN_FAVORITES = 3
 
 
-
-# Quality floor to avoid junk results (0 votes, 0 rating, missing posters, etc.)
-# Tunable via env vars so you can tweak without code changes.
-RECS_V3_MIN_VOTE_COUNT = int(os.getenv("RECS_V3_MIN_VOTE_COUNT", "50"))
-RECS_V3_MIN_VOTE_AVG = float(os.getenv("RECS_V3_MIN_VOTE_AVG", "6.8"))
-RECS_V3_MIN_POPULARITY = float(os.getenv("RECS_V3_MIN_POPULARITY", "5.0"))
-RECS_V3_DROP_NO_POSTER = os.getenv("RECS_V3_DROP_NO_POSTER", "1").strip() not in {"0", "false", "False"}
-
-
-def _passes_quality_floor(it: Dict[str, Any]) -> bool:
-    """Return False for low-quality / low-signal items."""
-    try:
-        vote_count = int(it.get("vote_count") or 0)
-    except Exception:
-        vote_count = 0
-    try:
-        vote_avg = float(it.get("vote_average") or 0.0)
-    except Exception:
-        vote_avg = 0.0
-    try:
-        pop = float(it.get("popularity") or 0.0)
-    except Exception:
-        pop = 0.0
-
-    poster_path = it.get("poster_path")
-    has_poster = bool(poster_path)
-
-    # Hard drop: no poster + basically no metadata (often junk/obscure entries)
-    if RECS_V3_DROP_NO_POSTER and (not has_poster) and vote_count == 0 and pop < RECS_V3_MIN_POPULARITY:
-        return False
-
-    # If we have enough votes, require a minimum average rating
-    if vote_count >= RECS_V3_MIN_VOTE_COUNT and vote_avg < RECS_V3_MIN_VOTE_AVG:
-        return False
-
-    # If we have very few votes, require some minimum popularity
-    if vote_count < RECS_V3_MIN_VOTE_COUNT and pop < RECS_V3_MIN_POPULARITY:
-        return False
-
-    return True
-import time
-t0 = time.perf_counter()
-def mark(label: str):
-    dt = time.perf_counter() - t0
-    print(f"[recs_v3] +{dt:0.3f}s {label}")
-
-
-mark("start")
 # ---------------------------------------------------------------------------
 # TMDB helpers
 # ---------------------------------------------------------------------------
@@ -88,29 +37,23 @@ def _tmdb_api_key() -> str | None:
     return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
 
 
-import asyncio
-import httpx
-from typing import Any, Dict
-
-async def _tmdb_details(
-    client: httpx.AsyncClient,
-    tmdb_id: int,
-    sem: asyncio.Semaphore | None = None,
-) -> Dict[str, Any]:
+async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
+    """
+    Fetch TV details for a tmdb_id from TMDB.
+    Returns a dict with the same shape v1/v2 use:
+      tmdb_id, name/title, overview, poster_path/url, genres, genre_ids, etc.
+    """
     api_key = _tmdb_api_key()
     if not api_key:
         return {"tmdb_id": tmdb_id}
 
-    url = f"{TMDB_API}/tv/{tmdb_id}"
-    params = {"api_key": api_key}
+    url = f"{TMDB_API}/tv/{tmdb_id}?api_key={api_key}"
 
     try:
-        if sem is None:
-            r = await client.get(url, params=params)
-        else:
-            async with sem:
-                r = await client.get(url, params=params)
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
     except Exception:
+        # Network error – return minimal
         return {"tmdb_id": tmdb_id}
 
     if r.status_code != 200:
@@ -124,9 +67,12 @@ async def _tmdb_details(
     genres_arr = data.get("genres") or []
     genre_names = [str(g.get("name")).strip() for g in genres_arr if g and g.get("name")]
 
+    # TMDB genre ids are ints, but keep the guard anyway
     genre_ids: list[int] = []
     for g in genres_arr:
-        gid = (g or {}).get("id")
+        if not g:
+            continue
+        gid = g.get("id")
         if isinstance(gid, int):
             genre_ids.append(gid)
 
@@ -148,28 +94,15 @@ async def _tmdb_details(
     }
 
 
-mark("favs/ratings/blocks fetched")
-
-async def _tmdb_recommendations_for_fav(
-    client: httpx.AsyncClient,
-    tmdb_id: int,
-    api_key: str,
-    max_n: int = 20,
-    sem: asyncio.Semaphore | None = None,
-) -> List[int]:
+async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int = 20) -> List[int]:
     """
     Fetch TMDB recommendations for a single favourite show.
     Returns a list of recommended tmdb_ids (TV).
     """
-    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations"
-    params = {"api_key": api_key}
-
+    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations?api_key={api_key}"
     try:
-        if sem:
-            async with sem:
-                r = await client.get(url, params=params)
-        else:
-            r = await client.get(url, params=params)
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
     except Exception:
         return []
 
@@ -178,23 +111,15 @@ async def _tmdb_recommendations_for_fav(
 
     data = r.json() or {}
     results = data.get("results") or []
-
     out: List[int] = []
     for row in results[:max_n]:
         tid = row.get("id")
         if isinstance(tid, int):
             out.append(tid)
-
     return out
 
 
-
-async def _fetch_tmdb_candidates(
-    client: httpx.AsyncClient,
-    fav_ids: List[int],
-    block_ids: set[int],
-    limit: int,
-) -> List[Dict[str, Any]]:
+async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit: int) -> List[Dict[str, Any]]:
     """
     Build TMDB-based candidate list from favourites using /tv/{id}/recommendations.
     Returns [{ tmdb_id, score_raw, source="tmdb_recs" }, ...].
@@ -206,13 +131,7 @@ async def _fetch_tmdb_candidates(
     # Limit how many favourites we query to avoid spamming TMDB
     fav_slice = fav_ids[: min(len(fav_ids), 10)]
 
-    # Concurrency cap so we don’t blast TMDB / overload Render
-    sem = asyncio.Semaphore(5)
-
-    tasks = [
-        _tmdb_recommendations_for_fav(client, fid, api_key, max_n=20, sem=sem)
-        for fid in fav_slice
-    ]
+    tasks = [_tmdb_recommendations_for_fav(fid, api_key, max_n=20) for fid in fav_slice]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     tmdb_ids: set[int] = set()
@@ -232,23 +151,26 @@ async def _fetch_tmdb_candidates(
     return items
 
 
-
 async def _fetch_tmdb_trending_candidates(
-    client: httpx.AsyncClient,
     allowed_langs: set[str],
     fav_genres: set[int],
     block_ids: set[int],
     limit: int,
 ) -> List[Dict[str, Any]]:
+    """
+    Build candidate list from TMDB /trending/tv/week, filtered by
+    user's languages + favourite genres.
+
+    Returns [{ tmdb_id, score_raw, source="tmdb_trending" }, ...].
+    """
     api_key = _tmdb_api_key()
     if not api_key:
         return []
 
-    url = f"{TMDB_API}/trending/tv/week"
-    params = {"api_key": api_key}
-
+    url = f"{TMDB_API}/trending/tv/week?api_key={api_key}"
     try:
-        r = await client.get(url, params=params)
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
     except Exception:
         return []
 
@@ -290,7 +212,7 @@ async def _fetch_tmdb_trending_candidates(
             pop = 0.0
 
         base = math.log10(1.0 + max(pop, 0.0))
-        score_raw = 0.3 + 0.4 * base
+        score_raw = 0.3 + 0.4 * base  # trending should be a nudge
 
         items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
         if len(items) >= max_items:
@@ -298,9 +220,6 @@ async def _fetch_tmdb_trending_candidates(
 
     return items
 
-
-
-mark("candidates built")
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -350,170 +269,6 @@ async def _fetch_user_favorites(session: AsyncSession, user_id: int) -> List[int
             continue
     return favs
 
-# ---------------------------------------------------------------------------
-# Semantic (pgvector) helpers
-# ---------------------------------------------------------------------------
-
-EMBED_DIM = 384  # you migrated show_embeddings/user_profiles to vector(384)
-
-def _vec_to_pgvector_literal(vec: List[float]) -> str:
-    """
-    pgvector accepts '[0.1,0.2,...]' string literal.
-    Keep it compact + deterministic.
-    """
-    return "[" + ",".join(f"{float(x):.6f}" for x in vec) + "]"
-
-
-def _avg_vectors(vectors: List[List[float]]) -> List[float]:
-    if not vectors:
-        return []
-    dim = len(vectors[0])
-    out = [0.0] * dim
-    n = 0
-    for v in vectors:
-        if not v or len(v) != dim:
-            continue
-        for i, x in enumerate(v):
-            out[i] += float(x)
-        n += 1
-    if n <= 0:
-        return []
-    inv = 1.0 / n
-    return [x * inv for x in out]
-
-def _embedding_to_list(emb: Any) -> Optional[List[float]]:
-    if emb is None:
-        return None
-
-    if hasattr(emb, "to_list"):
-        try:
-            return [float(x) for x in emb.to_list()]
-        except Exception:
-            pass
-    if hasattr(emb, "tolist"):
-        try:
-            return [float(x) for x in emb.tolist()]
-        except Exception:
-            pass
-
-    if isinstance(emb, (list, tuple)):
-        try:
-            return [float(x) for x in emb]
-        except Exception:
-            return None
-
-    if isinstance(emb, str):
-        try:
-            parsed = ast.literal_eval(emb)
-            if isinstance(parsed, (list, tuple)):
-                return [float(x) for x in parsed]
-        except Exception:
-            return None
-
-    return None
-
-
-async def _fetch_embeddings_for_tmdb_ids(
-    session: AsyncSession,
-    tmdb_ids: List[int],
-) -> List[List[float]]:
-    """
-    Pull embeddings for a list of TMDB ids from show_embeddings.
-    Returns list of vectors (python lists).
-    """
-    if not tmdb_ids:
-        return []
-
-    sql = text("""
-        SELECT tmdb_id, embedding
-        FROM show_embeddings
-        WHERE tmdb_id IN :ids
-    """).bindparams(bindparam("ids", expanding=True))
-
-
-    res = await session.execute(sql, {"ids": tmdb_ids})
-    rows = res.mappings().all()
-
-    vectors: List[List[float]] = []
-    for r in rows:
-        vec = _embedding_to_list(r.get("embedding"))
-        if vec and len(vec) == EMBED_DIM:
-            vectors.append(vec)
-    return vectors
-
-
-
-async def _user_profile_embedding_from_favs(session: AsyncSession, fav_ids: List[int]) -> List[float]:
-    """
-    Simple user profile embedding = mean of favourite show embeddings.
-    """
-    vecs = await _fetch_embeddings_for_tmdb_ids(session, fav_ids)
-    return _avg_vectors(vecs)
-
-
-async def _semantic_candidates(
-    session: AsyncSession,
-    user_vec: List[float],
-    block_ids: set[int],
-    limit: int,
-) -> Dict[int, float]:
-    """
-    Return {tmdb_id: semantic_sim} where semantic_sim is ~0..1.
-    Uses cosine distance (<=>). Similarity = 1 - distance.
-    """
-    if not user_vec:
-        return {}
-
-    # Overfetch to allow later dedupe/filtering
-    raw_limit = max(limit * 6, limit * 3, limit)
-
-    vlit = _vec_to_pgvector_literal(user_vec)
-
-    sql = text(
-        """
-        SELECT tmdb_id, (embedding <=> (:v)::vector) AS dist
-        FROM show_embeddings
-        ORDER BY embedding <=> (:v)::vector ASC
-        LIMIT :lim
-        """
-    )
-
-    res = await session.execute(sql, {"v": vlit, "lim": raw_limit})
-    rows = res.mappings().all()
-
-    out: Dict[int, float] = {}
-    for r in rows:
-        tid = r.get("tmdb_id")
-        if tid is None:
-            continue
-        try:
-            tid_i = int(tid)
-        except Exception:
-            continue
-        if tid_i in block_ids:
-            continue
-
-        dist = r.get("dist")
-        try:
-            d = float(dist)
-        except Exception:
-            d = 1.0
-
-        # cosine distance is 0..2 (usually 0..1-ish when normalized); clamp anyway
-        sim = 1.0 - d
-        if sim < 0.0:
-            sim = 0.0
-        if sim > 1.0:
-            sim = 1.0
-
-        # keep best (closest) only
-        prev = out.get(tid_i)
-        if prev is None or sim > prev:
-            out[tid_i] = sim
-
-    return out
-
-
 
 async def _fetch_reddit_candidates_from_pairs(
     session: AsyncSession,
@@ -533,28 +288,34 @@ async def _fetch_reddit_candidates_from_pairs(
     raw_limit = max(limit * 6, limit * 3, limit)
 
     # We use expanding IN (...) params to avoid asyncpg ARRAY/ANY edge cases.
-    sql = text("""
+    sql = text(
+        """
         SELECT
             CASE
-                WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
+                WHEN rp.tmdb_id_a IN (:favs) THEN rp.tmdb_id_b
                 ELSE rp.tmdb_id_a
             END AS tmdb_id,
             SUM(rp.pair_weight) AS weight
         FROM reddit_pairs rp
-        WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
+        WHERE (rp.tmdb_id_a IN (:favs) OR rp.tmdb_id_b IN (:favs))
         GROUP BY 1
         ORDER BY weight DESC NULLS LAST
         LIMIT :limit
-        """).bindparams(
+        """
+    ).bindparams(
         bindparam("favs", expanding=True),
         bindparam("limit"),
     )
 
     try:
         res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
-    except Exception as e:
-        print("reddit_pairs query failed; skipping reddit candidates:", repr(e))
-        await session.rollback()   # <<< CRITICAL
+    except Exception:
+        # If table doesn't exist or SQL error, just skip reddit influence
+        try:
+            print("reddit_pairs query failed; skipping reddit candidates", flush=True)
+        except Exception:
+            pass
+        log.exception("reddit_pairs query failed; skipping reddit candidates")
         return []
 
     rows = res.mappings().all()
@@ -698,7 +459,6 @@ def _mmr_diversify(items: List[Dict[str, Any]], k: int, mmr_lambda: float) -> Li
 
     return selected
 
-mark("scored + mmr")
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -709,15 +469,142 @@ async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
 
+
+@router.get("/diag/quality-filter/{user_id}")
+async def diag_quality_filter(
+    user_id: int,
+    request: Request,
+    limit: int = Query(60, ge=5, le=200),
+    # scoring weights (so you can test different blends)
+    w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
+    w_reddit: float = Query(0.25, ge=0.0, le=1.0),
+    w_personal: float = Query(0.3, ge=0.0, le=1.0),
+    w_semantic: float = Query(0.25, ge=0.0, le=1.0),
+    mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
+
+    # quality filter knobs
+    min_vote_average: float = Query(6.0, ge=0.0, le=10.0),
+    min_vote_count: int = Query(50, ge=0, le=1_000_000),
+    mode: str = Query("and"),
+    keep_new_with_low_votes: int = Query(0, ge=0, le=500),
+
+    max_examples: int = Query(20, ge=1, le=50),
+    _: Any = Depends(require_user_match),
+    session: AsyncSession = Depends(get_async_session),
+) -> Any:
+    """
+    Diagnostics endpoint: shows how many candidates would be removed by a simple
+    quality filter (vote_average / vote_count) *without* hardcoding genres.
+
+    - mode="and": require both vote_average >= min_vote_average AND vote_count >= min_vote_count
+    - mode="or" : require either condition
+    - keep_new_with_low_votes: keep at most N items even if they fail vote_count
+      (useful for very new shows with few votes, but can be set to 0 to disable)
+    """
+    # Get recs using the normal pipeline (flat list)
+    recs: list[dict[str, Any]] = await get_recs_v3(  # type: ignore[misc]
+        user_id=user_id,
+        request=request,
+        limit=limit,
+        w_tmdb=w_tmdb,
+        w_reddit=w_reddit,
+        w_personal=w_personal,
+        w_semantic=w_semantic,
+        mmr_lambda=mmr_lambda,
+        flat=1,
+        _=None,  # already enforced by dependency above
+        session=session,
+    )
+
+    mode = (mode or "and").lower().strip()
+    if mode not in ("and", "or"):
+        mode = "and"
+
+    def _passes(it: dict[str, Any]) -> bool:
+        va = it.get("vote_average")
+        vc = it.get("vote_count")
+        try:
+            va_f = float(va) if va is not None else 0.0
+        except Exception:
+            va_f = 0.0
+        try:
+            vc_i = int(vc) if vc is not None else 0
+        except Exception:
+            vc_i = 0
+
+        ok_avg = va_f >= float(min_vote_average)
+        ok_cnt = vc_i >= int(min_vote_count)
+
+        return (ok_avg and ok_cnt) if mode == "and" else (ok_avg or ok_cnt)
+
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    low_vote_kept = 0
+
+    for it in recs:
+        if _passes(it):
+            kept.append(it)
+            continue
+
+        # optional safety-valve to keep a few "new" items even if vote_count is low
+        if keep_new_with_low_votes and low_vote_kept < keep_new_with_low_votes:
+            kept.append(it)
+            low_vote_kept += 1
+        else:
+            dropped.append(it)
+
+    def _mini(it: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "tmdb_id": it.get("tmdb_id"),
+            "title": it.get("title") or it.get("name"),
+            "source": it.get("source"),
+            "vote_average": it.get("vote_average"),
+            "vote_count": it.get("vote_count"),
+            "score": it.get("score"),
+            "score_tmdb": it.get("score_tmdb"),
+            "score_reddit": it.get("score_reddit"),
+            "score_personal": it.get("score_personal"),
+            "score_semantic": it.get("score_semantic"),
+        }
+
+    # Sort dropped by score desc so you can see "bad but ranked high" items first
+    dropped_sorted = sorted(dropped, key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+    return {
+        "params": {
+            "user_id": user_id,
+            "limit": limit,
+            "w_tmdb": w_tmdb,
+            "w_reddit": w_reddit,
+            "w_personal": w_personal,
+            "w_semantic": w_semantic,
+            "mmr_lambda": mmr_lambda,
+            "min_vote_average": min_vote_average,
+            "min_vote_count": min_vote_count,
+            "mode": mode,
+            "keep_new_with_low_votes": keep_new_with_low_votes,
+        },
+        "counts": {
+            "total": len(recs),
+            "kept": len(kept),
+            "dropped": len(dropped),
+        },
+        "examples": {
+            "kept": [_mini(x) for x in kept[:max_examples]],
+            "dropped": [_mini(x) for x in dropped_sorted[:max_examples]],
+        },
+    }
+
+
+
+
 @router.get("/{user_id}")
 async def get_recs_v3(
     user_id: int,
-    request: Request,
     limit: int = Query(36, ge=1, le=200),
     w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
     w_reddit: float = Query(0.5, ge=0.0, le=1.0),
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
-    w_semantic: float = Query(0.25, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
     _: Any = Depends(require_user_match),
@@ -739,9 +626,6 @@ async def get_recs_v3(
       - combine with weights + optional MMR diversity
     """
     try:
-        tmdb_client: httpx.AsyncClient = request.app.state.tmdb_client
-        sem = asyncio.Semaphore(8)  # 5-10 is a good Render range
-
         # 1) Blocked IDs (favourites + not-interested)
         block_ids = await _get_block_ids(session, user_id)
 
@@ -764,21 +648,14 @@ async def get_recs_v3(
                     "w_reddit": w_reddit,
                     "w_personal": w_personal,
                     "mmr_lambda": mmr_lambda,
-                    "w_semantic": w_semantic,
                 },
             }
 
         # 3) Reddit candidates (from global reddit_pairs anchored on favourites)
         reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
-        # 4) Favourite details for language/genre profile (reuse shared tmdb_client + semaphore)
-        fav_tasks = [_tmdb_details(tmdb_client, fid, sem=sem) for fid in fav_ids]
-        fav_results = await asyncio.gather(*fav_tasks, return_exceptions=True)
-        fav_details: List[Dict[str, Any]] = [r for r in fav_results if not isinstance(r, Exception)]
-
-        # 4b) Semantic profile + semantic candidates (pgvector)
-        user_vec = await _user_profile_embedding_from_favs(session, fav_ids)
-        semantic_map = await _semantic_candidates(session, user_vec, block_ids, limit)
+        # 4) Favourite details for language/genre profile
+        fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
@@ -795,17 +672,11 @@ async def get_recs_v3(
         fav_genres_all = set(fav_genre_counts.keys())
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
-        # 5) TMDB recs from favourites (reuse shared tmdb_client)
-        tmdb_base = await _fetch_tmdb_candidates(
-            client=tmdb_client,
-            fav_ids=fav_ids,
-            block_ids=block_ids,
-            limit=limit,
-        )
+        # 5) TMDB recs from favourites
+        tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
 
-        # 6) TMDB trending, filtered by taste (IMPORTANT: pass shared client)
+        # 6) TMDB trending, filtered by taste
         trending_base = await _fetch_tmdb_trending_candidates(
-            client=tmdb_client,
             allowed_langs=allowed_langs,
             fav_genres=fav_genres_all,
             block_ids=block_ids,
@@ -836,19 +707,13 @@ async def get_recs_v3(
                     "w_reddit": w_reddit,
                     "w_personal": w_personal,
                     "mmr_lambda": mmr_lambda,
-                    "w_semantic": w_semantic,
                     "reason": "no_candidates",
                 },
             }
 
-        # 8) Fetch TMDB details for candidates (reuse shared tmdb_client + semaphore)
+        # 8) Fetch TMDB details for candidates
         tmdb_ids = [b["tmdb_id"] for b in base]
-        detail_tasks = [_tmdb_details(tmdb_client, tid, sem=sem) for tid in tmdb_ids]
-        details_list_raw = await asyncio.gather(*detail_tasks, return_exceptions=True)
-        details_list: List[Dict[str, Any]] = [
-            ({"tmdb_id": tmdb_ids[i]} if isinstance(res, Exception) else (res or {"tmdb_id": tmdb_ids[i]}))
-            for i, res in enumerate(details_list_raw)
-        ]
+        details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []
@@ -857,7 +722,6 @@ async def get_recs_v3(
             merged.setdefault("tmdb_id", base_item["tmdb_id"])
             merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
             merged["source"] = base_item.get("source", "reddit_pairs")
-            merged["semantic_sim"] = float(semantic_map.get(int(merged["tmdb_id"]), 0.0))
 
             lang = merged.get("original_language")
             if allowed_langs and lang not in allowed_langs:
@@ -870,10 +734,6 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
-            # Quality floor
-            if not _passes_quality_floor(merged):
-                continue
-
             items.append(merged)
 
         # If filters removed everything, fall back to unfiltered merged candidates
@@ -883,28 +743,14 @@ async def get_recs_v3(
                 merged.setdefault("tmdb_id", base_item["tmdb_id"])
                 merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
                 merged["source"] = base_item.get("source", "reddit_pairs")
-                merged["semantic_sim"] = float(semantic_map.get(int(merged["tmdb_id"]), 0.0))
-
-                # Quality floor
-                if not _passes_quality_floor(merged):
-                    continue
-
                 items.append(merged)
 
         # 10) Build Reddit + TMDB score vectors and personalisation
         reddit_vals: List[float] = []
         tmdb_vals: List[float] = []
         personal_raw_vals: List[float] = []
-        semantic_vals: List[float] = []
 
         for it in items:
-            # Semantic similarity (already ~0..1)
-            try:
-                sem_v = float(it.get("semantic_sim") or 0.0)
-            except Exception:
-                sem_v = 0.0
-            semantic_vals.append(max(0.0, min(sem_v, 1.0)))
-
             # Reddit score: log-squashed score_raw
             try:
                 raw = float(it.get("score_raw") or 0.0)
@@ -943,75 +789,35 @@ async def get_recs_v3(
         reddit_norm = _normalise(reddit_vals)
         tmdb_norm = _normalise(tmdb_vals)
         personal_norm = _normalise(personal_raw_vals)
-        semantic_norm = _normalise(semantic_vals)
 
         # 11) Weighting
-        total_w = w_tmdb + w_reddit + w_personal + w_semantic
-
+        total_w = w_tmdb + w_reddit + w_personal
         if total_w <= 0:
             w_reddit = 1.0
             w_tmdb = 0.0
             w_personal = 0.0
-            w_semantic = 0.0
             total_w = 1.0
 
         scale = 1.0 / total_w
         w_tmdb_eff = w_tmdb * scale
         w_reddit_eff = w_reddit * scale
         w_personal_eff = w_personal * scale
-        w_semantic_eff = w_semantic * scale
 
         combined_items: List[Dict[str, Any]] = []
-        for it, r_n, t_n, p_n, s_n in zip(items, reddit_norm, tmdb_norm, personal_norm, semantic_norm):
-            score_reddit = float(r_n or 0.0)
-            score_tmdb = float(t_n or 0.0)
-            score_personal = float(p_n or 0.0)
-            score_semantic = float(s_n or 0.0)
+        for it, r_n, t_n, p_n in zip(items, reddit_norm, tmdb_norm, personal_norm):
+            score_reddit = r_n
+            score_tmdb = t_n
+            score_personal = p_n
 
-            score = (
-                (w_reddit_eff * score_reddit)
-                + (w_tmdb_eff * score_tmdb)
-                + (w_personal_eff * score_personal)
-                + (w_semantic_eff * score_semantic)
-            )
+            score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
 
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit
             enriched["score_tmdb"] = score_tmdb
             enriched["score_personal"] = score_personal
-            enriched["score_semantic"] = score_semantic
             enriched["score"] = score
-            enriched["score_weights"] = {
-                "tmdb": w_tmdb_eff,
-                "reddit": w_reddit_eff,
-                "personal": w_personal_eff,
-                "semantic": w_semantic_eff,
-            }
+            enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
             combined_items.append(enriched)
-
-        try:
-            from app.services.llm_rerank import rerank_candidates  # type: ignore
-        except Exception:
-            rerank_candidates = None
-
-        if rerank_candidates is not None and len(combined_items) >= 5:
-            combined_items = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)
-
-            top_n = min(len(combined_items), int(os.getenv("LLM_RERANK_CANDIDATES", "60")))
-            top_slice = combined_items[:top_n]
-
-            fav_titles = [
-                d.get("title") or d.get("name")
-                for d in fav_details
-                if (d.get("title") or d.get("name"))
-            ]
-
-            order = rerank_candidates(favorite_titles=fav_titles, candidates=top_slice)
-
-            if order:
-                by_id2 = {int(x["tmdb_id"]): x for x in top_slice}
-                reranked = [by_id2[i] for i in order if i in by_id2]
-                combined_items = reranked + combined_items[top_n:]
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:
@@ -1031,7 +837,6 @@ async def get_recs_v3(
                 "w_tmdb": w_tmdb,
                 "w_reddit": w_reddit,
                 "w_personal": w_personal,
-                "w_semantic": w_semantic,
                 "mmr_lambda": mmr_lambda,
             },
         }
@@ -1039,6 +844,7 @@ async def get_recs_v3(
     except HTTPException:
         raise
     except Exception as e:
+        # Ensure something shows up even if logging config is minimal on Render
         try:
             print("recs_v3 exception:", repr(e), flush=True)
         except Exception:
@@ -1047,12 +853,10 @@ async def get_recs_v3(
         raise HTTPException(status_code=500, detail="Internal error in recs_v3")
 
 
-
 @router.get("/explain/{user_id}/{tmdb_id}")
 async def explain_recs_v3_for_show(
     user_id: int,
     tmdb_id: int,
-    request: Request,
     _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Dict[str, Any]:
@@ -1064,10 +868,8 @@ async def explain_recs_v3_for_show(
         raise HTTPException(status_code=400, detail="Invalid user_id or tmdb_id")
 
     try:
-        client: httpx.AsyncClient = request.app.state.tmdb_client
-        sem = asyncio.Semaphore(8)
         fav_ids = await _fetch_user_favorites(session, user_id)
-        target = await _tmdb_details(client, tmdb_id, sem=sem)
+        target = await _tmdb_details(tmdb_id)
         target_genres = set(target.get("genres") or [])
 
         if not fav_ids:
@@ -1128,7 +930,7 @@ async def explain_recs_v3_for_show(
                 pair_by_other[o_id] = w_f
 
         fav_subset = fav_ids[: min(len(fav_ids), 30)]
-        results = await asyncio.gather(*[_tmdb_details(client, fid, sem=sem) for fid in fav_subset], return_exceptions=True)
+        results = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_subset], return_exceptions=True)
 
         anchors: List[Dict[str, Any]] = []
         for fav_id, det in zip(fav_subset, results):
@@ -1266,14 +1068,10 @@ async def explain_recs_v3_for_show(
         log.exception("explain engine failed user_id=%s tmdb_id=%s", user_id, tmdb_id)
         raise HTTPException(status_code=500, detail="Internal error in explanation engine")
 
-mark("hydrated details")
-
-
 
 @router.get("/smart-similar/{tmdb_id}")
 async def get_smart_similar_for_show(
     tmdb_id: int,
-    request: Request,
     limit: int = Query(20, ge=1, le=50),
 ) -> Any:
     """
@@ -1284,21 +1082,8 @@ async def get_smart_similar_for_show(
     if not api_key:
         return []
 
-    tmdb_client: httpx.AsyncClient | None = getattr(request.app.state, "tmdb_client", None)
-    if tmdb_client is None:
-        return []
-
-    # Keep this fairly low so we don’t blow up Render or TMDB
-    sem = asyncio.Semaphore(8)
-
     try:
-        rec_ids = await _tmdb_recommendations_for_fav(
-            client=tmdb_client,
-            tmdb_id=tmdb_id,
-            api_key=api_key,
-            max_n=limit * 2,
-            sem=sem,
-        )
+        rec_ids = await _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=limit * 2)
         if not rec_ids:
             return []
 
@@ -1318,7 +1103,7 @@ async def get_smart_similar_for_show(
 
         items: list[dict[str, Any]] = []
         for rid in ordered_ids:
-            details = await _tmdb_details(tmdb_client, rid, sem=sem)
+            details = await _tmdb_details(rid)
             title = details.get("title") or details.get("name")
             if not title:
                 continue
@@ -1328,10 +1113,8 @@ async def get_smart_similar_for_show(
 
         return items
 
+    except HTTPException:
+        raise
     except Exception:
-        # Fail closed for ShowDetails; don’t blow the whole page up
-        try:
-            log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
-        except Exception:
-            pass
-        return []
+        log.exception("smart-similar failed tmdb_id=%s", tmdb_id)
+        raise HTTPException(status_code=500, detail="Internal error in smart-similar")

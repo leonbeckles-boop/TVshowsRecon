@@ -1,73 +1,43 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, List
-
-from fastapi import APIRouter, Depends, HTTPException, Body, Query, status
+from typing import Any, List, Optional
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
 
+# Auth: in this project `get_current_user` lives in app.routes.auth.
+# If that import ever moves, update it here to match your project structure.
+from app.routes.auth import get_current_user  # type: ignore
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-from fastapi import Depends, HTTPException, status
-from app.routes.auth import get_current_user
+
+# ---------------------------------------------------------------------------
+# Auth guard
+# ---------------------------------------------------------------------------
 
 async def require_admin(user: Any = Depends(get_current_user)) -> Any:
-    if not getattr(user, "is_admin", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
+    """
+    Require a valid JWT + an admin user.
+    Assumes get_current_user returns an object/dict with `is_admin` and `id`.
+    """
+    is_admin = getattr(user, "is_admin", None)
+    if is_admin is None and isinstance(user, dict):
+        is_admin = user.get("is_admin")
+
+    if not is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
-def _get_password_hasher():
-    """
-    Prefer project's canonical hashing helper if present.
-    Falls back to passlib bcrypt (requires passlib[bcrypt]).
-    """
-    try:
-        from app.auth.security import get_password_hash  # type: ignore
-        return get_password_hash
-    except Exception:
-        pass
 
-    try:
-        from app.auth.utils import get_password_hash  # type: ignore
-        return get_password_hash
-    except Exception:
-        pass
-
-    try:
-        from passlib.context import CryptContext  # type: ignore
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-        def _hash(pw: str) -> str:
-            return pwd_context.hash(pw)
-
-        return _hash
-    except Exception as e:
-        raise RuntimeError(
-            "No password hashing function found. "
-            "Add app.auth.security.get_password_hash or install passlib[bcrypt]."
-        ) from e
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class AdminUserOut(BaseModel):
-    id: int
-    email: EmailStr
-    username: Optional[str] = None
-    is_admin: bool = False
-    created_at: Optional[datetime] = None
-
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
 class AdminStatsOut(BaseModel):
     total_users: int
@@ -79,92 +49,165 @@ class AdminStatsOut(BaseModel):
     total_not_interested: int
 
 
-class ResetPasswordIn(BaseModel):
-    new_password: str = Field(min_length=6, max_length=256)
+class AdminUserOut(BaseModel):
+    id: int
+    email: EmailStr
+    username: Optional[str] = None
+    is_admin: bool = False
+    created_at: Optional[datetime] = None
 
+
+class ResetPasswordIn(BaseModel):
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str) -> str:
+    """
+    Hash a plaintext password using the same scheme as your auth/login flow.
+
+    Option A: Do NOT import bcrypt directly (avoids editor/type-checker complaints
+    when bcrypt isn't installed locally). We instead reuse your auth module's
+    hasher if available, otherwise fall back to passlib's bcrypt context.
+    """
+    # 1) Prefer the project's auth helper (keeps compatibility with login)
+    try:
+        # common pattern
+        from app.routes import auth as auth_mod  # type: ignore
+        if hasattr(auth_mod, "get_password_hash"):
+            return str(auth_mod.get_password_hash(password))  # type: ignore
+        if hasattr(auth_mod, "pwd_context"):
+            return str(auth_mod.pwd_context.hash(password))  # type: ignore
+    except Exception:
+        pass
+
+    # 2) Fallback: passlib (bcrypt) without importing `bcrypt` directly
+    try:
+        from passlib.context import CryptContext  # type: ignore
+        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return str(ctx.hash(password))
+    except Exception as e:
+        # If this triggers, install passlib+bcrypt or expose get_password_hash in app.routes.auth
+        raise RuntimeError("No password hashing backend available") from e
+
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @router.get("/stats", response_model=AdminStatsOut, dependencies=[Depends(require_admin)])
-async def admin_stats(session: AsyncSession = Depends(get_async_session)) -> Any:
+async def get_admin_stats(session: AsyncSession = Depends(get_async_session)) -> AdminStatsOut:
     """
-    Lightweight admin stats for dashboard.
-    Uses SQL for speed and avoids ORM coupling.
+    Basic app stats for the Admin dashboard.
     """
-    seven_days_ago = _utc_now() - timedelta(days=7)
+    since = _utcnow() - timedelta(days=7)
 
+    # Notes:
+    # - auth_users is your user table (as per your router list)
+    # - user_favorites / ratings / not_interested are your feature tables
     q = text(
         """
-        WITH users AS (
-            SELECT id, created_at
+        WITH
+          users AS (
+            SELECT COUNT(*)::int AS total_users,
+                   COUNT(*) FILTER (WHERE created_at >= :since)::int AS new_users_last_7_days
             FROM auth_users
-        )
+          ),
+          favs AS (
+            SELECT COUNT(*)::int AS total_favorites,
+                   COUNT(DISTINCT user_id)::int AS users_with_favorites
+            FROM user_favorites
+          ),
+          rats AS (
+            SELECT COUNT(*)::int AS total_ratings,
+                   COUNT(DISTINCT user_id)::int AS users_with_ratings
+            FROM ratings
+          ),
+          ni AS (
+            SELECT COUNT(*)::int AS total_not_interested
+            FROM not_interested
+          )
         SELECT
-            (SELECT COUNT(*) FROM users)                                      AS total_users,
-            (SELECT COUNT(*) FROM users WHERE created_at >= :since)           AS new_users_last_7_days,
-            (SELECT COUNT(*) FROM user_favorites)                             AS total_favorites,
-            (SELECT COUNT(DISTINCT user_id) FROM user_favorites)              AS users_with_favorites,
-            (SELECT COUNT(*) FROM ratings)                                    AS total_ratings,
-            (SELECT COUNT(DISTINCT user_id) FROM ratings)                     AS users_with_ratings,
-            (SELECT COUNT(*) FROM not_interested)                             AS total_not_interested
+          users.total_users,
+          users.new_users_last_7_days,
+          favs.total_favorites,
+          favs.users_with_favorites,
+          rats.total_ratings,
+          rats.users_with_ratings,
+          ni.total_not_interested
+        FROM users, favs, rats, ni
         """
     )
-    row = (await session.execute(q, {"since": seven_days_ago})).mappings().first()
-    if not row:
-        return AdminStatsOut(
-            total_users=0,
-            new_users_last_7_days=0,
-            total_favorites=0,
-            users_with_favorites=0,
-            total_ratings=0,
-            users_with_ratings=0,
-            total_not_interested=0,
-        )
-    return AdminStatsOut(**row)
+
+    row = (await session.execute(q, {"since": since})).mappings().first() or {}
+    return AdminStatsOut(**{k: int(row.get(k) or 0) for k in AdminStatsOut.model_fields})
 
 
 @router.get("/users", response_model=List[AdminUserOut], dependencies=[Depends(require_admin)])
 async def admin_list_users(
-    q: str = Query("", max_length=200, description="Search by email/username"),
+    session: AsyncSession = Depends(get_async_session),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_async_session),
-) -> Any:
+    q: Optional[str] = Query(None, description="Filter by email/username substring"),
+) -> List[AdminUserOut]:
     """
-    List users for admin panel (supports simple search + pagination).
+    List users (basic fields) for admin management.
     """
-    like = f"%{q.strip()}%" if q and q.strip() else None
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    where = ""
+    if q:
+        where = "WHERE (email ILIKE :q OR username ILIKE :q)"
+        params["q"] = f"%{q.strip()}%"
 
     sql = text(
-        """
+        f"""
         SELECT id, email, username, is_admin, created_at
         FROM auth_users
-        WHERE (:like IS NULL)
-           OR (email ILIKE :like)
-           OR (username ILIKE :like)
+        {where}
         ORDER BY created_at DESC NULLS LAST, id DESC
-        LIMIT :limit
-        OFFSET :offset
+        LIMIT :limit OFFSET :offset
         """
     )
-    rows = (await session.execute(sql, {"like": like, "limit": limit, "offset": offset})).mappings().all()
-    return [AdminUserOut(**r) for r in rows]
+
+    rows = (await session.execute(sql, params)).mappings().all()
+    return [AdminUserOut(**dict(r)) for r in rows]
 
 
 @router.delete("/users/{user_id}", status_code=204, dependencies=[Depends(require_admin)])
-async def admin_delete_user(user_id: int, session: AsyncSession = Depends(get_async_session)) -> Any:
+async def admin_delete_user(
+    user_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    admin_user: Any = Depends(require_admin),
+) -> None:
     """
-    Deletes a user and associated user-owned rows.
+    Delete a user and their related rows.
     """
-    if user_id == 1 and os.getenv("ADMIN_PROTECT_USER1", "1") == "1":
-        raise HTTPException(status_code=400, detail="Primary admin user cannot be deleted")
+    admin_id = getattr(admin_user, "id", None)
+    if admin_id is None and isinstance(admin_user, dict):
+        admin_id = admin_user.get("id")
 
-    exists = (await session.execute(text("SELECT 1 FROM auth_users WHERE id=:id"), {"id": user_id})).first()
+    if admin_id is not None and int(admin_id) == int(user_id):
+        raise HTTPException(status_code=400, detail="You cannot delete your own admin account.")
+
+    # Ensure the user exists
+    exists = (await session.execute(text("SELECT 1 FROM auth_users WHERE id=:id"), {"id": user_id})).scalar()
     if not exists:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Delete dependent rows first (FK-safe even if no FKs exist)
     await session.execute(text("DELETE FROM user_favorites WHERE user_id=:id"), {"id": user_id})
     await session.execute(text("DELETE FROM ratings WHERE user_id=:id"), {"id": user_id})
     await session.execute(text("DELETE FROM not_interested WHERE user_id=:id"), {"id": user_id})
 
+    # Finally delete the user
     await session.execute(text("DELETE FROM auth_users WHERE id=:id"), {"id": user_id})
     await session.commit()
     return None
@@ -175,20 +218,22 @@ async def admin_reset_password(
     user_id: int,
     payload: ResetPasswordIn = Body(...),
     session: AsyncSession = Depends(get_async_session),
-) -> Any:
+) -> None:
     """
-    Reset a user's password (admin-only).
+    Set a new password hash for a user.
+    Assumes auth_users has a 'hashed_password' column.
     """
-    row = (await session.execute(text("SELECT id FROM auth_users WHERE id=:id"), {"id": user_id})).first()
+    # Ensure user exists
+    row = (await session.execute(text("SELECT id FROM auth_users WHERE id=:id"), {"id": user_id})).scalar()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    hash_fn = _get_password_hasher()
-    pw_hash = hash_fn(payload.new_password)
+    hashed = _hash_password(payload.new_password)
 
-    await session.execute(
-        text("UPDATE auth_users SET password_hash=:pw, updated_at=:now WHERE id=:id"),
-        {"pw": pw_hash, "now": _utc_now(), "id": user_id},
+    res = await session.execute(
+        text("UPDATE auth_users SET hashed_password=:hp WHERE id=:id"),
+        {"hp": hashed, "id": user_id},
     )
+    # Some DB drivers don't expose rowcount reliably; still commit.
     await session.commit()
     return None

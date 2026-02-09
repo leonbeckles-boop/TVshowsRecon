@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -288,22 +288,24 @@ async def _fetch_reddit_candidates_from_pairs(
     raw_limit = max(limit * 6, limit * 3, limit)
 
     # We use expanding IN (...) params to avoid asyncpg ARRAY/ANY edge cases.
-    sql = text("""
-                SELECT
-                    CASE
-                        WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
-                        ELSE rp.tmdb_id_a
-                    END AS tmdb_id,
-                    SUM(rp.pair_weight) AS weight
-                FROM reddit_pairs rp
-                WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
-                GROUP BY 1
-                ORDER BY weight DESC NULLS LAST
-                LIMIT :limit
-            """).bindparams(
-                bindparam("favs", expanding=True),
-                bindparam("limit"),
-            )
+    sql = text(
+        """
+        SELECT
+            CASE
+                WHEN rp.tmdb_id_a IN :favs THEN rp.tmdb_id_b
+                ELSE rp.tmdb_id_a
+            END AS tmdb_id,
+            SUM(rp.pair_weight) AS weight
+        FROM reddit_pairs rp
+        WHERE (rp.tmdb_id_a IN :favs OR rp.tmdb_id_b IN :favs)
+        GROUP BY 1
+        ORDER BY weight DESC NULLS LAST
+        LIMIT :limit
+        """
+    ).bindparams(
+        bindparam("favs", expanding=True),
+        bindparam("limit"),
+    )
 
     try:
         res = await session.execute(sql, {"favs": fav_ids, "limit": raw_limit})
@@ -396,6 +398,65 @@ def _tmdb_quality(item: Dict[str, Any]) -> float:
     return float(rating_conf + 0.5 * pop_term)
 
 
+def _passes_quality_filter(
+    it: Dict[str, Any],
+    *,
+    min_vote_average: float = 6.0,
+    min_vote_count: int = 25,
+    allow_if_vote_average_ge: float = 7.5,
+    block_zero_votes: bool = True,
+) -> bool:
+    """Guardrail to keep obvious low-quality / unrated items out of recs.
+
+    - Stops items with vote_count==0 (often placeholders / new / bad metadata)
+    - Stops items that have BOTH low votes AND low average
+    - Still allows niche shows with high average but low votes
+    """
+    try:
+        vc = int(it.get("vote_count") or 0)
+    except Exception:
+        vc = 0
+    try:
+        va = float(it.get("vote_average") or 0.0)
+    except Exception:
+        va = 0.0
+
+    if block_zero_votes and (vc <= 0 or va <= 0.0):
+        return False
+
+    # If it's highly rated, allow it through even with small vote counts
+    if va >= allow_if_vote_average_ge:
+        return True
+
+    # Otherwise require either enough votes OR a decent average
+    if vc < int(min_vote_count) and va < float(min_vote_average):
+        return False
+
+    return True
+
+
+def _quality_cfg_from_request() -> Dict[str, Any]:
+    """Defaults come from env, but can be overridden via query params in diag."""
+    def _get_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return default
+
+    def _get_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except Exception:
+            return default
+
+    return {
+        "min_vote_average": _get_float("QUALITY_MIN_VOTE_AVERAGE", 6.0),
+        "min_vote_count": _get_int("QUALITY_MIN_VOTE_COUNT", 25),
+        "allow_if_vote_average_ge": _get_float("QUALITY_ALLOW_HIGH_AVG", 7.5),
+        "block_zero_votes": os.getenv("QUALITY_BLOCK_ZERO", "1") == "1",
+    }
+
+
 def _similarity(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     """
     Similarity used for both MMR and favourite-similarity:
@@ -466,325 +527,29 @@ def _mmr_diversify(items: List[Dict[str, Any]], k: int, mmr_lambda: float) -> Li
 async def diag_ez() -> Dict[str, Any]:
     return {"ok": True, "who": "recs_v3"}
 
-from statistics import median
-from fastapi import Request
 
-# Simple “buckets” (non-hardcoded taste; just categorisation)
-REALITY_GENRES = {10764}         # Reality
-DOC_GENRES = {99}               # Documentary
-ANIMATION_GENRES = {16}         # Animation
-TALK_SOAP_GENRES = {10766, 10767}
-
-def _safe_int(x, default=0):
-    try:
-        return int(x)
-    except Exception:
-        return default
-
-def _safe_float(x, default=0.0):
-    try:
-        return float(x)
-    except Exception:
-        return default
-
-def _pct(n: int, d: int) -> float:
-    return (float(n) / float(d)) if d else 0.0
-
-
-@router.get("/diag/profile/{user_id}")
-async def diag_profile(
-    user_id: int,
-    request: Request,
-    _: Any = Depends(require_user_match),
-    session: AsyncSession = Depends(get_async_session),
-) -> Any:
-    """
-    Debug endpoint: builds a per-user taste profile from favourites.
-    Used to tune quality filters + genre drift controls safely per user.
-    """
-    fav_ids = await _fetch_user_favorites(session, user_id)
-    if not fav_ids:
-        return {
-            "user_id": user_id,
-            "n_favorites": 0,
-            "favorite_tmdb_ids": [],
-            "top_genres": [],
-            "top_languages": [],
-            "year_stats": {},
-            "rating_stats": {},
-            "vote_count_stats": {},
-            "content_mix": {},
-            "quality_threshold_suggestions": {},
-        }
-
-    client: httpx.AsyncClient = request.app.state.tmdb_client
-    sem = asyncio.Semaphore(8)
-
-    fav_tasks = [_tmdb_details(client, tid, sem=sem) for tid in fav_ids]
-    fav_raw = await asyncio.gather(*fav_tasks, return_exceptions=True)
-    fav_details: list[dict[str, Any]] = []
-    for i, r in enumerate(fav_raw):
-        if isinstance(r, Exception):
-            fav_details.append({"tmdb_id": fav_ids[i]})
-        else:
-            fav_details.append(r or {"tmdb_id": fav_ids[i]})
-
-    # --- aggregate ---
-    genre_counts: dict[int, int] = {}
-    lang_counts: dict[str, int] = {}
-
-    years: list[int] = []
-    avgs: list[float] = []
-    votes: list[int] = []
-
-    # weighted avg vote_average by vote_count
-    w_sum = 0.0
-    w_den = 0.0
-
-    n_doc = 0
-    n_reality = 0
-    n_animation = 0
-    n_talksoap = 0
-    n_total_with_genres = 0
-
-    for d in fav_details:
-        gids = [g for g in (d.get("genre_ids") or []) if isinstance(g, int)]
-        if gids:
-            n_total_with_genres += 1
-        for g in gids:
-            genre_counts[g] = genre_counts.get(g, 0) + 1
-
-        lang = d.get("original_language")
-        if isinstance(lang, str) and lang.strip():
-            lang_counts[lang.strip()] = lang_counts.get(lang.strip(), 0) + 1
-
-        # year from first_air_date
-        fad = d.get("first_air_date") or ""
-        if isinstance(fad, str) and len(fad) >= 4 and fad[:4].isdigit():
-            years.append(int(fad[:4]))
-
-        va = _safe_float(d.get("vote_average"), 0.0)
-        vc = _safe_int(d.get("vote_count"), 0)
-        avgs.append(va)
-        votes.append(vc)
-
-        if vc > 0:
-            w_sum += va * vc
-            w_den += vc
-
-        gid_set = set(gids)
-        if gid_set & DOC_GENRES:
-            n_doc += 1
-        if gid_set & REALITY_GENRES:
-            n_reality += 1
-        if gid_set & ANIMATION_GENRES:
-            n_animation += 1
-        if gid_set & TALK_SOAP_GENRES:
-            n_talksoap += 1
-
-    # sort top genres/languages
-    top_genres = sorted(
-        [{"genre_id": gid, "count": c, "pct": _pct(c, len(fav_ids))} for gid, c in genre_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:15]
-
-    top_langs = sorted(
-        [{"lang": k, "count": v, "pct": _pct(v, len(fav_ids))} for k, v in lang_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:10]
-
-    # stats helpers
-    def _stats_int(xs: list[int]) -> dict[str, Any]:
-        xs2 = [x for x in xs if isinstance(x, int)]
-        if not xs2:
-            return {}
-        xs2.sort()
-        return {"min": xs2[0], "median": int(median(xs2)), "max": xs2[-1]}
-
-    def _stats_float(xs: list[float]) -> dict[str, Any]:
-        xs2 = [float(x) for x in xs if x is not None]
-        if not xs2:
-            return {}
-        xs2.sort()
-        return {"min": xs2[0], "median": float(median(xs2)), "max": xs2[-1]}
-
-    year_stats = _stats_int(years)
-    rating_stats = _stats_float(avgs)
-    vote_stats = _stats_int(votes)
-
-    weighted_avg = (w_sum / w_den) if w_den > 0 else None
-
-    # --- suggest defaults based on favourites ---
-    # Conservative “quality floors” derived from your own fav distribution:
-    # - vote_average floor = max(6.5, (median - 0.8))
-    # - vote_count floor = max(50, (median_votes * 0.15))
-    med_avg = rating_stats.get("median")
-    med_votes = vote_stats.get("median")
-
-    suggested_min_vote_avg = None
-    suggested_min_votes = None
-    if isinstance(med_avg, (int, float)):
-        suggested_min_vote_avg = max(6.5, float(med_avg) - 0.8)
-    if isinstance(med_votes, int):
-        suggested_min_votes = max(50, int(med_votes * 0.15))
-
-    content_mix = {
-        "documentary_pct": _pct(n_doc, max(1, n_total_with_genres)),
-        "reality_pct": _pct(n_reality, max(1, n_total_with_genres)),
-        "animation_pct": _pct(n_animation, max(1, n_total_with_genres)),
-        "talk_or_soap_pct": _pct(n_talksoap, max(1, n_total_with_genres)),
-    }
-
-    return {
-        "user_id": user_id,
-        "n_favorites": len(fav_ids),
-        "favorite_tmdb_ids": fav_ids,
-        "top_genres": top_genres,
-        "top_languages": top_langs,
-        "year_stats": year_stats,
-        "rating_stats": {
-            **rating_stats,
-            "weighted_avg_by_votes": weighted_avg,
-        },
-        "vote_count_stats": vote_stats,
-        "content_mix": content_mix,
-        "quality_threshold_suggestions": {
-            "min_vote_average": suggested_min_vote_avg,
-            "min_vote_count": suggested_min_votes,
-            "note": "Suggested floors derived from your favourites; safe starting defaults for per-user quality filters.",
-        },
-    }
-
-
-
-@router.get("/diag/quality-filter/{user_id}")
+@router.get("/diag/quality-filter")
 async def diag_quality_filter(
-    user_id: int,
-    request: Request,
-    limit: int = Query(60, ge=5, le=200),
-    # scoring weights (so you can test different blends)
-    w_tmdb: float = Query(0.5, ge=0.0, le=1.0),
-    w_reddit: float = Query(0.25, ge=0.0, le=1.0),
-    w_personal: float = Query(0.3, ge=0.0, le=1.0),
-    w_semantic: float = Query(0.25, ge=0.0, le=1.0),
-    mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
+    tmdb_id: int = Query(..., ge=1),
+    min_vote_average: float | None = Query(None, ge=0.0, le=10.0),
+    min_vote_count: int | None = Query(None, ge=0),
+    allow_if_vote_average_ge: float | None = Query(None, ge=0.0, le=10.0),
+    block_zero_votes: bool | None = Query(None),
+) -> Dict[str, Any]:
+    """Inspect whether a single TMDB title passes the current quality filter."""
+    cfg = _quality_cfg_from_request()
+    if min_vote_average is not None:
+        cfg["min_vote_average"] = float(min_vote_average)
+    if min_vote_count is not None:
+        cfg["min_vote_count"] = int(min_vote_count)
+    if allow_if_vote_average_ge is not None:
+        cfg["allow_if_vote_average_ge"] = float(allow_if_vote_average_ge)
+    if block_zero_votes is not None:
+        cfg["block_zero_votes"] = bool(block_zero_votes)
 
-    # quality filter knobs
-    min_vote_average: float = Query(6.0, ge=0.0, le=10.0),
-    min_vote_count: int = Query(50, ge=0, le=1_000_000),
-    mode: str = Query("and"),
-    keep_new_with_low_votes: int = Query(0, ge=0, le=500),
-
-    max_examples: int = Query(20, ge=1, le=50),
-    _: Any = Depends(require_user_match),
-    session: AsyncSession = Depends(get_async_session),
-) -> Any:
-    """
-    Diagnostics endpoint: shows how many candidates would be removed by a simple
-    quality filter (vote_average / vote_count) *without* hardcoding genres.
-
-    - mode="and": require both vote_average >= min_vote_average AND vote_count >= min_vote_count
-    - mode="or" : require either condition
-    - keep_new_with_low_votes: keep at most N items even if they fail vote_count
-      (useful for very new shows with few votes, but can be set to 0 to disable)
-    """
-    # Get recs using the normal pipeline (flat list)
-    recs: list[dict[str, Any]] = await get_recs_v3(  # type: ignore[misc]
-        user_id=user_id,
-        request=request,
-        limit=limit,
-        w_tmdb=w_tmdb,
-        w_reddit=w_reddit,
-        w_personal=w_personal,
-        w_semantic=w_semantic,
-        mmr_lambda=mmr_lambda,
-        flat=1,
-        _=None,  # already enforced by dependency above
-        session=session,
-    )
-
-    mode = (mode or "and").lower().strip()
-    if mode not in ("and", "or"):
-        mode = "and"
-
-    def _passes(it: dict[str, Any]) -> bool:
-        va = it.get("vote_average")
-        vc = it.get("vote_count")
-        try:
-            va_f = float(va) if va is not None else 0.0
-        except Exception:
-            va_f = 0.0
-        try:
-            vc_i = int(vc) if vc is not None else 0
-        except Exception:
-            vc_i = 0
-
-        ok_avg = va_f >= float(min_vote_average)
-        ok_cnt = vc_i >= int(min_vote_count)
-
-        return (ok_avg and ok_cnt) if mode == "and" else (ok_avg or ok_cnt)
-
-    kept: list[dict[str, Any]] = []
-    dropped: list[dict[str, Any]] = []
-    low_vote_kept = 0
-
-    for it in recs:
-        if _passes(it):
-            kept.append(it)
-            continue
-
-        # optional safety-valve to keep a few "new" items even if vote_count is low
-        if keep_new_with_low_votes and low_vote_kept < keep_new_with_low_votes:
-            kept.append(it)
-            low_vote_kept += 1
-        else:
-            dropped.append(it)
-
-    def _mini(it: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "tmdb_id": it.get("tmdb_id"),
-            "title": it.get("title") or it.get("name"),
-            "source": it.get("source"),
-            "vote_average": it.get("vote_average"),
-            "vote_count": it.get("vote_count"),
-            "score": it.get("score"),
-            "score_tmdb": it.get("score_tmdb"),
-            "score_reddit": it.get("score_reddit"),
-            "score_personal": it.get("score_personal"),
-            "score_semantic": it.get("score_semantic"),
-        }
-
-    # Sort dropped by score desc so you can see "bad but ranked high" items first
-    dropped_sorted = sorted(dropped, key=lambda x: float(x.get("score") or 0.0), reverse=True)
-
-    return {
-        "params": {
-            "user_id": user_id,
-            "limit": limit,
-            "w_tmdb": w_tmdb,
-            "w_reddit": w_reddit,
-            "w_personal": w_personal,
-            "w_semantic": w_semantic,
-            "mmr_lambda": mmr_lambda,
-            "min_vote_average": min_vote_average,
-            "min_vote_count": min_vote_count,
-            "mode": mode,
-            "keep_new_with_low_votes": keep_new_with_low_votes,
-        },
-        "counts": {
-            "total": len(recs),
-            "kept": len(kept),
-            "dropped": len(dropped),
-        },
-        "examples": {
-            "kept": [_mini(x) for x in kept[:max_examples]],
-            "dropped": [_mini(x) for x in dropped_sorted[:max_examples]],
-        },
-    }
-
-
+    details = await _tmdb_details(tmdb_id)
+    passed = _passes_quality_filter(details, **cfg)
+    return {"tmdb_id": tmdb_id, "passed": passed, "cfg": cfg, "details": details}
 
 
 @router.get("/{user_id}")
@@ -903,6 +668,7 @@ async def get_recs_v3(
         # 8) Fetch TMDB details for candidates
         tmdb_ids = [b["tmdb_id"] for b in base]
         details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
+        quality_cfg = _quality_cfg_from_request()
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []
@@ -923,6 +689,10 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
+            if not _passes_quality_filter(merged, **quality_cfg):
+                continue
+            if not _passes_quality_filter(merged, **quality_cfg):
+                continue
             items.append(merged)
 
         # If filters removed everything, fall back to unfiltered merged candidates

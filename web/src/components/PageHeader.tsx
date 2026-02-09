@@ -94,32 +94,37 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
       >
         {/* LEFT: LOGO ONLY (square) */}
         <div className="flex items-center min-w-[64px]">
-          <div className="relative">
+          <div className="relative flex items-center">
+            {/* Glow */}
             <div
-              className="pointer-events-none absolute -inset-2 md:-inset-3 opacity-80 blur-2xl"
+              className="pointer-events-none absolute -inset-3 opacity-70 blur-2xl"
               style={{
                 background:
-                  "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.9), transparent 60%)",
+                  "radial-gradient(circle at 30% 20%, rgba(56,189,248,0.75), transparent 65%)",
               }}
             />
+
+            {/* LOGO BOX */}
             <div
               className="relative overflow-hidden rounded-xl"
               style={{
-                height: logoSize,
-                width: logoSize,
+                height: isMobile ? 48 : 64,
+                width: isMobile ? 150 : 210,
                 backgroundColor: "#020617",
-                boxShadow: "0 0 18px rgba(56,189,248,0.85)",
-                border: "1px solid rgba(148,163,184,0.35)",
+                boxShadow: "0 0 22px rgba(56,189,248,0.75)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: isMobile ? 6 : 8,
               }}
             >
               <img
-                src={logoUrl}
+                src="/logo1.png"
                 alt="WhatNext"
                 style={{
-                  width: "100%",
-                  height: "100%",
+                  maxHeight: "100%",
+                  maxWidth: "100%",
                   objectFit: "contain",
-                  padding: isMobile ? 4 : 6,
                   display: "block",
                 }}
               />

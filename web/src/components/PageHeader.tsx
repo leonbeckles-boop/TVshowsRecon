@@ -2,6 +2,9 @@ import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 
+// ✅ Put your logo here (recommended):
+// web/src/assets/logo1.png
+import logoUrl from "../assets/logo1.png";
 
 export type PageHeaderProps = {
   title: string;
@@ -67,6 +70,8 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
 
   const authLabel = user ? "Sign out" : "Sign in";
 
+  const logoSize = isMobile ? 36 : 52;
+
   return (
     <header
       className="fixed inset-x-0 top-0 z-50"
@@ -87,52 +92,38 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
           color: "#e5e7eb",
         }}
       >
-        {/* LEFT: LOGO + NAME */}
-        <div className="flex items-center gap-3 min-w-[140px] md:min-w-[220px]">
+        {/* LEFT: LOGO ONLY (square) */}
+        <div className="flex items-center min-w-[64px]">
           <div className="relative">
             <div
-              className="pointer-events-none absolute -inset-2 md:-inset-3 rounded-full opacity-80 blur-2xl"
+              className="pointer-events-none absolute -inset-2 md:-inset-3 opacity-80 blur-2xl"
               style={{
                 background:
                   "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.9), transparent 60%)",
               }}
             />
             <div
-              className="relative overflow-hidden rounded-full"
+              className="relative overflow-hidden rounded-xl"
               style={{
-                height: isMobile ? 34 : 48,
-                width: isMobile ? 34 : 48,
+                height: logoSize,
+                width: logoSize,
                 backgroundColor: "#020617",
                 boxShadow: "0 0 18px rgba(56,189,248,0.85)",
+                border: "1px solid rgba(148,163,184,0.35)",
               }}
             >
               <img
-                src={"/logo1.png"}
+                src={logoUrl}
                 alt="WhatNext"
                 style={{
                   width: "100%",
                   height: "100%",
-                  objectFit: "contain",   // ✅ instead of "cover"
+                  objectFit: "contain",
                   padding: isMobile ? 4 : 6,
                   display: "block",
                 }}
               />
             </div>
-          </div>
-
-          <div className="flex flex-col">
-            <span
-              style={{
-                fontSize: isMobile ? 18 : 24,
-                fontWeight: 800,
-                letterSpacing: isMobile ? "0.1em" : "0.06em",
-                textTransform: "uppercase",
-                color: "#e0f2fe",
-                textShadow: "0 0 10px rgba(56,189,248,0.8)",
-              }}
-            >
-              {isMobile ? "WN" : "WHATNEXT"}
-            </span>
           </div>
         </div>
 

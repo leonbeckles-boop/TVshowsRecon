@@ -2,10 +2,6 @@ import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 
-// ✅ Put your logo here (recommended):
-// web/src/assets/logo1.png
-import logoUrl from "../assets/logo1.png";
-
 export type PageHeaderProps = {
   title: string;
   subtitle?: string;
@@ -47,6 +43,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const isMobile = useIsMobile(768);
 
@@ -55,6 +52,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
       try {
         await logout?.();
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Logout failed:", err);
       }
     } else {
@@ -70,7 +68,9 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
 
   const authLabel = user ? "Sign out" : "Sign in";
 
-  const logoSize = isMobile ? 36 : 52;
+  // Bigger rectangle for logo (so text in logo is readable)
+  const logoW = isMobile ? 120 : 160;
+  const logoH = isMobile ? 44 : 56;
 
   return (
     <header
@@ -92,47 +92,42 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
           color: "#e5e7eb",
         }}
       >
-        {/* LEFT: LOGO ONLY (square) */}
-        <div className="flex items-center min-w-[64px]">
-          <div className="relative flex items-center">
-            {/* Glow */}
+        {/* LEFT: LOGO ONLY */}
+        <div className="flex items-center gap-3 min-w-[140px] md:min-w-[220px]">
+          <div className="relative">
             <div
-              className="pointer-events-none absolute -inset-3 opacity-70 blur-2xl"
+              className="pointer-events-none absolute -inset-2 md:-inset-3 opacity-70 blur-2xl"
               style={{
                 background:
-                  "radial-gradient(circle at 30% 20%, rgba(56,189,248,0.75), transparent 65%)",
+                  "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.9), transparent 60%)",
               }}
             />
-
-            {/* LOGO BOX */}
             <div
               className="relative overflow-hidden rounded-xl"
               style={{
-                height: isMobile ? 48 : 64,
-                width: isMobile ? 150 : 210,
+                width: logoW,
+                height: logoH,
                 backgroundColor: "#020617",
-                boxShadow: "0 0 22px rgba(56,189,248,0.75)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: isMobile ? 6 : 8,
+                boxShadow: "0 0 18px rgba(56,189,248,0.85)",
               }}
             >
               <img
                 src="/logo1.png"
                 alt="WhatNext"
                 style={{
-                  maxHeight: "100%",
-                  maxWidth: "100%",
-                  objectFit: "contain",
+                  width: "100%",
+                  height: "100%",
                   display: "block",
+                  objectFit: "contain",
+                  // IMPORTANT: no padding, otherwise it will always look “small”
+                  padding: 0,
                 }}
               />
             </div>
           </div>
         </div>
 
-        {/* CENTER: TITLE + SUBTITLE (subtitle desktop only) */}
+        {/* CENTER: TITLE + SUBTITLE */}
         <div
           className="px-2"
           style={{

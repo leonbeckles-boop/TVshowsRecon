@@ -112,8 +112,8 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
                 style={{
                   width: "100%",
                   height: "100%",
-                  objectFit: "contain",
-                  padding: "6px",
+                  objectFit: "contain",   // ✅ instead of "cover"
+                  padding: isMobile ? 4 : 6,
                   display: "block",
                 }}
               />

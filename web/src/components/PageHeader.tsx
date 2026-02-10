@@ -87,40 +87,40 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
           color: "#e5e7eb",
         }}
       >
-        {/* LEFT: LOGO (no extra text — logo already includes it) */}
-        <div className="flex items-center min-w-[120px] md:min-w-[180px]">
-          <Link to="/" aria-label="WhatNext home" className="inline-flex items-center">
-            <div className="relative">
-              {/* soft glow behind the logo */}
-              <div
-                className="pointer-events-none absolute -inset-3 rounded-2xl opacity-70 blur-2xl"
+        {/* LEFT: LOGO + NAME */}
+        <div className="flex items-center gap-3 min-w-[160px] md:min-w-[220px]">
+          <div className="relative">
+            <div
+              className="pointer-events-none absolute -inset-2 md:-inset-3 rounded-full opacity-80 blur-2xl"
+              style={{
+                background:
+                  "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.9), transparent 60%)",
+              }}
+            />
+            <div
+              className="relative overflow-hidden rounded-xl transition-transform duration-200 hover:scale-[1.03]"
+              style={{
+                // Bigger + rectangular so the full logo (incl. text) is readable
+                height: isMobile ? 52 : 64,
+                width: isMobile ? 150 : 190,
+                backgroundColor: "rgba(255,255,255,0.98)",
+                border: "1px solid rgba(56,189,248,0.78)",
+                boxShadow:
+                  "0 0 0 1px rgba(56,189,248,0.35), 0 0 30px rgba(56,189,248,0.9), 0 10px 26px rgba(0,0,0,0.45)",
+              }}
+            >
+              <img
+                src={"/logo1.png"}
+                alt="WhatNext"
                 style={{
-                  background:
-                    "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.75), transparent 65%)",
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  display: "block",
                 }}
               />
-
-              {/* Fit tightly to the image: width is driven by the image's aspect ratio */}
-              <div
-                className="relative inline-flex items-center justify-center overflow-hidden rounded-xl"
-                style={{
-                  height: isMobile ? 40 : 56,
-                  backgroundColor: "rgba(2,6,23,0.45)",
-                  boxShadow: "0 0 18px rgba(56,189,248,0.55)",
-                }}
-              >
-                <img
-                  src="/logo1.png"
-                  alt="WhatNext"
-                  style={{
-                    height: "100%",
-                    width: "auto",
-                    display: "block",
-                  }}
-                />
-              </div>
             </div>
-          </Link>
+          </div>
         </div>
 
         {/* CENTER: TITLE + SUBTITLE (subtitle desktop only) */}
@@ -200,8 +200,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
           </div>
         ) : (
           <div className="flex items-center justify-end md:min-w-[420px] pr-4">
-            {/* Desktop nav: keep a visible gap so pills don't touch */}
-            <nav className="flex items-center gap-3 pr-3">
+            <nav className="flex items-center gap-2 pr-2">
               {NAV_LINKS.map((link) => {
                 const isActive = location.pathname === link.to;
                 return (
@@ -210,7 +209,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
                     to={link.to}
                     className="inline-flex items-center justify-center rounded-full text-[14px] md:text-[16px] font-semibold no-underline select-none transition-all duration-200"
                     style={{
-                      padding: "10px 20px",
+                      padding: "10px 22px",
                       backgroundColor: isActive
                         ? "rgba(33, 200, 242, 0.9)"
                         : "rgba(15,23,42,0.95)",

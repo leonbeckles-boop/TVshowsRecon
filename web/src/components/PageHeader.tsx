@@ -115,7 +115,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
                   )}
                   style={{
                     height: isMobile ? 38 : 52,
-                    width: isMobile ? 65 : 90,
+                    width: isMobile ? 130 : 180,
                   }}
                 >
                   <img

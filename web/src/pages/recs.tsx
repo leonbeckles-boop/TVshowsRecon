@@ -308,48 +308,7 @@ const RecsPage: React.FC = () => {
           </span>
 
           <span className="mx-1 h-4 w-px bg-slate-600/70" aria-hidden="true" />
-          <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400">
-            Mode
-          </span>
-          <button
-            type="button"
-            onClick={() => setRecsMode("tmdb")}
-            className={
-              "px-2 py-0.5 rounded-full border text-[11px] " +
-              (recsMode === "tmdb"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "border-slate-600 text-slate-200")
-            }
-            title="No Reddit, no Semantic (fastest baseline)"
-          >
-            TMDB
-          </button>
-          <button
-            type="button"
-            onClick={() => setRecsMode("semantic")}
-            className={
-              "px-2 py-0.5 rounded-full border text-[11px] " +
-              (recsMode === "semantic"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "border-slate-600 text-slate-200")
-            }
-            title="Semantic similarity — w_semantic=0.30"
-          >
-            Semantic
-          </button>
-          <button
-            type="button"
-            onClick={() => setRecsMode("reddit")}
-            className={
-              "px-2 py-0.5 rounded-full border text-[11px] " +
-              (recsMode === "reddit"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "border-slate-600 text-slate-200")
-            }
-            title="Reddit blend — w_reddit=0.25"
-          >
-            Reddit
-          </button>
+          
 
           <button
             type="button"
@@ -385,7 +344,52 @@ const RecsPage: React.FC = () => {
             <div className="text-sm text-slate-300">
               Use favourites + ratings to improve these recommendations.
             </div>
-            <button
+                        <div className="flex items-center gap-3">
+              <div className="inline-flex items-center gap-1 rounded-full border border-slate-600/70 bg-slate-900/70 px-2 py-1 text-xs text-slate-200">
+                <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400 px-1">
+                  Mode
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setRecsMode("tmdb")}
+                  className={
+                    "px-2 py-0.5 rounded-full border text-[11px] " +
+                    (recsMode === "tmdb"
+                      ? "bg-slate-100 text-slate-900 border-slate-200"
+                      : "border-slate-600 text-slate-200")
+                  }
+                  title="No Reddit, no Semantic (fastest baseline)"
+                >
+                  TMDB
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecsMode("semantic")}
+                  className={
+                    "px-2 py-0.5 rounded-full border text-[11px] " +
+                    (recsMode === "semantic"
+                      ? "bg-slate-100 text-slate-900 border-slate-200"
+                      : "border-slate-600 text-slate-200")
+                  }
+                  title="Semantic similarity — w_semantic=0.30"
+                >
+                  Semantic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecsMode("reddit")}
+                  className={
+                    "px-2 py-0.5 rounded-full border text-[11px] " +
+                    (recsMode === "reddit"
+                      ? "bg-slate-100 text-slate-900 border-slate-200"
+                      : "border-slate-600 text-slate-200")
+                  }
+                  title="Reddit pairs — w_reddit=0.25"
+                >
+                  Reddit
+                </button>
+              </div>
+<button
               type="button"
               onClick={handleRefresh}
               className="inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium text-white"
@@ -397,6 +401,7 @@ const RecsPage: React.FC = () => {
             >
               Refresh
             </button>
+            </div>
           </div>
 
           {/* Status / helper states */}

@@ -25,6 +25,13 @@ TASTE_TIGHTEN_TRENDING_PENALTY = float(os.getenv("TASTE_TIGHTEN_TRENDING_PENALTY
 TASTE_TIGHTEN_REDDIT_BOOST = float(os.getenv("TASTE_TIGHTEN_REDDIT_BOOST", "1.10"))
 TASTE_TIGHTEN_TMDB_RECS_BOOST = float(os.getenv("TASTE_TIGHTEN_TMDB_RECS_BOOST", "1.00"))
 
+# Gate: when user has lots of favourites, don't leak low-similarity 'noise' candidates (e.g., Reality/Docs) unless they score strongly elsewhere.
+TASTE_TIGHTEN_GATE_MIN_FAVS = int(os.getenv('TASTE_TIGHTEN_GATE_MIN_FAVS', '10'))
+TASTE_TIGHTEN_GATE_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_MIN', '0.25'))
+TASTE_TIGHTEN_GATE_PERSONAL_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_PERSONAL_MIN', '0.55'))
+TASTE_TIGHTEN_GATE_REDDIT_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_REDDIT_MIN', '0.50'))
+TASTE_TIGHTEN_GATE_TMDB_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_TMDB_MIN', '0.80'))
+
 # Genre IDs (TMDB)
 GENRE_DOC = 99
 GENRE_REALITY = 10764
@@ -861,6 +868,13 @@ async def get_recs_v3(
             score_personal = p_n
 
             score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
+            if tighten and fav_count >= TASTE_TIGHTEN_GATE_MIN_FAVS:
+                gm = float(it.get("genre_match", 0.0))
+                ts = float(it.get("taste_profile_sim", 0.0))
+                # If it's not close to the user's taste, only keep it if it is *very* strong on another signal.
+                if max(gm, ts) < TASTE_TIGHTEN_GATE_MIN and score_personal < TASTE_TIGHTEN_GATE_PERSONAL_MIN and score_reddit < TASTE_TIGHTEN_GATE_REDDIT_MIN and score_tmdb < TASTE_TIGHTEN_GATE_TMDB_MIN:
+                    continue
+
 
             if tighten:
                 score *= (1.0 + (TASTE_TIGHTEN_GENRE_ALPHA * float(it.get('genre_match', 0.0))))

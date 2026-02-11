@@ -17,62 +17,50 @@ from app.security import require_user_match
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
+# ---- TMDB HTTP client / concurrency guard ----
+_TMDB_CLIENT: httpx.AsyncClient | None = None
+_TMDB_SEM = asyncio.Semaphore(int(os.environ.get("TMDB_MAX_CONCURRENCY", "20")))
+
+def _get_tmdb_client() -> httpx.AsyncClient:
+    """Singleton AsyncClient so we reuse connections (critical for Render latency)."""
+    global _TMDB_CLIENT
+    if _TMDB_CLIENT is None:
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+        _TMDB_CLIENT = httpx.AsyncClient(timeout=timeout, limits=limits)
+    return _TMDB_CLIENT
+
+async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """GET TMDB endpoint and return JSON dict (or {} on failure)."""
+    api_key = _tmdb_api_key()
+    if not api_key:
+        return {}
+
+    p = dict(params or {})
+    p.setdefault("api_key", api_key)
+
+    url = f"{TMDB_API}{path}"
+    try:
+        async with _TMDB_SEM:
+            client = _get_tmdb_client()
+            r = await client.get(url, params=p)
+    except Exception:
+        return {}
+
+    if r.status_code != 200:
+        return {}
+    try:
+        return r.json() or {}
+    except Exception:
+        return {}
+
+
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
 
 log = logging.getLogger("recs_v3")
 
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
-
-# TMDB TV genre IDs (used for simple guardrails)
-GENRE_ANIMATION = 16
-GENRE_CRIME = 80
-GENRE_MYSTERY = 9648
-GENRE_SCIFI_FANTASY = 10765
-GENRE_WAR_POLITICS = 10768
-GENRE_ACTION_ADVENTURE = 10759
-GENRE_FAMILY = 10751
-GENRE_KIDS = 10762
-GENRE_SOAP = 10766
-GENRE_TALK = 10767
-
-KID_FOCUSED_GENRES: set[int] = {GENRE_KIDS}
-FAMILY_FOCUSED_GENRES: set[int] = {GENRE_FAMILY}
-
-MATURE_LEANING_GENRES: set[int] = {
-    GENRE_CRIME,
-    GENRE_MYSTERY,
-    GENRE_SCIFI_FANTASY,
-    GENRE_WAR_POLITICS,
-    GENRE_ACTION_ADVENTURE,
-}
-
-def _passes_taste_guardrails(
-    gid_set: set[int],
-    *,
-    fav_genres: set[int],
-) -> bool:
-    """Keep obviously off-tone kid/family shows out unless the user profile suggests otherwise.
-
-    This is intentionally conservative:
-    - Always allow if the user favourites include the relevant genre.
-    - Otherwise, drop "Kids" and (optionally) "Family" when the profile leans mature.
-    """
-    if not gid_set:
-        return True
-
-    # If the user clearly likes kids/family content, don't block it.
-    if fav_genres & (KID_FOCUSED_GENRES | FAMILY_FOCUSED_GENRES):
-        return True
-
-    # If the user profile leans mature, avoid kid/family shows.
-    if fav_genres & MATURE_LEANING_GENRES:
-        if gid_set & KID_FOCUSED_GENRES:
-            return False
-        if gid_set & FAMILY_FOCUSED_GENRES:
-            return False
-
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -93,23 +81,9 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     Returns a dict with the same shape v1/v2 use:
       tmdb_id, name/title, overview, poster_path/url, genres, genre_ids, etc.
     """
-    api_key = _tmdb_api_key()
-    if not api_key:
+    data = await _tmdb_get_json(f"/tv/{tmdb_id}", params=None)
+    if not data:
         return {"tmdb_id": tmdb_id}
-
-    url = f"{TMDB_API}/tv/{tmdb_id}?api_key={api_key}"
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
-    except Exception:
-        # Network error – return minimal
-        return {"tmdb_id": tmdb_id}
-
-    if r.status_code != 200:
-        return {"tmdb_id": tmdb_id}
-
-    data = r.json() or {}
 
     poster_path = (data.get("poster_path") or "").lstrip("/")
     poster_url = f"{TMDB_IMG}/{poster_path}" if poster_path else None
@@ -117,7 +91,6 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     genres_arr = data.get("genres") or []
     genre_names = [str(g.get("name")).strip() for g in genres_arr if g and g.get("name")]
 
-    # TMDB genre ids are ints, but keep the guard anyway
     genre_ids: list[int] = []
     for g in genres_arr:
         if not g:
@@ -127,9 +100,8 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
             genre_ids.append(gid)
 
     return {
-        "tmdb_id": tmdb_id,
+        "tmdb_id": int(data.get("id") or tmdb_id),
         "name": data.get("name") or data.get("original_name"),
-        "title": data.get("name") or data.get("original_name"),
         "overview": data.get("overview"),
         "poster_path": data.get("poster_path"),
         "poster_url": poster_url,
@@ -148,18 +120,9 @@ async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int =
     """
     Fetch TMDB recommendations for a single favourite show.
     Returns a list of recommended tmdb_ids (TV).
+    Note: api_key arg kept for backwards compatibility; requests are routed via shared client.
     """
-    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations?api_key={api_key}"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
-    except Exception:
-        return []
-
-    if r.status_code != 200:
-        return []
-
-    data = r.json() or {}
+    data = await _tmdb_get_json(f"/tv/{tmdb_id}/recommendations", params={"page": 1})
     results = data.get("results") or []
     out: List[int] = []
     for row in results[:max_n]:
@@ -207,32 +170,11 @@ async def _fetch_tmdb_trending_candidates(
     block_ids: set[int],
     limit: int,
 ) -> List[Dict[str, Any]]:
-    """
-    Build candidate list from TMDB /trending/tv/week, filtered by
-    user's languages + favourite genres.
-
-    Returns [{ tmdb_id, score_raw, source="tmdb_trending" }, ...].
-    """
-    api_key = _tmdb_api_key()
-    if not api_key:
-        return []
-
-    url = f"{TMDB_API}/trending/tv/week?api_key={api_key}"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url)
-    except Exception:
-        return []
-
-    if r.status_code != 200:
-        return []
-
-    data = r.json() or {}
+    """Fetch weekly trending shows from TMDB and keep those that roughly match taste."""
+    data = await _tmdb_get_json("/trending/tv/week", params={"page": 1})
     results = data.get("results") or []
 
     items: List[Dict[str, Any]] = []
-    max_items = max(limit * 3, limit)
-
     for row in results:
         tid = row.get("id")
         if not isinstance(tid, int):
@@ -245,27 +187,20 @@ async def _fetch_tmdb_trending_candidates(
             continue
 
         genre_ids = row.get("genre_ids") or []
-        gid_set = set(int(g) for g in genre_ids if isinstance(g, int))
+        gid_set = {g for g in genre_ids if isinstance(g, int)}
 
-        # Drop Talk / Soap
-        if 10767 in gid_set or 10766 in gid_set:
+        # Prefer some overlap with favourite genres if we have them
+        if fav_genres and not gid_set.intersection(fav_genres):
             continue
 
-        # Require at least one overlapping genre if we have a profile
-        if fav_genres and not (fav_genres & gid_set):
-            continue
-
-        pop = row.get("popularity") or 0.0
-        try:
-            pop = float(pop)
-        except Exception:
-            pop = 0.0
-
-        base = math.log10(1.0 + max(pop, 0.0))
-        score_raw = 0.3 + 0.4 * base  # trending should be a nudge
-
-        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
-        if len(items) >= max_items:
+        items.append(
+            {
+                "tmdb_id": tid,
+                "score_raw": 0.55,  # trending baseline
+                "source": "tmdb_trending",
+            }
+        )
+        if len(items) >= (limit * 3):
             break
 
     return items
@@ -676,6 +611,11 @@ async def get_recs_v3(
         fav_genres_all = set(fav_genre_counts.keys())
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
+        # Guardrail: if user taste is clearly "mature" (crime/sci-fi/etc), block Kids/Family unless they appear in favourites.
+        allow_kids_family = (10762 in fav_genres_all) or (10751 in fav_genres_all)  # Kids, Family
+        mature_genres = {80, 9648, 10765, 10759, 10768}  # Crime, Mystery, Sci-Fi&Fantasy, Action&Adventure, War & Politics
+        user_is_mature = bool(fav_genres_all.intersection(mature_genres))
+
         # 5) TMDB recs from favourites
         tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
 
@@ -716,6 +656,11 @@ async def get_recs_v3(
             }
 
         # 8) Fetch TMDB details for candidates
+        # Cap candidate enrichment to avoid hundreds of TMDB detail calls on Render.
+        # We only enrich the strongest candidates first; this is a huge latency win.
+        enrich_cap = int(os.environ.get("RECS_V3_ENRICH_CAP", str(limit * 6)))
+        enrich_cap = max(enrich_cap, limit * 3)  # never too small
+        base = sorted(base, key=lambda x: float(x.get("score_raw") or 0.0), reverse=True)[:enrich_cap]
         tmdb_ids = [b["tmdb_id"] for b in base]
         details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
         quality_cfg = _quality_cfg_from_request()
@@ -739,9 +684,10 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
-            # Drop obviously off-tone kid/family items unless the user's profile suggests otherwise
-            if not _passes_taste_guardrails(gid_set, fav_genres=fav_genres_all):
+            # If the user taste is mature, avoid Kids/Family unless user actually likes those genres.
+            if (not allow_kids_family) and user_is_mature and (10762 in gid_set or 10751 in gid_set):
                 continue
+
             if not _passes_quality_filter(merged, **quality_cfg):
                 continue
             items.append(merged)

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 
 # Routers
-from app.routes import auth, tmdb, discover, ratings, users, shows
+from app.routes import auth, tmdb, discover, ratings, users, shows, not_interested
 from app.routes import recs_v3
 from app.routes import admin, wrapped
 
@@ -110,5 +110,6 @@ api.include_router(shows.router)
 api.include_router(recs_v3.router)
 api.include_router(admin.router)
 api.include_router(wrapped.router)
+api.include_router(not_interested.router)
 
 app.include_router(api)

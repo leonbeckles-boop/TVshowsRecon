@@ -780,7 +780,8 @@ async def get_recs_v3(
         reddit_vals: List[float] = []
         tmdb_vals: List[float] = []
         personal_raw_vals: List[float] = []
-
+        scored_items: List[Dict[str, Any]] = []
+        
         for it in items:
             # Reddit score: log-squashed score_raw
             try:
@@ -799,7 +800,8 @@ async def get_recs_v3(
             else:
                 best_sim = 0.0
 
-            #  (b) taste-vector similarity (genre profile vs candidate genres)            genre_ids = it.get("genre_ids") or []
+            #  (b) taste-vector similarity (genre profile vs candidate genres)       
+            genre_ids = it.get("genre_ids") or []
             cand_gids = [int(g) for g in genre_ids if isinstance(g, int)]
 
             if fav_genre_counts and cand_gids:
@@ -842,6 +844,9 @@ async def get_recs_v3(
             it["recency_mult"] = recency_mult
             it["source_mult"] = source_mult
 
+            scored_items.append(it)
+            reddit_vals.append(reddit_vals)
+            tmdb_vals.append(tmdb_vals)
             personal_raw_vals.append(personal_raw)
 
         reddit_norm = _normalise(reddit_vals)

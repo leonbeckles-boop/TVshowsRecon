@@ -776,31 +776,28 @@ async def get_recs_v3(
                 merged["source"] = base_item.get("source", "reddit_pairs")
                 items.append(merged)
 
-        # 10) Build Reddit + TMDB score vectors and personalisation
+       # 10) Build Reddit + TMDB score vectors and personalisation
         reddit_vals: List[float] = []
         tmdb_vals: List[float] = []
         personal_raw_vals: List[float] = []
         scored_items: List[Dict[str, Any]] = []
-        
+
         for it in items:
             # Reddit score: log-squashed score_raw
             try:
                 raw = float(it.get("score_raw") or 0.0)
             except Exception:
                 raw = 0.0
-            reddit_vals.append(math.log10(1.0 + max(raw, 0.0)))
 
-            # TMDB quality
-            tmdb_vals.append(_tmdb_quality(it))
+            reddit_score = math.log10(1.0 + max(raw, 0.0))
+            tmdb_score = float(_tmdb_quality(it))  # ensure float
 
             # Personalisation:
-            #  (a) max similarity to any favourite
             if fav_details:
                 best_sim = max(_similarity(it, f) for f in fav_details)
             else:
                 best_sim = 0.0
 
-            #  (b) taste-vector similarity (genre profile vs candidate genres)       
             genre_ids = it.get("genre_ids") or []
             cand_gids = [int(g) for g in genre_ids if isinstance(g, int)]
 
@@ -814,10 +811,10 @@ async def get_recs_v3(
             genre_match = _genre_match_score(cand_gids, fav_genre_weights) if tighten else 0.0
 
             if tighten and any(g in BAD_GENRES for g in cand_gids):
-                # Strict block of doc/reality/news/talk unless the user *really* likes that genre.
-                # Even if user has a single outlier favourite (e.g. Clarkson's Farm), keep it from
-                # polluting the recs list.
-                user_bad_share = max(fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES) if cand_gids else 0.0
+                user_bad_share = max(
+                    (fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES),
+                    default=0.0,
+                )
                 if user_bad_share < 0.12 and best_sim < 0.95:
                     continue
 
@@ -838,20 +835,23 @@ async def get_recs_v3(
             taste_sim = float(max(0.0, min(taste_sim, 1.0)))
             personal_raw = (0.55 * best_sim + 0.25 * taste_sim + 0.20 * genre_match) if tighten else (0.7 * best_sim + 0.3 * taste_sim)
 
+            # attach explain fields
             it["fav_similarity"] = best_sim
             it["taste_profile_sim"] = taste_sim
             it["genre_match"] = genre_match
             it["recency_mult"] = recency_mult
             it["source_mult"] = source_mult
 
+            # IMPORTANT: append ONCE
             scored_items.append(it)
-            reddit_vals.append(reddit_vals)
-            tmdb_vals.append(tmdb_vals)
+            reddit_vals.append(reddit_score)
+            tmdb_vals.append(tmdb_score)
             personal_raw_vals.append(personal_raw)
 
         reddit_norm = _normalise(reddit_vals)
         tmdb_norm = _normalise(tmdb_vals)
         personal_norm = _normalise(personal_raw_vals)
+
 
         # 11) Weighting
         total_w = w_tmdb + w_reddit + w_personal

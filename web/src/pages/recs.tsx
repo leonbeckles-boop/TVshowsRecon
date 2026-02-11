@@ -8,7 +8,6 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import ShowCard from "../components/ShowCard";
 import PageHeader from "../components/PageHeader";
-import GenreChips from "../components/GenreChips";
 import {
   getRecsV3,
   listRatings,
@@ -51,27 +50,6 @@ function getTmdbId(any: any): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function parseGenresFromURL(): string[] {
-  if (typeof window === "undefined") return [];
-  const params = new URLSearchParams(window.location.search);
-  const raw = params.get("genres");
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((g) => g.trim())
-    .filter(Boolean);
-}
-
-function writeGenresToURL(genres: string[]) {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (genres.length === 0) {
-    url.searchParams.delete("genres");
-  } else {
-    url.searchParams.set("genres", genres.join(","));
-  }
-  window.history.replaceState(null, "", url.toString());
-}
 
 /* --------------------------- component ------------------------- */
 
@@ -90,9 +68,6 @@ const RecsPage: React.FC = () => {
   const [hasEnoughFavorites, setHasEnoughFavorites] = useState(false);
 
   const [ratings, setRatings] = useState<UserRating[]>([]);
-  const [selectedGenres, setSelectedGenres] = useState<string[]>(
-    () => parseGenresFromURL(),
-  );
 
   /* --------- redirect when not logged in --------- */
 
@@ -141,7 +116,6 @@ const RecsPage: React.FC = () => {
       const data = await getRecsV3(userId, {
         limit: 60,
         flat: 1,
-        ...(selectedGenres.length > 0 ? { genres: selectedGenres } : {}),
       });
 
       const list = Array.isArray(data) ? data : (data as any).items ?? [];
@@ -166,7 +140,7 @@ const RecsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [userId, selectedGenres, hasEnoughFavorites]);
+  }, [userId, hasEnoughFavorites]);
 
   const loadFavorites = useCallback(async () => {
     if (!userId) return;
@@ -213,11 +187,6 @@ const RecsPage: React.FC = () => {
   }, [userId, hasEnoughFavorites, loadRecs]);
 
   /* --------------------------- handlers ------------------------- */
-
-  const handleGenresChange = (genres: string[]) => {
-    setSelectedGenres(genres);
-    writeGenresToURL(genres);
-  };
 
   const handleRefresh = () => {
     if (!userId) return;
@@ -367,30 +336,6 @@ const RecsPage: React.FC = () => {
             </button>
           </div>
 
-          {/* Genres */}
-          <section className="flex items-center gap-4 min-w-[380px] justify-end">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <h2 className="flex items-center gap-3">Filter by genre</h2>
-              {selectedGenres.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => handleGenresChange([])}
-                  className="inline-flex items-center justify-center
-                    rounded-full
-                    text-[18px] md:text-[20px] font-semibold
-                    no-underline select-none
-                    transition-all duration-200"
-                >
-                  Clear ({selectedGenres.length})
-                </button>
-              )}
-            </div>
-            <GenreChips
-              initialSelected={selectedGenres}
-              onChange={handleGenresChange}
-            />
-          </section>
-
           {/* Status / helper states */}
           {err && (
             <div className="rounded-2xl border border-red-500/70 bg-red-950/80 px-4 py-3 text-sm text-red-100 shadow-lg shadow-red-950/70">
@@ -423,7 +368,7 @@ const RecsPage: React.FC = () => {
             </div>
           ) : items.length === 0 ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4 text-sm text-slate-300 shadow-lg shadow-slate-950/70">
-              No recommendations yet. Try adjusting your genre filters or adding
+              No recommendations yet. Try adding
               a couple more favourites.
             </div>
           ) : (

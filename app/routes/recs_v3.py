@@ -24,6 +24,56 @@ log = logging.getLogger("recs_v3")
 # Require at least this many favourites before we serve any recs
 MIN_FAVORITES = 3
 
+# TMDB TV genre IDs (used for simple guardrails)
+GENRE_ANIMATION = 16
+GENRE_CRIME = 80
+GENRE_MYSTERY = 9648
+GENRE_SCIFI_FANTASY = 10765
+GENRE_WAR_POLITICS = 10768
+GENRE_ACTION_ADVENTURE = 10759
+GENRE_FAMILY = 10751
+GENRE_KIDS = 10762
+GENRE_SOAP = 10766
+GENRE_TALK = 10767
+
+KID_FOCUSED_GENRES: set[int] = {GENRE_KIDS}
+FAMILY_FOCUSED_GENRES: set[int] = {GENRE_FAMILY}
+
+MATURE_LEANING_GENRES: set[int] = {
+    GENRE_CRIME,
+    GENRE_MYSTERY,
+    GENRE_SCIFI_FANTASY,
+    GENRE_WAR_POLITICS,
+    GENRE_ACTION_ADVENTURE,
+}
+
+def _passes_taste_guardrails(
+    gid_set: set[int],
+    *,
+    fav_genres: set[int],
+) -> bool:
+    """Keep obviously off-tone kid/family shows out unless the user profile suggests otherwise.
+
+    This is intentionally conservative:
+    - Always allow if the user favourites include the relevant genre.
+    - Otherwise, drop "Kids" and (optionally) "Family" when the profile leans mature.
+    """
+    if not gid_set:
+        return True
+
+    # If the user clearly likes kids/family content, don't block it.
+    if fav_genres & (KID_FOCUSED_GENRES | FAMILY_FOCUSED_GENRES):
+        return True
+
+    # If the user profile leans mature, avoid kid/family shows.
+    if fav_genres & MATURE_LEANING_GENRES:
+        if gid_set & KID_FOCUSED_GENRES:
+            return False
+        if gid_set & FAMILY_FOCUSED_GENRES:
+            return False
+
+    return True
+
 
 # ---------------------------------------------------------------------------
 # TMDB helpers
@@ -689,7 +739,8 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
-            if not _passes_quality_filter(merged, **quality_cfg):
+            # Drop obviously off-tone kid/family items unless the user's profile suggests otherwise
+            if not _passes_taste_guardrails(gid_set, fav_genres=fav_genres_all):
                 continue
             if not _passes_quality_filter(merged, **quality_cfg):
                 continue

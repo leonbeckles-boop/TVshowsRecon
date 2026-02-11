@@ -788,16 +788,19 @@ async def get_recs_v3(
                 raw = float(it.get("score_raw") or 0.0)
             except Exception:
                 raw = 0.0
-
             reddit_score = math.log10(1.0 + max(raw, 0.0))
-            tmdb_score = float(_tmdb_quality(it))  # ensure float
+
+            # TMDB quality
+            tmdb_score = _tmdb_quality(it)
 
             # Personalisation:
+            #  (a) max similarity to any favourite
             if fav_details:
                 best_sim = max(_similarity(it, f) for f in fav_details)
             else:
                 best_sim = 0.0
 
+            #  (b) taste-vector similarity (genre profile vs candidate genres)
             genre_ids = it.get("genre_ids") or []
             cand_gids = [int(g) for g in genre_ids if isinstance(g, int)]
 
@@ -810,16 +813,19 @@ async def get_recs_v3(
 
             genre_match = _genre_match_score(cand_gids, fav_genre_weights) if tighten else 0.0
 
+            # Taste tighten hard-block for bad genres (only after we know sims)
             if tighten and any(g in BAD_GENRES for g in cand_gids):
-                user_bad_share = max(
-                    (fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES),
-                    default=0.0,
+                user_bad_share = (
+                    max(fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES)
+                    if cand_gids else 0.0
                 )
                 if user_bad_share < 0.12 and best_sim < 0.95:
                     continue
 
             recency_mult = _recency_multiplier(
-                it.get("first_air_date"), float(it.get("vote_average") or 0.0), now_year
+                it.get("first_air_date"),
+                float(it.get("vote_average") or 0.0),
+                now_year,
             ) if tighten else 1.0
 
             src = (it.get("source") or "").lower()
@@ -833,25 +839,28 @@ async def get_recs_v3(
                 source_mult = 1.0
 
             taste_sim = float(max(0.0, min(taste_sim, 1.0)))
-            personal_raw = (0.55 * best_sim + 0.25 * taste_sim + 0.20 * genre_match) if tighten else (0.7 * best_sim + 0.3 * taste_sim)
+            personal_raw = (
+                (0.55 * best_sim + 0.25 * taste_sim + 0.20 * genre_match)
+                if tighten else
+                (0.7 * best_sim + 0.3 * taste_sim)
+            )
 
-            # attach explain fields
+            # stash explain/debug fields
             it["fav_similarity"] = best_sim
             it["taste_profile_sim"] = taste_sim
             it["genre_match"] = genre_match
             it["recency_mult"] = recency_mult
             it["source_mult"] = source_mult
 
-            # IMPORTANT: append ONCE
+            # keep vectors aligned ONLY for items that survived continues
             scored_items.append(it)
-            reddit_vals.append(reddit_score)
-            tmdb_vals.append(tmdb_score)
-            personal_raw_vals.append(personal_raw)
+            reddit_vals.append(float(reddit_score))
+            tmdb_vals.append(float(tmdb_score))
+            personal_raw_vals.append(float(personal_raw))
 
         reddit_norm = _normalise(reddit_vals)
         tmdb_norm = _normalise(tmdb_vals)
         personal_norm = _normalise(personal_raw_vals)
-
 
         # 11) Weighting
         total_w = w_tmdb + w_reddit + w_personal
@@ -867,32 +876,44 @@ async def get_recs_v3(
         w_personal_eff = w_personal * scale
 
         combined_items: List[Dict[str, Any]] = []
-        for it, r_n, t_n, p_n in zip(items, reddit_norm, tmdb_norm, personal_norm):
-            score_reddit = r_n
-            score_tmdb = t_n
-            score_personal = p_n
+        for it, r_n, t_n, p_n in zip(scored_items, reddit_norm, tmdb_norm, personal_norm):
+            score_reddit = float(r_n)
+            score_tmdb = float(t_n)
+            score_personal = float(p_n)
 
-            score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
+            score = (
+                (w_reddit_eff * score_reddit)
+                + (w_tmdb_eff * score_tmdb)
+                + (w_personal_eff * score_personal)
+            )
+
             if tighten and fav_count >= TASTE_TIGHTEN_GATE_MIN_FAVS:
                 gm = float(it.get("genre_match", 0.0))
                 ts = float(it.get("taste_profile_sim", 0.0))
-                # If it's not close to the user's taste, only keep it if it is *very* strong on another signal.
-                if max(gm, ts) < TASTE_TIGHTEN_GATE_MIN and score_personal < TASTE_TIGHTEN_GATE_PERSONAL_MIN and score_reddit < TASTE_TIGHTEN_GATE_REDDIT_MIN and score_tmdb < TASTE_TIGHTEN_GATE_TMDB_MIN:
+                if (
+                    max(gm, ts) < TASTE_TIGHTEN_GATE_MIN
+                    and score_personal < TASTE_TIGHTEN_GATE_PERSONAL_MIN
+                    and score_reddit < TASTE_TIGHTEN_GATE_REDDIT_MIN
+                    and score_tmdb < TASTE_TIGHTEN_GATE_TMDB_MIN
+                ):
                     continue
 
-
             if tighten:
-                score *= (1.0 + (TASTE_TIGHTEN_GENRE_ALPHA * float(it.get('genre_match', 0.0))))
-                score *= float(it.get('source_mult', 1.0))
-                score *= float(it.get('recency_mult', 1.0))
+                score *= (1.0 + (TASTE_TIGHTEN_GENRE_ALPHA * float(it.get("genre_match", 0.0))))
+                score *= float(it.get("source_mult", 1.0))
+                score *= float(it.get("recency_mult", 1.0))
 
-            enriched = dict(it)
-            enriched["score_reddit"] = score_reddit
-            enriched["score_tmdb"] = score_tmdb
-            enriched["score_personal"] = score_personal
-            enriched["score"] = score
-            enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
-            combined_items.append(enriched)
+            it["score_reddit"] = score_reddit
+            it["score_tmdb"] = score_tmdb
+            it["score_personal"] = score_personal
+            it["score"] = float(score)
+            it["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
+
+            combined_items.append(it)
+
+        # IMPORTANT: from here onwards, use combined_items (not items)
+        items = combined_items
+
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:

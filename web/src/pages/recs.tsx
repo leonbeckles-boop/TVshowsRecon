@@ -63,6 +63,16 @@ const RecsPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  type RecsMode = "tmdb" | "semantic" | "reddit";
+  const [recsMode, setRecsMode] = useState<RecsMode>(() => {
+    const saved = localStorage.getItem("recs_mode_v3") as RecsMode | null;
+    return saved ?? "tmdb";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("recs_mode_v3", recsMode);
+  }, [recsMode]);
+
   const [favorites, setFavorites] = useState<Show[]>([]);
   const [favoritesLoaded, setFavoritesLoaded] = useState(false);
   const [hasEnoughFavorites, setHasEnoughFavorites] = useState(false);
@@ -113,9 +123,17 @@ const RecsPage: React.FC = () => {
     setLoading(true);
     setErr(null);
     try {
+      const weights =
+        recsMode === "semantic"
+          ? { w_reddit: 0, w_semantic: 0.3 }
+          : recsMode === "reddit"
+            ? { w_reddit: 0.25, w_semantic: 0 }
+            : { w_reddit: 0, w_semantic: 0 };
+
       const data = await getRecsV3(userId, {
         limit: 60,
         flat: 1,
+        ...weights,
       });
 
       const list = Array.isArray(data) ? data : (data as any).items ?? [];
@@ -140,7 +158,7 @@ const RecsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [userId, hasEnoughFavorites]);
+  }, [userId, hasEnoughFavorites, recsMode]);
 
   const loadFavorites = useCallback(async () => {
     if (!userId) return;
@@ -288,6 +306,51 @@ const RecsPage: React.FC = () => {
           <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400">
             Tile style
           </span>
+
+          <span className="mx-1 h-4 w-px bg-slate-600/70" aria-hidden="true" />
+          <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400">
+            Mode
+          </span>
+          <button
+            type="button"
+            onClick={() => setRecsMode("tmdb")}
+            className={
+              "px-2 py-0.5 rounded-full border text-[11px] " +
+              (recsMode === "tmdb"
+                ? "bg-slate-100 text-slate-900 border-slate-200"
+                : "border-slate-600 text-slate-200")
+            }
+            title="No Reddit, no Semantic (fastest baseline)"
+          >
+            TMDB
+          </button>
+          <button
+            type="button"
+            onClick={() => setRecsMode("semantic")}
+            className={
+              "px-2 py-0.5 rounded-full border text-[11px] " +
+              (recsMode === "semantic"
+                ? "bg-slate-100 text-slate-900 border-slate-200"
+                : "border-slate-600 text-slate-200")
+            }
+            title="Semantic similarity — w_semantic=0.30"
+          >
+            Semantic
+          </button>
+          <button
+            type="button"
+            onClick={() => setRecsMode("reddit")}
+            className={
+              "px-2 py-0.5 rounded-full border text-[11px] " +
+              (recsMode === "reddit"
+                ? "bg-slate-100 text-slate-900 border-slate-200"
+                : "border-slate-600 text-slate-200")
+            }
+            title="Reddit blend — w_reddit=0.25"
+          >
+            Reddit
+          </button>
+
           <button
             type="button"
             onClick={() => setTileVariant("poster")}

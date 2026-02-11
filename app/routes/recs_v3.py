@@ -365,9 +365,15 @@ def _year_from_date(s: Any) -> int | None:
 
 
 def _genre_weight_map(fav_genre_counts: Dict[int, int], fav_count: int) -> Dict[int, float]:
-    if fav_count <= 0:
+    """Return a normalised genre preference distribution for the user.
+
+    We normalise by TOTAL genre assignments across favourites (not by number of favourites),
+    so the weights sum to ~1.0 and 'genre_match' does not saturate at 1.0 for most candidates.
+    """
+    if fav_count <= 0 or not fav_genre_counts:
         return {}
-    return {gid: (cnt / float(fav_count)) for gid, cnt in fav_genre_counts.items()}
+    total = float(sum(fav_genre_counts.values())) or 1.0
+    return {gid: (cnt / total) for gid, cnt in fav_genre_counts.items()}
 
 
 def _genre_match_score(cand_gids: List[int], fav_genre_weights: Dict[int, float]) -> float:
@@ -798,8 +804,12 @@ async def get_recs_v3(
 
             genre_match = _genre_match_score(cand_gids, fav_genre_weights) if tighten else 0.0
 
-            if tighten and any(g in BAD_GENRES for g in cand_gids) and not (fav_genres_all.intersection(BAD_GENRES)):
-                if best_sim < 0.90:
+            if tighten and any(g in BAD_GENRES for g in cand_gids):
+                # Strict block of doc/reality/news/talk unless the user *really* likes that genre.
+                # Even if user has a single outlier favourite (e.g. Clarkson's Farm), keep it from
+                # polluting the recs list.
+                user_bad_share = max(fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES) if cand_gids else 0.0
+                if user_bad_share < 0.12 and best_sim < 0.95:
                     continue
 
             recency_mult = _recency_multiplier(

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import datetime
 from typing import Any, Dict, List
 
 import httpx
@@ -16,6 +17,23 @@ from app.security import require_user_match
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
+
+# --- V3.2 taste-tightening knobs ---
+TASTE_TIGHTEN_MIN_FAVS = int(os.getenv("TASTE_TIGHTEN_MIN_FAVS", "10"))
+TASTE_TIGHTEN_GENRE_ALPHA = float(os.getenv("TASTE_TIGHTEN_GENRE_ALPHA", "0.6"))  # multiplier strength
+TASTE_TIGHTEN_TRENDING_PENALTY = float(os.getenv("TASTE_TIGHTEN_TRENDING_PENALTY", "0.70"))
+TASTE_TIGHTEN_REDDIT_BOOST = float(os.getenv("TASTE_TIGHTEN_REDDIT_BOOST", "1.10"))
+TASTE_TIGHTEN_TMDB_RECS_BOOST = float(os.getenv("TASTE_TIGHTEN_TMDB_RECS_BOOST", "1.00"))
+
+# Genre IDs (TMDB)
+GENRE_DOC = 99
+GENRE_REALITY = 10764
+GENRE_NEWS = 10763
+GENRE_TALK = 10767
+GENRE_KIDS = 10762
+GENRE_FAMILY = 10751
+CORE_GENRES = {80, 9648, 10765, 10759, 10768}  # Crime, Mystery, Sci-Fi&Fantasy, Action&Adventure, War & Politics
+BAD_GENRES = {GENRE_DOC, GENRE_REALITY, GENRE_NEWS, GENRE_TALK}
 
 # ---- TMDB HTTP client / concurrency guard ----
 _TMDB_CLIENT: httpx.AsyncClient | None = None
@@ -336,6 +354,39 @@ async def _fetch_reddit_candidates_from_pairs(
 # Scoring & MMR
 # ---------------------------------------------------------------------------
 
+
+def _year_from_date(s: Any) -> int | None:
+    try:
+        if not s or not isinstance(s, str):
+            return None
+        return int(s.split("-")[0])
+    except Exception:
+        return None
+
+
+def _genre_weight_map(fav_genre_counts: Dict[int, int], fav_count: int) -> Dict[int, float]:
+    if fav_count <= 0:
+        return {}
+    return {gid: (cnt / float(fav_count)) for gid, cnt in fav_genre_counts.items()}
+
+
+def _genre_match_score(cand_gids: List[int], fav_genre_weights: Dict[int, float]) -> float:
+    if not cand_gids or not fav_genre_weights:
+        return 0.0
+    s = sum(fav_genre_weights.get(g, 0.0) for g in cand_gids)
+    return float(max(0.0, min(s, 1.0)))
+
+
+def _recency_multiplier(first_air_date: Any, vote_average: float, now_year: int) -> float:
+    y = _year_from_date(first_air_date)
+    if not y:
+        return 1.0
+    age = now_year - y
+    if vote_average >= 7.5 and age <= 2:
+        return 1.15
+    if vote_average >= 7.0 and age <= 5:
+        return 1.05
+    return 1.0
 def _normalise(vals: List[float]) -> List[float]:
     if not vals:
         return []
@@ -611,6 +662,17 @@ async def get_recs_v3(
         fav_genres_all = set(fav_genre_counts.keys())
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
+        fav_count = len(fav_ids)
+        tighten = fav_count > TASTE_TIGHTEN_MIN_FAVS
+        now_year = datetime.date.today().year
+        fav_genre_weights = _genre_weight_map(fav_genre_counts, fav_count)
+
+        if tighten and (w_tmdb == 0.5) and (w_personal == 0.3) and (w_reddit in (0.0, 0.5)):
+            if w_reddit <= 0.0:
+                w_tmdb, w_personal = 0.45, 0.55
+            else:
+                w_tmdb, w_reddit, w_personal = 0.40, 0.20, 0.40
+
         # Guardrail: if user taste is clearly "mature" (crime/sci-fi/etc), block Kids/Family unless they appear in favourites.
         allow_kids_family = (10762 in fav_genres_all) or (10751 in fav_genres_all)  # Kids, Family
         mature_genres = {80, 9648, 10765, 10759, 10768}  # Crime, Mystery, Sci-Fi&Fantasy, Action&Adventure, War & Politics
@@ -724,9 +786,9 @@ async def get_recs_v3(
             else:
                 best_sim = 0.0
 
-            #  (b) taste-vector similarity (genre profile vs candidate genres)
-            genre_ids = it.get("genre_ids") or []
+            #  (b) taste-vector similarity (genre profile vs candidate genres)            genre_ids = it.get("genre_ids") or []
             cand_gids = [int(g) for g in genre_ids if isinstance(g, int)]
+
             if fav_genre_counts and cand_gids:
                 num = sum(fav_genre_counts.get(g, 0) for g in cand_gids)
                 denom = fav_genre_norm * math.sqrt(len(cand_gids) or 1)
@@ -734,11 +796,34 @@ async def get_recs_v3(
             else:
                 taste_sim = 0.0
 
+            genre_match = _genre_match_score(cand_gids, fav_genre_weights) if tighten else 0.0
+
+            if tighten and any(g in BAD_GENRES for g in cand_gids) and not (fav_genres_all.intersection(BAD_GENRES)):
+                if best_sim < 0.90:
+                    continue
+
+            recency_mult = _recency_multiplier(
+                it.get("first_air_date"), float(it.get("vote_average") or 0.0), now_year
+            ) if tighten else 1.0
+
+            src = (it.get("source") or "").lower()
+            if tighten and src == "tmdb_trending":
+                source_mult = TASTE_TIGHTEN_TRENDING_PENALTY
+            elif src == "reddit_pairs":
+                source_mult = TASTE_TIGHTEN_REDDIT_BOOST
+            elif src == "tmdb_recs":
+                source_mult = TASTE_TIGHTEN_TMDB_RECS_BOOST
+            else:
+                source_mult = 1.0
+
             taste_sim = float(max(0.0, min(taste_sim, 1.0)))
-            personal_raw = 0.7 * best_sim + 0.3 * taste_sim
+            personal_raw = (0.55 * best_sim + 0.25 * taste_sim + 0.20 * genre_match) if tighten else (0.7 * best_sim + 0.3 * taste_sim)
 
             it["fav_similarity"] = best_sim
             it["taste_profile_sim"] = taste_sim
+            it["genre_match"] = genre_match
+            it["recency_mult"] = recency_mult
+            it["source_mult"] = source_mult
 
             personal_raw_vals.append(personal_raw)
 
@@ -766,6 +851,11 @@ async def get_recs_v3(
             score_personal = p_n
 
             score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
+
+            if tighten:
+                score *= (1.0 + (TASTE_TIGHTEN_GENRE_ALPHA * float(it.get('genre_match', 0.0))))
+                score *= float(it.get('source_mult', 1.0))
+                score *= float(it.get('recency_mult', 1.0))
 
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit

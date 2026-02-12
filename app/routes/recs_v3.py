@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from datetime import datetime, timezone
 import os
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,7 +16,6 @@ from app.db.session import get_async_session
 from app.security import require_user_match
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
-TMDB_BASE = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
@@ -37,70 +36,6 @@ def _tmdb_api_key() -> str | None:
     IMPORTANT: TMDB_API is the base URL, not the key.
     """
     return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
-
-
-async def _tmdb_get(path: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Any:
-    """
-    Lightweight TMDB GET helper returning parsed JSON.
-    Adds api_key automatically and raises HTTPException on failure.
-    """
-    key = _tmdb_api_key()
-    if not key:
-        raise HTTPException(status_code=500, detail="TMDB API key missing (set TMDB_API_KEY or TMDB_KEY)")
-    q: Dict[str, Any] = dict(params or {})
-    q.setdefault("api_key", key)
-    url = f"{TMDB_BASE.rstrip('/')}/{path.lstrip('/')}"
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.get(url, params=q)
-    if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"TMDB error {r.status_code} for {path}")
-    return r.json()
-
-
-TMDB_KEY = _tmdb_api_key()  # alias for legacy code paths
-
-
-def _tmdb_key() -> str:
-    return TMDB_KEY
-
-
-def _candidate_ok(it, allowed_langs=None, fav_genres=None, block_ids=None):
-    """Filter TMDB-discovered candidates.
-
-    - Drops anything already in block_ids
-    - Optionally restricts by original language
-    - Optionally requires at least one overlapping genre with favourite genres
-    """
-    # allow callers to omit filters
-    block_ids = set(block_ids or [])
-    allowed_langs = set(allowed_langs or [])
-    fav_genres = set(fav_genres or [])
-
-    # tmdb id
-    try:
-        tmdb_id = int(it.get("id") or it.get("tmdb_id") or 0)
-    except Exception:
-        tmdb_id = 0
-    if tmdb_id and tmdb_id in block_ids:
-        return False
-
-    # language
-    if allowed_langs:
-        lang = (it.get("original_language") or "").lower()
-        if lang and lang not in allowed_langs:
-            return False
-
-    # genre overlap
-    if fav_genres:
-        gids = it.get("genre_ids") or []
-        try:
-            gids_set = {int(g) for g in gids if isinstance(g, int) or (isinstance(g, str) and g.isdigit())}
-        except Exception:
-            gids_set = set()
-        if gids_set and not (gids_set & fav_genres):
-            return False
-
-    return True
 
 
 async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
@@ -185,144 +120,36 @@ async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int =
     return out
 
 
-
 async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit: int) -> List[Dict[str, Any]]:
-    """Fetch a broad candidate pool directly from TMDB.
-
-    This is the fix for "only reddit_pairs are visible" — we aggressively expand candidates using:
-      - /tv/{id}/recommendations + /tv/{id}/similar (seeded from favourites)
-      - /tv/{id}/keywords -> /discover/tv?with_keywords=... (franchise/spin-offs / upcoming)
-      - /discover/tv from top favourite genres (evergreen + next ~18 months)
-      - /trending, /popular, /top_rated, /on_the_air (diversity + fallback)
-
-    Returned items are already mapped into the internal candidate format used later in scoring.
     """
-    if not fav_ids:
+    Build TMDB-based candidate list from favourites using /tv/{id}/recommendations.
+    Returns [{ tmdb_id, score_raw, source="tmdb_recs" }, ...].
+    """
+    api_key = _tmdb_api_key()
+    if not api_key or not fav_ids:
         return []
 
-    sem = asyncio.Semaphore(8)
+    # Limit how many favourites we query to avoid spamming TMDB
+    fav_slice = fav_ids[: min(len(fav_ids), 10)]
 
-    async def _guard(coro):
-        async with sem:
-            try:
-                return await coro
-            except Exception:
-                return []
+    tasks = [_tmdb_recommendations_for_fav(fid, api_key, max_n=20) for fid in fav_slice]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _tv_list(path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        data = await _tmdb_get(path, params) or {}
-        return data.get("results") or []
+    tmdb_ids: set[int] = set()
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        for tid in res:
+            if not isinstance(tid, int):
+                continue
+            if tid in block_ids:
+                continue
+            tmdb_ids.add(tid)
 
-    async def _tv_keywords(tv_id: int) -> List[int]:
-        data = await _tmdb_get(f"/tv/{tv_id}/keywords", {}) or {}
-        kws = data.get("results") or []
-        out: List[int] = []
-        for k in kws:
-            kid = k.get("id")
-            if isinstance(kid, int):
-                out.append(kid)
-        return out
-
-    seed_ids = fav_ids[: min(len(fav_ids), 20)]
-
-    # --- Keywords (shared keywords are the best signal for "obvious missing franchise shows")
-    keyword_tasks = [_guard(_tv_keywords(tid)) for tid in seed_ids[:10]]
-    keyword_lists = await asyncio.gather(*keyword_tasks)
-    keyword_counts: Dict[int, int] = {}
-    for kws in keyword_lists:
-        for kid in kws:
-            keyword_counts[kid] = keyword_counts.get(kid, 0) + 1
-
-    top_keyword_ids = [k for k, c in sorted(keyword_counts.items(), key=lambda kv: kv[1], reverse=True) if c >= 2][:8]
-    if not top_keyword_ids and keyword_lists:
-        top_keyword_ids = list(dict.fromkeys(keyword_lists[0]))[:4]
-
-    # --- Seed recs/similar (2 pages for first 8 seeds, 1 page for the rest)
-    seed_tasks: List[asyncio.Task] = []
-    for tid in seed_ids:
-        seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/recommendations", {"page": 1}))))
-        seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/similar", {"page": 1}))))
-        if tid in seed_ids[:8]:
-            seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/recommendations", {"page": 2}))))
-            seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/similar", {"page": 2}))))
-
-    seed_lists = await asyncio.gather(*seed_tasks) if seed_tasks else []
-
-    # --- Genre discovery (top favourite genres, if available in this scope)
-    top_genres: List[int] = []
-    try:
-        # fav_genre_counts is built in get_recs_v3 before calling this helper
-        top_genres = [int(g) for g, _ in sorted(fav_genre_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]]  # type: ignore[name-defined]
-    except Exception:
-        top_genres = []
-
-    today = datetime.now(timezone.utc).date()
-    future = (today + timedelta(days=550)).isoformat()
-
-    discover_tasks: List[asyncio.Task] = []
-    if top_genres:
-        g_csv = ",".join(str(g) for g in top_genres)
-        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "sort_by": "popularity.desc", "page": 1}))))
-        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "sort_by": "vote_average.desc", "vote_count.gte": 200, "page": 1}))))
-        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "first_air_date.gte": today.isoformat(), "first_air_date.lte": future, "sort_by": "popularity.desc", "page": 1}))))
-
-    # Keyword discover (OR semantics by union)
-    for kid in top_keyword_ids[:6]:
-        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_keywords": str(kid), "sort_by": "popularity.desc", "page": 1}))))
-
-    discover_lists = await asyncio.gather(*discover_tasks) if discover_tasks else []
-
-    # --- Global lists (cheap / fast)
-    global_lists = await asyncio.gather(
-        _guard(_tv_list("/trending/tv/week", {"page": 1})),
-        _guard(_tv_list("/tv/popular", {"page": 1})),
-        _guard(_tv_list("/tv/top_rated", {"page": 1})),
-        _guard(_tv_list("/tv/on_the_air", {"page": 1})),
-    )
-
-    seen: set[int] = set(block_ids)
-    out: List[Dict[str, Any]] = []
-
-    def _add(x: Dict[str, Any], src: str) -> None:
-        tid = x.get("id")
-        if not isinstance(tid, int):
-            return
-        if tid in seen:
-            return
-        if not _candidate_ok(x):
-            return
-        seen.add(tid)
-        out.append({
-            "tmdb_id": tid,
-            "score_raw": float(x.get("popularity") or 0.0),
-            "source": src,
-            "name": x.get("name"),
-            "overview": x.get("overview"),
-            "poster_path": x.get("poster_path"),
-            "first_air_date": x.get("first_air_date"),
-            "origin_country": x.get("origin_country") or [],
-            "original_language": x.get("original_language"),
-            "genre_ids": x.get("genre_ids") or [],
-            "vote_average": float(x.get("vote_average") or 0.0),
-            "vote_count": int(x.get("vote_count") or 0),
-            "popularity": float(x.get("popularity") or 0.0),
-        })
-
-    # Priority order: seed -> discover -> global
-    for lst in seed_lists:
-        for x in (lst or []):
-            _add(x, "tmdb_seed")
-
-    for lst in discover_lists:
-        for x in (lst or []):
-            _add(x, "tmdb_discover")
-
-    for lst in global_lists:
-        for x in (lst or []):
-            _add(x, "tmdb_global")
-
-    return out[:limit]
-
+    items: List[Dict[str, Any]] = []
+    for tid in list(tmdb_ids)[: max(limit * 3, limit)]:
+        items.append({"tmdb_id": tid, "score_raw": 1.0, "source": "tmdb_recs"})
+    return items
 
 
 async def _fetch_tmdb_trending_candidates(
@@ -388,7 +215,7 @@ async def _fetch_tmdb_trending_candidates(
         base = math.log10(1.0 + max(pop, 0.0))
         score_raw = 0.3 + 0.4 * base  # trending should be a nudge
 
-        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending", "name": row.get("name"), "overview": row.get("overview"), "poster_path": row.get("poster_path"), "first_air_date": row.get("first_air_date"), "origin_country": row.get("origin_country") or [], "original_language": row.get("original_language"), "genre_ids": row.get("genre_ids") or [], "vote_average": float(row.get("vote_average") or 0.0), "vote_count": int(row.get("vote_count") or 0), "popularity": float(row.get("popularity") or 0.0)})
+        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
         if len(items) >= max_items:
             break
 
@@ -398,139 +225,6 @@ async def _fetch_tmdb_trending_candidates(
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-
-
-
-async def _fetch_tmdb_popular_candidates(
-    allowed_langs: set[str],
-    fav_genres: set[int],
-    block_ids: set[int],
-    limit: int,
-) -> List[Dict[str, Any]]:
-    """Broad recall: TMDB /tv/popular filtered to the user's taste."""
-    url = "https://api.themoviedb.org/3/tv/popular"
-    headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_KEY}"}
-    params = {"page": 1}
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.get(url, headers=headers, params=params)
-            r.raise_for_status()
-            data = r.json()
-    except Exception:
-        return []
-
-    out: List[Dict[str, Any]] = []
-    for it in (data.get("results") or []):
-        if not _candidate_ok(it, allowed_langs, fav_genres, block_ids):
-            continue
-        out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_popular", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
-        if len(out) >= limit:
-            break
-    return out
-
-
-
-async def _fetch_tmdb_discover_candidates(
-    allowed_langs: set[str],
-    top_genres: List[int],
-    block_ids: set[int],
-    limit: int,
-    now_year: int,
-) -> List[Dict[str, Any]]:
-    """High-popularity candidates by top genres via TMDB /discover/tv (includes upcoming).
-
-    Notes:
-    - Note: TMDB sometimes omits first_air_date for announced shows. If we filter by date,
-      we can accidentally exclude those. So we do a second pass without date filters.
-    - Performance: parallelise per-genre with a small semaphore.
-    """
-
-    if not TMDB_KEY or not top_genres:
-        return []
-
-    url = "https://api.themoviedb.org/3/discover/tv"
-    headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_KEY}"}
-
-    # Keep order, cap genres
-    top_genres = list(dict.fromkeys(int(g) for g in top_genres))[:8]
-
-    timeout = httpx.Timeout(8.0, connect=5.0)
-    limits_cfg = httpx.Limits(max_keepalive_connections=10, max_connections=10)
-
-    async def _fetch(client: httpx.AsyncClient, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        try:
-            r = await client.get(url, headers=headers, params=params)
-            r.raise_for_status()
-            data = r.json()
-        except Exception:
-            return []
-        got: List[Dict[str, Any]] = []
-        for it in (data.get("results") or []):
-            tid = int(it.get("id") or 0)
-            if not tid or tid in block_ids:
-                continue
-            lang = (it.get("original_language") or "").lower()
-            if allowed_langs and lang and lang not in allowed_langs:
-                continue
-            if not _candidate_ok(tid, it.get("name") or it.get("original_name"), block_ids):
-                continue
-
-            got.append({
-                "tmdb_id": tid,
-                "name": it.get("name") or it.get("original_name"),
-                "overview": it.get("overview"),
-                "poster_path": it.get("poster_path"),
-                "poster_url": f"https://image.tmdb.org/t/p/w500{it.get('poster_path')}" if it.get("poster_path") else None,
-                "first_air_date": it.get("first_air_date"),
-                "origin_country": it.get("origin_country") or [],
-                "original_language": it.get("original_language"),
-                "genre_ids": it.get("genre_ids") or [],
-                "vote_average": float(it.get("vote_average") or 0.0),
-                "vote_count": int(it.get("vote_count") or 0),
-                "popularity": float(it.get("popularity") or 0.0),
-                "source": "tmdb_discover",
-                "score_raw": 0.0,
-            })
-            if len(got) >= max(30, limit):
-                break
-        return got
-
-    sem = asyncio.Semaphore(4)
-
-    async def _for_gid(gid: int) -> List[Dict[str, Any]]:
-        async with sem:
-            async with httpx.AsyncClient(timeout=timeout, limits=limits_cfg) as client:
-                common = {
-                    "sort_by": "popularity.desc",
-                    "with_genres": str(int(gid)),
-                    "include_null_first_air_dates": "true",
-                    "page": 1,
-                }
-                # pass 1: bounded date window (more relevant)
-                p1 = dict(common)
-                p1["first_air_date.gte"] = f"{max(1900, now_year - 8)}-01-01"
-                p1["first_air_date.lte"] = f"{now_year + 8}-12-31"
-                # pass 2: no date filters (catch items with missing air dates)
-                p2 = dict(common)
-
-                a, b = await asyncio.gather(_fetch(client, p1), _fetch(client, p2))
-                return a + b
-
-    lists = await asyncio.gather(*[_for_gid(g) for g in top_genres])
-
-    out: List[Dict[str, Any]] = []
-    seen: set[int] = set()
-    for lst in lists:
-        for it in lst:
-            tid = int(it["tmdb_id"])
-            if tid in seen:
-                continue
-            seen.add(tid)
-            out.append(it)
-            if len(out) >= limit:
-                return out
-
-    return out
 
 async def _get_block_ids(session: AsyncSession, user_id: int) -> set[int]:
     """
@@ -886,6 +580,11 @@ async def get_recs_v3(
           * score_personal (favourite-similarity + profile similarity)
       - combine with weights + optional MMR diversity
     """
+    # Always-defined locals (protect error paths + help type checkers)
+    block_ids: set[int] = set()
+    fav_ids: List[int] = []
+    now_year = datetime.now(timezone.utc).year
+
     try:
         # 1) Blocked IDs (favourites + not-interested)
         block_ids = await _get_block_ids(session, user_id)
@@ -920,8 +619,6 @@ async def get_recs_v3(
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
-        quality_cfg = _quality_cfg_from_request()
-        now_year = datetime.now(timezone.utc).year
 
         # Genre profile (counts for taste vector)
         fav_genre_counts: Dict[int, int] = {}
@@ -946,34 +643,10 @@ async def get_recs_v3(
             limit=limit,
         )
 
-
-        # 6b) TMDB discover (popular by your top genres) — expands beyond reddit_pairs graph
-        top_genres = [gid for gid, _c in sorted(fav_genre_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]]
-        discover_base = await _fetch_tmdb_discover_candidates(
-            allowed_langs=allowed_langs,
-            top_genres=top_genres,
-            block_ids=block_ids,
-            limit=limit,
-            now_year=now_year,
-        )
-
-        # 6c) TMDB popular (broad recall), filtered by taste
-        popular_base = await _fetch_tmdb_popular_candidates(
-            allowed_langs=allowed_langs,
-            fav_genres=fav_genres_all,
-            block_ids=block_ids,
-            limit=min(40, limit),
-        )
-
-
-        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > discover > popular > trending)
+        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > trending)
         by_id: Dict[int, Dict[str, Any]] = {}
 
         for item in trending_base:
-            by_id[item["tmdb_id"]] = item
-        for item in popular_base:
-            by_id[item["tmdb_id"]] = item
-        for item in discover_base:
             by_id[item["tmdb_id"]] = item
         for item in tmdb_base:
             by_id[item["tmdb_id"]] = item
@@ -998,91 +671,10 @@ async def get_recs_v3(
                 },
             }
 
-        # 8) Fetch TMDB details for candidates (ONLY where needed)
-
-        # We already have rich fields for tmdb_trending/tmdb_popular/tmdb_discover and tmdb_recs results.
-
-        # The only thin candidates tend to come from reddit_pairs / DB sources (just tmdb_id + score_raw).
-
-        def _needs_details(b: Dict[str, Any]) -> bool:
-
-            # Need at least name + genre_ids to score properly
-
-            return not b.get("name") or not b.get("genre_ids")
-
-
-        need_ids = [int(b["tmdb_id"]) for b in base if _needs_details(b)]
-
-        need_ids = list(dict.fromkeys(need_ids))  # de-dupe, keep order
-
-
-        details_map: Dict[int, Dict[str, Any]] = {}
-
-        if need_ids:
-
-            sem = asyncio.Semaphore(20)
-
-            async with httpx.AsyncClient(timeout=10.0) as client:
-
-                async def _one(tid: int) -> Optional[Dict[str, Any]]:
-
-                    async with sem:
-
-                        try:
-
-                            url = f"{TMDB_BASE}/tv/{tid}"
-
-                            r = await client.get(url, params={"api_key": _tmdb_key(), "language": "en-GB"})
-
-                            r.raise_for_status()
-
-                            data = r.json() or {}
-
-                            return {
-
-                                "tmdb_id": tid,
-
-                                "name": data.get("name") or data.get("title"),
-
-                                "overview": data.get("overview"),
-
-                                "poster_path": data.get("poster_path"),
-
-                                "poster_url": (TMDB_IMG + data["poster_path"]) if data.get("poster_path") else None,
-
-                                "first_air_date": data.get("first_air_date"),
-
-                                "origin_country": data.get("origin_country") or [],
-
-                                "original_language": data.get("original_language"),
-
-                                "genres": [g.get("name") for g in (data.get("genres") or []) if g.get("name")],
-
-                                "genre_ids": [g.get("id") for g in (data.get("genres") or []) if g.get("id")],
-
-                                "vote_average": float(data.get("vote_average") or 0.0),
-
-                                "vote_count": int(data.get("vote_count") or 0),
-
-                                "popularity": float(data.get("popularity") or 0.0),
-
-                            }
-
-                        except Exception:
-
-                            return None
-
-
-                got = await asyncio.gather(*(_one(t) for t in need_ids))
-
-            for d in got:
-
-                if d and d.get("tmdb_id"):
-
-                    details_map[int(d["tmdb_id"])] = d
-        # Align details to the same order as base candidates
-        details_list = [details_map.get(int(b.get("tmdb_id") or 0)) for b in base]
-
+        # 8) Fetch TMDB details for candidates
+        tmdb_ids = [b["tmdb_id"] for b in base]
+        details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
+        quality_cfg = _quality_cfg_from_request()
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []

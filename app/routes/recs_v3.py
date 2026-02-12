@@ -15,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
 from app.security import require_user_match
 
+from collections.abc import Set
+
+
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
@@ -406,13 +409,47 @@ def _passes_quality_filter(
     min_vote_count: int = 25,
     allow_if_vote_average_ge: float = 7.5,
     block_zero_votes: bool = True,
+    # Newer guardrails (safe defaults)
+    min_popularity: float = 0.0,
+    block_zero_popularity: bool = False,
+    include_null_first_air_dates: bool = True,
+    allow_future_first_air_dates: bool = True,
 ) -> bool:
-    """Guardrail to keep obvious low-quality / unrated items out of recs.
+    """Guardrail to keep obvious low-quality / placeholder items out of recs.
 
-    - Stops items with vote_count==0 (often placeholders / new / bad metadata)
-    - Stops items that have BOTH low votes AND low average
-    - Still allows niche shows with high average but low votes
+    Notes:
+    - vote_count==0 and/or vote_average==0 are often placeholders → can be blocked
+    - popularity==0 can also indicate placeholder metadata → optionally block
+    - first_air_date is sometimes null for upcoming shows → optionally allow
     """
+    # first_air_date guardrail (optional)
+    fad = it.get("first_air_date") or it.get("first_air_date_str") or it.get("first_air")
+    if not fad:
+        if not include_null_first_air_dates:
+            return False
+    else:
+        # If it's in the future and we don't want future-dated shows, block it.
+        # We only do a light parse to YYYY-MM-DD; invalid dates won't block.
+        if not allow_future_first_air_dates and isinstance(fad, str) and len(fad) >= 10:
+            try:
+                from datetime import date
+                y, m, d = int(fad[0:4]), int(fad[5:7]), int(fad[8:10])
+                if date(y, m, d) > date.today():
+                    return False
+            except Exception:
+                pass
+
+    # popularity guardrail (optional)
+    try:
+        pop = float(it.get("popularity") or 0.0)
+    except Exception:
+        pop = 0.0
+    if block_zero_popularity and pop <= 0.0:
+        return False
+    if pop < float(min_popularity):
+        return False
+
+    # votes/average guardrail
     try:
         vc = int(it.get("vote_count") or 0)
     except Exception:
@@ -423,11 +460,6 @@ def _passes_quality_filter(
         va = 0.0
 
     if block_zero_votes and (vc <= 0 or va <= 0.0):
-        # Allow upcoming/announced shows with 0 votes if they already have strong TMDB popularity.
-        pop = float(it.get('popularity') or 0.0)
-        allow_zero_votes_pop = float(os.getenv('QUALITY_ALLOW_ZERO_VOTES_POP', '25'))
-        if pop >= allow_zero_votes_pop:
-            return True
         return False
 
     # If it's highly rated, allow it through even with small vote counts
@@ -440,6 +472,32 @@ def _passes_quality_filter(
 
     return True
 
+def _candidate_ok(
+    it: Dict[str, Any],
+    *,
+    allowed_langs: Optional[Set[str]] = None,
+    block_ids: Optional[Set[int]] = None,
+    include_null_first_air_dates: bool = True,
+    quality_cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Unified candidate filter so different pools behave consistently."""
+    try:
+        tmdb_id = int(it.get("tmdb_id") or it.get("id") or 0)
+    except Exception:
+        tmdb_id = 0
+    if tmdb_id and block_ids and tmdb_id in block_ids:
+        return False
+
+    lang = (it.get("original_language") or it.get("originalLanguage") or "").strip()
+    if allowed_langs and lang and lang not in allowed_langs:
+        return False
+
+    cfg = dict(quality_cfg or {})
+    # Ensure the include_null_first_air_dates preference is respected even if callers
+    # don't pass it through explicitly.
+    cfg.setdefault("include_null_first_air_dates", include_null_first_air_dates)
+
+    return _passes_quality_filter(it, **cfg)
 
 def _quality_cfg_from_request() -> Dict[str, Any]:
     """Defaults come from env, but can be overridden via query params in diag."""
@@ -460,6 +518,10 @@ def _quality_cfg_from_request() -> Dict[str, Any]:
         "min_vote_count": _get_int("QUALITY_MIN_VOTE_COUNT", 25),
         "allow_if_vote_average_ge": _get_float("QUALITY_ALLOW_HIGH_AVG", 7.5),
         "block_zero_votes": os.getenv("QUALITY_BLOCK_ZERO", "1") == "1",
+        "min_popularity": _get_float("QUALITY_MIN_POPULARITY", 0.0),
+        "block_zero_popularity": os.getenv("QUALITY_BLOCK_ZERO_POP", "0") == "1",
+        "include_null_first_air_dates": os.getenv("QUALITY_INCLUDE_NULL_FIRST_AIR", "1") == "1",
+        "allow_future_first_air_dates": os.getenv("QUALITY_ALLOW_FUTURE_FIRST_AIR", "1") == "1",
     }
 
 

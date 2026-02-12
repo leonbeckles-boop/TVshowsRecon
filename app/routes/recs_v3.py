@@ -251,7 +251,7 @@ async def _fetch_tmdb_trending_candidates(
         base = math.log10(1.0 + max(pop, 0.0))
         score_raw = 0.3 + 0.4 * base  # trending should be a nudge
 
-        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
+        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending", "name": row.get("name"), "overview": row.get("overview"), "poster_path": row.get("poster_path"), "first_air_date": row.get("first_air_date"), "origin_country": row.get("origin_country") or [], "original_language": row.get("original_language"), "genre_ids": row.get("genre_ids") or [], "vote_average": float(row.get("vote_average") or 0.0), "vote_count": int(row.get("vote_count") or 0), "popularity": float(row.get("popularity") or 0.0)})
         if len(items) >= max_items:
             break
 

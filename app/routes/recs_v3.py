@@ -423,6 +423,11 @@ def _passes_quality_filter(
         va = 0.0
 
     if block_zero_votes and (vc <= 0 or va <= 0.0):
+        # Allow upcoming/announced shows with 0 votes if they already have strong TMDB popularity.
+        pop = float(it.get('popularity') or 0.0)
+        allow_zero_votes_pop = float(os.getenv('QUALITY_ALLOW_ZERO_VOTES_POP', '25'))
+        if pop >= allow_zero_votes_pop:
+            return True
         return False
 
     # If it's highly rated, allow it through even with small vote counts

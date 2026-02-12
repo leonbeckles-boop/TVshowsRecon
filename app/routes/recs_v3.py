@@ -4,8 +4,8 @@ import asyncio
 import logging
 import math
 import os
-import datetime
 from typing import Any, Dict, List
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,68 +17,6 @@ from app.security import require_user_match
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
-
-# --- V3.2 taste-tightening knobs ---
-TASTE_TIGHTEN_MIN_FAVS = int(os.getenv("TASTE_TIGHTEN_MIN_FAVS", "10"))
-TASTE_TIGHTEN_GENRE_ALPHA = float(os.getenv("TASTE_TIGHTEN_GENRE_ALPHA", "0.6"))  # multiplier strength
-TASTE_TIGHTEN_TRENDING_PENALTY = float(os.getenv("TASTE_TIGHTEN_TRENDING_PENALTY", "0.70"))
-TASTE_TIGHTEN_REDDIT_BOOST = float(os.getenv("TASTE_TIGHTEN_REDDIT_BOOST", "1.10"))
-TASTE_TIGHTEN_TMDB_RECS_BOOST = float(os.getenv("TASTE_TIGHTEN_TMDB_RECS_BOOST", "1.00"))
-
-# Gate: when user has lots of favourites, don't leak low-similarity 'noise' candidates (e.g., Reality/Docs) unless they score strongly elsewhere.
-TASTE_TIGHTEN_GATE_MIN_FAVS = int(os.getenv('TASTE_TIGHTEN_GATE_MIN_FAVS', '10'))
-TASTE_TIGHTEN_GATE_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_MIN', '0.25'))
-TASTE_TIGHTEN_GATE_PERSONAL_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_PERSONAL_MIN', '0.55'))
-TASTE_TIGHTEN_GATE_REDDIT_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_REDDIT_MIN', '0.50'))
-TASTE_TIGHTEN_GATE_TMDB_MIN = float(os.getenv('TASTE_TIGHTEN_GATE_TMDB_MIN', '0.80'))
-
-# Genre IDs (TMDB)
-GENRE_DOC = 99
-GENRE_REALITY = 10764
-GENRE_NEWS = 10763
-GENRE_TALK = 10767
-GENRE_KIDS = 10762
-GENRE_FAMILY = 10751
-CORE_GENRES = {80, 9648, 10765, 10759, 10768}  # Crime, Mystery, Sci-Fi&Fantasy, Action&Adventure, War & Politics
-BAD_GENRES = {GENRE_DOC, GENRE_REALITY, GENRE_NEWS, GENRE_TALK}
-
-# ---- TMDB HTTP client / concurrency guard ----
-_TMDB_CLIENT: httpx.AsyncClient | None = None
-_TMDB_SEM = asyncio.Semaphore(int(os.environ.get("TMDB_MAX_CONCURRENCY", "20")))
-
-def _get_tmdb_client() -> httpx.AsyncClient:
-    """Singleton AsyncClient so we reuse connections (critical for Render latency)."""
-    global _TMDB_CLIENT
-    if _TMDB_CLIENT is None:
-        timeout = httpx.Timeout(10.0, connect=5.0)
-        limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
-        _TMDB_CLIENT = httpx.AsyncClient(timeout=timeout, limits=limits)
-    return _TMDB_CLIENT
-
-async def _tmdb_get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """GET TMDB endpoint and return JSON dict (or {} on failure)."""
-    api_key = _tmdb_api_key()
-    if not api_key:
-        return {}
-
-    p = dict(params or {})
-    p.setdefault("api_key", api_key)
-
-    url = f"{TMDB_API}{path}"
-    try:
-        async with _TMDB_SEM:
-            client = _get_tmdb_client()
-            r = await client.get(url, params=p)
-    except Exception:
-        return {}
-
-    if r.status_code != 200:
-        return {}
-    try:
-        return r.json() or {}
-    except Exception:
-        return {}
-
 
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
 
@@ -100,15 +38,65 @@ def _tmdb_api_key() -> str | None:
     return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
 
 
+TMDB_KEY = _tmdb_api_key()  # alias for legacy code paths
+
+def _candidate_ok(it, allowed_langs, fav_genres, block_ids):
+    """Filter TMDB-discovered candidates.
+
+    - Drops anything already in block_ids
+    - Optionally restricts by original language
+    - Optionally requires at least one overlapping genre with favourite genres
+    """
+    # tmdb id
+    try:
+        tmdb_id = int(it.get("id") or it.get("tmdb_id") or 0)
+    except Exception:
+        tmdb_id = 0
+    if tmdb_id and tmdb_id in block_ids:
+        return False
+
+    # language
+    if allowed_langs:
+        lang = (it.get("original_language") or "").lower()
+        if lang and lang not in allowed_langs:
+            return False
+
+    # genre overlap
+    if fav_genres:
+        gids = it.get("genre_ids") or []
+        try:
+            gids_set = {int(g) for g in gids if isinstance(g, int) or (isinstance(g, str) and g.isdigit())}
+        except Exception:
+            gids_set = set()
+        if gids_set and not (gids_set & fav_genres):
+            return False
+
+    return True
+
+
 async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     """
     Fetch TV details for a tmdb_id from TMDB.
     Returns a dict with the same shape v1/v2 use:
       tmdb_id, name/title, overview, poster_path/url, genres, genre_ids, etc.
     """
-    data = await _tmdb_get_json(f"/tv/{tmdb_id}", params=None)
-    if not data:
+    api_key = _tmdb_api_key()
+    if not api_key:
         return {"tmdb_id": tmdb_id}
+
+    url = f"{TMDB_API}/tv/{tmdb_id}?api_key={api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+    except Exception:
+        # Network error – return minimal
+        return {"tmdb_id": tmdb_id}
+
+    if r.status_code != 200:
+        return {"tmdb_id": tmdb_id}
+
+    data = r.json() or {}
 
     poster_path = (data.get("poster_path") or "").lstrip("/")
     poster_url = f"{TMDB_IMG}/{poster_path}" if poster_path else None
@@ -116,6 +104,7 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     genres_arr = data.get("genres") or []
     genre_names = [str(g.get("name")).strip() for g in genres_arr if g and g.get("name")]
 
+    # TMDB genre ids are ints, but keep the guard anyway
     genre_ids: list[int] = []
     for g in genres_arr:
         if not g:
@@ -125,8 +114,9 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
             genre_ids.append(gid)
 
     return {
-        "tmdb_id": int(data.get("id") or tmdb_id),
+        "tmdb_id": tmdb_id,
         "name": data.get("name") or data.get("original_name"),
+        "title": data.get("name") or data.get("original_name"),
         "overview": data.get("overview"),
         "poster_path": data.get("poster_path"),
         "poster_url": poster_url,
@@ -145,9 +135,18 @@ async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int =
     """
     Fetch TMDB recommendations for a single favourite show.
     Returns a list of recommended tmdb_ids (TV).
-    Note: api_key arg kept for backwards compatibility; requests are routed via shared client.
     """
-    data = await _tmdb_get_json(f"/tv/{tmdb_id}/recommendations", params={"page": 1})
+    url = f"{TMDB_API}/tv/{tmdb_id}/recommendations?api_key={api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+    except Exception:
+        return []
+
+    if r.status_code != 200:
+        return []
+
+    data = r.json() or {}
     results = data.get("results") or []
     out: List[int] = []
     for row in results[:max_n]:
@@ -195,11 +194,32 @@ async def _fetch_tmdb_trending_candidates(
     block_ids: set[int],
     limit: int,
 ) -> List[Dict[str, Any]]:
-    """Fetch weekly trending shows from TMDB and keep those that roughly match taste."""
-    data = await _tmdb_get_json("/trending/tv/week", params={"page": 1})
+    """
+    Build candidate list from TMDB /trending/tv/week, filtered by
+    user's languages + favourite genres.
+
+    Returns [{ tmdb_id, score_raw, source="tmdb_trending" }, ...].
+    """
+    api_key = _tmdb_api_key()
+    if not api_key:
+        return []
+
+    url = f"{TMDB_API}/trending/tv/week?api_key={api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+    except Exception:
+        return []
+
+    if r.status_code != 200:
+        return []
+
+    data = r.json() or {}
     results = data.get("results") or []
 
     items: List[Dict[str, Any]] = []
+    max_items = max(limit * 3, limit)
+
     for row in results:
         tid = row.get("id")
         if not isinstance(tid, int):
@@ -212,20 +232,27 @@ async def _fetch_tmdb_trending_candidates(
             continue
 
         genre_ids = row.get("genre_ids") or []
-        gid_set = {g for g in genre_ids if isinstance(g, int)}
+        gid_set = set(int(g) for g in genre_ids if isinstance(g, int))
 
-        # Prefer some overlap with favourite genres if we have them
-        if fav_genres and not gid_set.intersection(fav_genres):
+        # Drop Talk / Soap
+        if 10767 in gid_set or 10766 in gid_set:
             continue
 
-        items.append(
-            {
-                "tmdb_id": tid,
-                "score_raw": 0.55,  # trending baseline
-                "source": "tmdb_trending",
-            }
-        )
-        if len(items) >= (limit * 3):
+        # Require at least one overlapping genre if we have a profile
+        if fav_genres and not (fav_genres & gid_set):
+            continue
+
+        pop = row.get("popularity") or 0.0
+        try:
+            pop = float(pop)
+        except Exception:
+            pop = 0.0
+
+        base = math.log10(1.0 + max(pop, 0.0))
+        score_raw = 0.3 + 0.4 * base  # trending should be a nudge
+
+        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
+        if len(items) >= max_items:
             break
 
     return items
@@ -234,6 +261,78 @@ async def _fetch_tmdb_trending_candidates(
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
+
+
+
+async def _fetch_tmdb_popular_candidates(
+    allowed_langs: set[str],
+    fav_genres: set[int],
+    block_ids: set[int],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Broad recall: TMDB /tv/popular filtered to the user's taste."""
+    url = "https://api.themoviedb.org/3/tv/popular"
+    headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_KEY}"}
+    params = {"page": 1}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for it in (data.get("results") or []):
+        if not _candidate_ok(it, allowed_langs, fav_genres, block_ids):
+            continue
+        out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_popular"})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _fetch_tmdb_discover_candidates(
+    allowed_langs: set[str],
+    top_genres: List[int],
+    block_ids: set[int],
+    limit: int,
+    now_year: int,
+) -> List[Dict[str, Any]]:
+    """High-popularity candidates by top genres via TMDB /discover/tv (includes upcoming)."""
+    if not top_genres:
+        return []
+
+    url = "https://api.themoviedb.org/3/discover/tv"
+    headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_KEY}"}
+
+    out: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for gid in top_genres:
+            params = {
+                "sort_by": "popularity.desc",
+                "with_genres": str(int(gid)),
+                "include_null_first_air_dates": "false",
+                "first_air_date.gte": f"{max(1900, now_year - 8)}-01-01",
+                "first_air_date.lte": f"{now_year + 3}-12-31",
+                "page": 1,
+            }
+            try:
+                r = await client.get(url, headers=headers, params=params)
+                r.raise_for_status()
+                data = r.json()
+            except Exception:
+                continue
+
+            for it in (data.get("results") or []):
+                # We use only the queried genre for overlap, to keep filtering permissive.
+                if not _candidate_ok(it, allowed_langs, {int(gid)}, block_ids):
+                    continue
+                out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_discover"})
+                if len(out) >= limit:
+                    return out
+
+    return out
 
 async def _get_block_ids(session: AsyncSession, user_id: int) -> set[int]:
     """
@@ -361,45 +460,6 @@ async def _fetch_reddit_candidates_from_pairs(
 # Scoring & MMR
 # ---------------------------------------------------------------------------
 
-
-def _year_from_date(s: Any) -> int | None:
-    try:
-        if not s or not isinstance(s, str):
-            return None
-        return int(s.split("-")[0])
-    except Exception:
-        return None
-
-
-def _genre_weight_map(fav_genre_counts: Dict[int, int], fav_count: int) -> Dict[int, float]:
-    """Return a normalised genre preference distribution for the user.
-
-    We normalise by TOTAL genre assignments across favourites (not by number of favourites),
-    so the weights sum to ~1.0 and 'genre_match' does not saturate at 1.0 for most candidates.
-    """
-    if fav_count <= 0 or not fav_genre_counts:
-        return {}
-    total = float(sum(fav_genre_counts.values())) or 1.0
-    return {gid: (cnt / total) for gid, cnt in fav_genre_counts.items()}
-
-
-def _genre_match_score(cand_gids: List[int], fav_genre_weights: Dict[int, float]) -> float:
-    if not cand_gids or not fav_genre_weights:
-        return 0.0
-    s = sum(fav_genre_weights.get(g, 0.0) for g in cand_gids)
-    return float(max(0.0, min(s, 1.0)))
-
-
-def _recency_multiplier(first_air_date: Any, vote_average: float, now_year: int) -> float:
-    y = _year_from_date(first_air_date)
-    if not y:
-        return 1.0
-    age = now_year - y
-    if vote_average >= 7.5 and age <= 2:
-        return 1.15
-    if vote_average >= 7.0 and age <= 5:
-        return 1.05
-    return 1.0
 def _normalise(vals: List[float]) -> List[float]:
     if not vals:
         return []
@@ -662,6 +722,7 @@ async def get_recs_v3(
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
+        now_year = datetime.now(timezone.utc).year
 
         # Genre profile (counts for taste vector)
         fav_genre_counts: Dict[int, int] = {}
@@ -675,22 +736,6 @@ async def get_recs_v3(
         fav_genres_all = set(fav_genre_counts.keys())
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
-        fav_count = len(fav_ids)
-        tighten = fav_count > TASTE_TIGHTEN_MIN_FAVS
-        now_year = datetime.date.today().year
-        fav_genre_weights = _genre_weight_map(fav_genre_counts, fav_count)
-
-        if tighten and (w_tmdb == 0.5) and (w_personal == 0.3) and (w_reddit in (0.0, 0.5)):
-            if w_reddit <= 0.0:
-                w_tmdb, w_personal = 0.45, 0.55
-            else:
-                w_tmdb, w_reddit, w_personal = 0.40, 0.20, 0.40
-
-        # Guardrail: if user taste is clearly "mature" (crime/sci-fi/etc), block Kids/Family unless they appear in favourites.
-        allow_kids_family = (10762 in fav_genres_all) or (10751 in fav_genres_all)  # Kids, Family
-        mature_genres = {80, 9648, 10765, 10759, 10768}  # Crime, Mystery, Sci-Fi&Fantasy, Action&Adventure, War & Politics
-        user_is_mature = bool(fav_genres_all.intersection(mature_genres))
-
         # 5) TMDB recs from favourites
         tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
 
@@ -702,10 +747,34 @@ async def get_recs_v3(
             limit=limit,
         )
 
-        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > trending)
+
+        # 6b) TMDB discover (popular by your top genres) — expands beyond reddit_pairs graph
+        top_genres = [gid for gid, _c in sorted(fav_genre_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+        discover_base = await _fetch_tmdb_discover_candidates(
+            allowed_langs=allowed_langs,
+            top_genres=top_genres,
+            block_ids=block_ids,
+            limit=limit,
+            now_year=now_year,
+        )
+
+        # 6c) TMDB popular (broad recall), filtered by taste
+        popular_base = await _fetch_tmdb_popular_candidates(
+            allowed_langs=allowed_langs,
+            fav_genres=fav_genres_all,
+            block_ids=block_ids,
+            limit=min(40, limit),
+        )
+
+
+        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > discover > popular > trending)
         by_id: Dict[int, Dict[str, Any]] = {}
 
         for item in trending_base:
+            by_id[item["tmdb_id"]] = item
+        for item in popular_base:
+            by_id[item["tmdb_id"]] = item
+        for item in discover_base:
             by_id[item["tmdb_id"]] = item
         for item in tmdb_base:
             by_id[item["tmdb_id"]] = item
@@ -731,11 +800,6 @@ async def get_recs_v3(
             }
 
         # 8) Fetch TMDB details for candidates
-        # Cap candidate enrichment to avoid hundreds of TMDB detail calls on Render.
-        # We only enrich the strongest candidates first; this is a huge latency win.
-        enrich_cap = int(os.environ.get("RECS_V3_ENRICH_CAP", str(limit * 6)))
-        enrich_cap = max(enrich_cap, limit * 3)  # never too small
-        base = sorted(base, key=lambda x: float(x.get("score_raw") or 0.0), reverse=True)[:enrich_cap]
         tmdb_ids = [b["tmdb_id"] for b in base]
         details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
         quality_cfg = _quality_cfg_from_request()
@@ -759,10 +823,8 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
-            # If the user taste is mature, avoid Kids/Family unless user actually likes those genres.
-            if (not allow_kids_family) and user_is_mature and (10762 in gid_set or 10751 in gid_set):
+            if not _passes_quality_filter(merged, **quality_cfg):
                 continue
-
             if not _passes_quality_filter(merged, **quality_cfg):
                 continue
             items.append(merged)
@@ -776,11 +838,10 @@ async def get_recs_v3(
                 merged["source"] = base_item.get("source", "reddit_pairs")
                 items.append(merged)
 
-       # 10) Build Reddit + TMDB score vectors and personalisation
+        # 10) Build Reddit + TMDB score vectors and personalisation
         reddit_vals: List[float] = []
         tmdb_vals: List[float] = []
         personal_raw_vals: List[float] = []
-        scored_items: List[Dict[str, Any]] = []
 
         for it in items:
             # Reddit score: log-squashed score_raw
@@ -788,10 +849,10 @@ async def get_recs_v3(
                 raw = float(it.get("score_raw") or 0.0)
             except Exception:
                 raw = 0.0
-            reddit_score = math.log10(1.0 + max(raw, 0.0))
+            reddit_vals.append(math.log10(1.0 + max(raw, 0.0)))
 
             # TMDB quality
-            tmdb_score = _tmdb_quality(it)
+            tmdb_vals.append(_tmdb_quality(it))
 
             # Personalisation:
             #  (a) max similarity to any favourite
@@ -803,7 +864,6 @@ async def get_recs_v3(
             #  (b) taste-vector similarity (genre profile vs candidate genres)
             genre_ids = it.get("genre_ids") or []
             cand_gids = [int(g) for g in genre_ids if isinstance(g, int)]
-
             if fav_genre_counts and cand_gids:
                 num = sum(fav_genre_counts.get(g, 0) for g in cand_gids)
                 denom = fav_genre_norm * math.sqrt(len(cand_gids) or 1)
@@ -811,52 +871,13 @@ async def get_recs_v3(
             else:
                 taste_sim = 0.0
 
-            genre_match = _genre_match_score(cand_gids, fav_genre_weights) if tighten else 0.0
-
-            # Taste tighten hard-block for bad genres (only after we know sims)
-            if tighten and any(g in BAD_GENRES for g in cand_gids):
-                user_bad_share = (
-                    max(fav_genre_weights.get(g, 0.0) for g in cand_gids if g in BAD_GENRES)
-                    if cand_gids else 0.0
-                )
-                if user_bad_share < 0.12 and best_sim < 0.95:
-                    continue
-
-            recency_mult = _recency_multiplier(
-                it.get("first_air_date"),
-                float(it.get("vote_average") or 0.0),
-                now_year,
-            ) if tighten else 1.0
-
-            src = (it.get("source") or "").lower()
-            if tighten and src == "tmdb_trending":
-                source_mult = TASTE_TIGHTEN_TRENDING_PENALTY
-            elif src == "reddit_pairs":
-                source_mult = TASTE_TIGHTEN_REDDIT_BOOST
-            elif src == "tmdb_recs":
-                source_mult = TASTE_TIGHTEN_TMDB_RECS_BOOST
-            else:
-                source_mult = 1.0
-
             taste_sim = float(max(0.0, min(taste_sim, 1.0)))
-            personal_raw = (
-                (0.55 * best_sim + 0.25 * taste_sim + 0.20 * genre_match)
-                if tighten else
-                (0.7 * best_sim + 0.3 * taste_sim)
-            )
+            personal_raw = 0.7 * best_sim + 0.3 * taste_sim
 
-            # stash explain/debug fields
             it["fav_similarity"] = best_sim
             it["taste_profile_sim"] = taste_sim
-            it["genre_match"] = genre_match
-            it["recency_mult"] = recency_mult
-            it["source_mult"] = source_mult
 
-            # keep vectors aligned ONLY for items that survived continues
-            scored_items.append(it)
-            reddit_vals.append(float(reddit_score))
-            tmdb_vals.append(float(tmdb_score))
-            personal_raw_vals.append(float(personal_raw))
+            personal_raw_vals.append(personal_raw)
 
         reddit_norm = _normalise(reddit_vals)
         tmdb_norm = _normalise(tmdb_vals)
@@ -876,44 +897,20 @@ async def get_recs_v3(
         w_personal_eff = w_personal * scale
 
         combined_items: List[Dict[str, Any]] = []
-        for it, r_n, t_n, p_n in zip(scored_items, reddit_norm, tmdb_norm, personal_norm):
-            score_reddit = float(r_n)
-            score_tmdb = float(t_n)
-            score_personal = float(p_n)
+        for it, r_n, t_n, p_n in zip(items, reddit_norm, tmdb_norm, personal_norm):
+            score_reddit = r_n
+            score_tmdb = t_n
+            score_personal = p_n
 
-            score = (
-                (w_reddit_eff * score_reddit)
-                + (w_tmdb_eff * score_tmdb)
-                + (w_personal_eff * score_personal)
-            )
+            score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
 
-            if tighten and fav_count >= TASTE_TIGHTEN_GATE_MIN_FAVS:
-                gm = float(it.get("genre_match", 0.0))
-                ts = float(it.get("taste_profile_sim", 0.0))
-                if (
-                    max(gm, ts) < TASTE_TIGHTEN_GATE_MIN
-                    and score_personal < TASTE_TIGHTEN_GATE_PERSONAL_MIN
-                    and score_reddit < TASTE_TIGHTEN_GATE_REDDIT_MIN
-                    and score_tmdb < TASTE_TIGHTEN_GATE_TMDB_MIN
-                ):
-                    continue
-
-            if tighten:
-                score *= (1.0 + (TASTE_TIGHTEN_GENRE_ALPHA * float(it.get("genre_match", 0.0))))
-                score *= float(it.get("source_mult", 1.0))
-                score *= float(it.get("recency_mult", 1.0))
-
-            it["score_reddit"] = score_reddit
-            it["score_tmdb"] = score_tmdb
-            it["score_personal"] = score_personal
-            it["score"] = float(score)
-            it["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
-
-            combined_items.append(it)
-
-        # IMPORTANT: from here onwards, use combined_items (not items)
-        items = combined_items
-
+            enriched = dict(it)
+            enriched["score_reddit"] = score_reddit
+            enriched["score_tmdb"] = score_tmdb
+            enriched["score_personal"] = score_personal
+            enriched["score"] = score
+            enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
+            combined_items.append(enriched)
 
         # 12) Diversity (MMR) + final top-N
         if 0.0 < mmr_lambda < 1.0:

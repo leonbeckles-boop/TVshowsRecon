@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 import httpx
@@ -37,6 +37,24 @@ def _tmdb_api_key() -> str | None:
     IMPORTANT: TMDB_API is the base URL, not the key.
     """
     return os.environ.get("TMDB_API_KEY") or os.environ.get("TMDB_KEY")
+
+
+async def _tmdb_get(path: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Any:
+    """
+    Lightweight TMDB GET helper returning parsed JSON.
+    Adds api_key automatically and raises HTTPException on failure.
+    """
+    key = _tmdb_api_key()
+    if not key:
+        raise HTTPException(status_code=500, detail="TMDB API key missing (set TMDB_API_KEY or TMDB_KEY)")
+    q: Dict[str, Any] = dict(params or {})
+    q.setdefault("api_key", key)
+    url = f"{TMDB_BASE.rstrip('/')}/{path.lstrip('/')}"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.get(url, params=q)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"TMDB error {r.status_code} for {path}")
+    return r.json()
 
 
 TMDB_KEY = _tmdb_api_key()  # alias for legacy code paths
@@ -162,36 +180,144 @@ async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int =
     return out
 
 
+
 async def _fetch_tmdb_candidates(fav_ids: List[int], block_ids: set[int], limit: int) -> List[Dict[str, Any]]:
+    """Fetch a broad candidate pool directly from TMDB.
+
+    This is the fix for "only reddit_pairs are visible" — we aggressively expand candidates using:
+      - /tv/{id}/recommendations + /tv/{id}/similar (seeded from favourites)
+      - /tv/{id}/keywords -> /discover/tv?with_keywords=... (franchise/spin-offs / upcoming)
+      - /discover/tv from top favourite genres (evergreen + next ~18 months)
+      - /trending, /popular, /top_rated, /on_the_air (diversity + fallback)
+
+    Returned items are already mapped into the internal candidate format used later in scoring.
     """
-    Build TMDB-based candidate list from favourites using /tv/{id}/recommendations.
-    Returns [{ tmdb_id, score_raw, source="tmdb_recs" }, ...].
-    """
-    api_key = _tmdb_api_key()
-    if not api_key or not fav_ids:
+    if not fav_ids:
         return []
 
-    # Limit how many favourites we query to avoid spamming TMDB
-    fav_slice = fav_ids[: min(len(fav_ids), 10)]
+    sem = asyncio.Semaphore(8)
 
-    tasks = [_tmdb_recommendations_for_fav(fid, api_key, max_n=20) for fid in fav_slice]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def _guard(coro):
+        async with sem:
+            try:
+                return await coro
+            except Exception:
+                return []
 
-    tmdb_ids: set[int] = set()
-    for res in results:
-        if isinstance(res, Exception):
-            continue
-        for tid in res:
-            if not isinstance(tid, int):
-                continue
-            if tid in block_ids:
-                continue
-            tmdb_ids.add(tid)
+    async def _tv_list(path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        data = await _tmdb_get(path, params) or {}
+        return data.get("results") or []
 
-    items: List[Dict[str, Any]] = []
-    for tid in list(tmdb_ids)[: max(limit * 3, limit)]:
-        items.append({"tmdb_id": tid, "score_raw": 1.0, "source": "tmdb_recs"})
-    return items
+    async def _tv_keywords(tv_id: int) -> List[int]:
+        data = await _tmdb_get(f"/tv/{tv_id}/keywords", {}) or {}
+        kws = data.get("results") or []
+        out: List[int] = []
+        for k in kws:
+            kid = k.get("id")
+            if isinstance(kid, int):
+                out.append(kid)
+        return out
+
+    seed_ids = fav_ids[: min(len(fav_ids), 20)]
+
+    # --- Keywords (shared keywords are the best signal for "obvious missing franchise shows")
+    keyword_tasks = [_guard(_tv_keywords(tid)) for tid in seed_ids[:10]]
+    keyword_lists = await asyncio.gather(*keyword_tasks)
+    keyword_counts: Dict[int, int] = {}
+    for kws in keyword_lists:
+        for kid in kws:
+            keyword_counts[kid] = keyword_counts.get(kid, 0) + 1
+
+    top_keyword_ids = [k for k, c in sorted(keyword_counts.items(), key=lambda kv: kv[1], reverse=True) if c >= 2][:8]
+    if not top_keyword_ids and keyword_lists:
+        top_keyword_ids = list(dict.fromkeys(keyword_lists[0]))[:4]
+
+    # --- Seed recs/similar (2 pages for first 8 seeds, 1 page for the rest)
+    seed_tasks: List[asyncio.Task] = []
+    for tid in seed_ids:
+        seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/recommendations", {"page": 1}))))
+        seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/similar", {"page": 1}))))
+        if tid in seed_ids[:8]:
+            seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/recommendations", {"page": 2}))))
+            seed_tasks.append(asyncio.create_task(_guard(_tv_list(f"/tv/{tid}/similar", {"page": 2}))))
+
+    seed_lists = await asyncio.gather(*seed_tasks) if seed_tasks else []
+
+    # --- Genre discovery (top favourite genres, if available in this scope)
+    top_genres: List[int] = []
+    try:
+        # fav_genre_counts is built in get_recs_v3 before calling this helper
+        top_genres = [int(g) for g, _ in sorted(fav_genre_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]]  # type: ignore[name-defined]
+    except Exception:
+        top_genres = []
+
+    today = datetime.now(timezone.utc).date()
+    future = (today + timedelta(days=550)).isoformat()
+
+    discover_tasks: List[asyncio.Task] = []
+    if top_genres:
+        g_csv = ",".join(str(g) for g in top_genres)
+        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "sort_by": "popularity.desc", "page": 1}))))
+        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "sort_by": "vote_average.desc", "vote_count.gte": 200, "page": 1}))))
+        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_genres": g_csv, "first_air_date.gte": today.isoformat(), "first_air_date.lte": future, "sort_by": "popularity.desc", "page": 1}))))
+
+    # Keyword discover (OR semantics by union)
+    for kid in top_keyword_ids[:6]:
+        discover_tasks.append(asyncio.create_task(_guard(_tv_list("/discover/tv", {"with_keywords": str(kid), "sort_by": "popularity.desc", "page": 1}))))
+
+    discover_lists = await asyncio.gather(*discover_tasks) if discover_tasks else []
+
+    # --- Global lists (cheap / fast)
+    global_lists = await asyncio.gather(
+        _guard(_tv_list("/trending/tv/week", {"page": 1})),
+        _guard(_tv_list("/tv/popular", {"page": 1})),
+        _guard(_tv_list("/tv/top_rated", {"page": 1})),
+        _guard(_tv_list("/tv/on_the_air", {"page": 1})),
+    )
+
+    seen: set[int] = set(block_ids)
+    out: List[Dict[str, Any]] = []
+
+    def _add(x: Dict[str, Any], src: str) -> None:
+        tid = x.get("id")
+        if not isinstance(tid, int):
+            return
+        if tid in seen:
+            return
+        if not _candidate_ok(x):
+            return
+        seen.add(tid)
+        out.append({
+            "tmdb_id": tid,
+            "score_raw": float(x.get("popularity") or 0.0),
+            "source": src,
+            "name": x.get("name"),
+            "overview": x.get("overview"),
+            "poster_path": x.get("poster_path"),
+            "first_air_date": x.get("first_air_date"),
+            "origin_country": x.get("origin_country") or [],
+            "original_language": x.get("original_language"),
+            "genre_ids": x.get("genre_ids") or [],
+            "vote_average": float(x.get("vote_average") or 0.0),
+            "vote_count": int(x.get("vote_count") or 0),
+            "popularity": float(x.get("popularity") or 0.0),
+        })
+
+    # Priority order: seed -> discover -> global
+    for lst in seed_lists:
+        for x in (lst or []):
+            _add(x, "tmdb_seed")
+
+    for lst in discover_lists:
+        for x in (lst or []):
+            _add(x, "tmdb_discover")
+
+    for lst in global_lists:
+        for x in (lst or []):
+            _add(x, "tmdb_global")
+
+    return out[:limit]
+
 
 
 async def _fetch_tmdb_trending_candidates(

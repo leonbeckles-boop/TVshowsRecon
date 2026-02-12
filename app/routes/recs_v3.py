@@ -5,7 +5,7 @@ import logging
 import math
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +16,7 @@ from app.db.session import get_async_session
 from app.security import require_user_match
 
 TMDB_API = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
+TMDB_BASE = os.environ.get("TMDB_API", "https://api.themoviedb.org/3")
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
 router = APIRouter(prefix="/recs/v3", tags=["recs_v3"])
@@ -39,6 +40,11 @@ def _tmdb_api_key() -> str | None:
 
 
 TMDB_KEY = _tmdb_api_key()  # alias for legacy code paths
+
+
+def _tmdb_key() -> str:
+    return TMDB_KEY
+
 
 def _candidate_ok(it, allowed_langs, fav_genres, block_ids):
     """Filter TMDB-discovered candidates.
@@ -783,6 +789,7 @@ async def get_recs_v3(
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
+        quality_cfg = _quality_cfg_from_request()
         now_year = datetime.now(timezone.utc).year
 
         # Genre profile (counts for taste vector)
@@ -942,6 +949,9 @@ async def get_recs_v3(
                 if d and d.get("tmdb_id"):
 
                     details_map[int(d["tmdb_id"])] = d
+        # Align details to the same order as base candidates
+        details_list = [details_map.get(int(b.get("tmdb_id") or 0)) for b in base]
+
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []

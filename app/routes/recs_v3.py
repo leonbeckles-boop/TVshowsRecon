@@ -251,7 +251,7 @@ async def _fetch_tmdb_trending_candidates(
         base = math.log10(1.0 + max(pop, 0.0))
         score_raw = 0.3 + 0.4 * base  # trending should be a nudge
 
-        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending"})
+        items.append({"tmdb_id": tid, "score_raw": score_raw, "source": "tmdb_trending", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
         if len(items) >= max_items:
             break
 
@@ -292,6 +292,7 @@ async def _fetch_tmdb_popular_candidates(
     return out
 
 
+
 async def _fetch_tmdb_discover_candidates(
     allowed_langs: set[str],
     top_genres: List[int],
@@ -299,38 +300,98 @@ async def _fetch_tmdb_discover_candidates(
     limit: int,
     now_year: int,
 ) -> List[Dict[str, Any]]:
-    """High-popularity candidates by top genres via TMDB /discover/tv (includes upcoming)."""
-    if not top_genres:
+    """High-popularity candidates by top genres via TMDB /discover/tv (includes upcoming).
+
+    Notes:
+    - Note: TMDB sometimes omits first_air_date for announced shows. If we filter by date,
+      we can accidentally exclude those. So we do a second pass without date filters.
+    - Performance: parallelise per-genre with a small semaphore.
+    """
+
+    if not TMDB_KEY or not top_genres:
         return []
 
     url = "https://api.themoviedb.org/3/discover/tv"
     headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_KEY}"}
 
-    out: List[Dict[str, Any]] = []
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        for gid in top_genres:
-            params = {
-                "sort_by": "popularity.desc",
-                "with_genres": str(int(gid)),
-                "include_null_first_air_dates": "true",
-                "first_air_date.gte": f"{max(1900, now_year - 8)}-01-01",
-                "first_air_date.lte": f"{now_year + 8}-12-31",
-                "page": 1,
-            }
-            try:
-                r = await client.get(url, headers=headers, params=params)
-                r.raise_for_status()
-                data = r.json()
-            except Exception:
+    # Keep order, cap genres
+    top_genres = list(dict.fromkeys(int(g) for g in top_genres))[:8]
+
+    timeout = httpx.Timeout(8.0, connect=5.0)
+    limits_cfg = httpx.Limits(max_keepalive_connections=10, max_connections=10)
+
+    async def _fetch(client: httpx.AsyncClient, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            r = await client.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            return []
+        got: List[Dict[str, Any]] = []
+        for it in (data.get("results") or []):
+            tid = int(it.get("id") or 0)
+            if not tid or tid in block_ids:
+                continue
+            lang = (it.get("original_language") or "").lower()
+            if allowed_langs and lang and lang not in allowed_langs:
+                continue
+            if not _candidate_ok(tid, it.get("name") or it.get("original_name"), block_ids):
                 continue
 
-            for it in (data.get("results") or []):
-                # We use only the queried genre for overlap, to keep filtering permissive.
-                if not _candidate_ok(it, allowed_langs, {int(gid)}, block_ids):
-                    continue
-                out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_discover", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
-                if len(out) >= limit:
-                    return out
+            got.append({
+                "tmdb_id": tid,
+                "name": it.get("name") or it.get("original_name"),
+                "overview": it.get("overview"),
+                "poster_path": it.get("poster_path"),
+                "poster_url": f"https://image.tmdb.org/t/p/w500{it.get('poster_path')}" if it.get("poster_path") else None,
+                "first_air_date": it.get("first_air_date"),
+                "origin_country": it.get("origin_country") or [],
+                "original_language": it.get("original_language"),
+                "genre_ids": it.get("genre_ids") or [],
+                "vote_average": float(it.get("vote_average") or 0.0),
+                "vote_count": int(it.get("vote_count") or 0),
+                "popularity": float(it.get("popularity") or 0.0),
+                "source": "tmdb_discover",
+                "score_raw": 0.0,
+            })
+            if len(got) >= max(30, limit):
+                break
+        return got
+
+    sem = asyncio.Semaphore(4)
+
+    async def _for_gid(gid: int) -> List[Dict[str, Any]]:
+        async with sem:
+            async with httpx.AsyncClient(timeout=timeout, limits=limits_cfg) as client:
+                common = {
+                    "sort_by": "popularity.desc",
+                    "with_genres": str(int(gid)),
+                    "include_null_first_air_dates": "true",
+                    "page": 1,
+                }
+                # pass 1: bounded date window (more relevant)
+                p1 = dict(common)
+                p1["first_air_date.gte"] = f"{max(1900, now_year - 8)}-01-01"
+                p1["first_air_date.lte"] = f"{now_year + 8}-12-31"
+                # pass 2: no date filters (catch items with missing air dates)
+                p2 = dict(common)
+
+                a, b = await asyncio.gather(_fetch(client, p1), _fetch(client, p2))
+                return a + b
+
+    lists = await asyncio.gather(*[_for_gid(g) for g in top_genres])
+
+    out: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for lst in lists:
+        for it in lst:
+            tid = int(it["tmdb_id"])
+            if tid in seen:
+                continue
+            seen.add(tid)
+            out.append(it)
+            if len(out) >= limit:
+                return out
 
     return out
 
@@ -799,10 +860,88 @@ async def get_recs_v3(
                 },
             }
 
-        # 8) Fetch TMDB details for candidates
-        tmdb_ids = [b["tmdb_id"] for b in base]
-        details_list = await asyncio.gather(*[_tmdb_details(tid) for tid in tmdb_ids])
-        quality_cfg = _quality_cfg_from_request()
+        # 8) Fetch TMDB details for candidates (ONLY where needed)
+
+        # We already have rich fields for tmdb_trending/tmdb_popular/tmdb_discover and tmdb_recs results.
+
+        # The only thin candidates tend to come from reddit_pairs / DB sources (just tmdb_id + score_raw).
+
+        def _needs_details(b: Dict[str, Any]) -> bool:
+
+            # Need at least name + genre_ids to score properly
+
+            return not b.get("name") or not b.get("genre_ids")
+
+
+        need_ids = [int(b["tmdb_id"]) for b in base if _needs_details(b)]
+
+        need_ids = list(dict.fromkeys(need_ids))  # de-dupe, keep order
+
+
+        details_map: Dict[int, Dict[str, Any]] = {}
+
+        if need_ids:
+
+            sem = asyncio.Semaphore(20)
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+
+                async def _one(tid: int) -> Optional[Dict[str, Any]]:
+
+                    async with sem:
+
+                        try:
+
+                            url = f"{TMDB_BASE}/tv/{tid}"
+
+                            r = await client.get(url, params={"api_key": _tmdb_key(), "language": "en-GB"})
+
+                            r.raise_for_status()
+
+                            data = r.json() or {}
+
+                            return {
+
+                                "tmdb_id": tid,
+
+                                "name": data.get("name") or data.get("title"),
+
+                                "overview": data.get("overview"),
+
+                                "poster_path": data.get("poster_path"),
+
+                                "poster_url": (TMDB_IMG + data["poster_path"]) if data.get("poster_path") else None,
+
+                                "first_air_date": data.get("first_air_date"),
+
+                                "origin_country": data.get("origin_country") or [],
+
+                                "original_language": data.get("original_language"),
+
+                                "genres": [g.get("name") for g in (data.get("genres") or []) if g.get("name")],
+
+                                "genre_ids": [g.get("id") for g in (data.get("genres") or []) if g.get("id")],
+
+                                "vote_average": float(data.get("vote_average") or 0.0),
+
+                                "vote_count": int(data.get("vote_count") or 0),
+
+                                "popularity": float(data.get("popularity") or 0.0),
+
+                            }
+
+                        except Exception:
+
+                            return None
+
+
+                got = await asyncio.gather(*(_one(t) for t in need_ids))
+
+            for d in got:
+
+                if d and d.get("tmdb_id"):
+
+                    details_map[int(d["tmdb_id"])] = d
 
         # 9) Merge base scores + details, applying language + genre filters
         items: List[Dict[str, Any]] = []

@@ -64,13 +64,18 @@ def _tmdb_key() -> str:
     return TMDB_KEY
 
 
-def _candidate_ok(it, allowed_langs, fav_genres, block_ids):
+def _candidate_ok(it, allowed_langs=None, fav_genres=None, block_ids=None):
     """Filter TMDB-discovered candidates.
 
     - Drops anything already in block_ids
     - Optionally restricts by original language
     - Optionally requires at least one overlapping genre with favourite genres
     """
+    # allow callers to omit filters
+    block_ids = set(block_ids or [])
+    allowed_langs = set(allowed_langs or [])
+    fav_genres = set(fav_genres or [])
+
     # tmdb id
     try:
         tmdb_id = int(it.get("id") or it.get("tmdb_id") or 0)

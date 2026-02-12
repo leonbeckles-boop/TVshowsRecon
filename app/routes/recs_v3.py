@@ -4,8 +4,8 @@ import asyncio
 import logging
 import math
 import os
-from typing import Any, Dict, List
 from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -286,7 +286,7 @@ async def _fetch_tmdb_popular_candidates(
     for it in (data.get("results") or []):
         if not _candidate_ok(it, allowed_langs, fav_genres, block_ids):
             continue
-        out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_popular"})
+        out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_popular", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
         if len(out) >= limit:
             break
     return out
@@ -312,9 +312,9 @@ async def _fetch_tmdb_discover_candidates(
             params = {
                 "sort_by": "popularity.desc",
                 "with_genres": str(int(gid)),
-                "include_null_first_air_dates": "false",
+                "include_null_first_air_dates": "true",
                 "first_air_date.gte": f"{max(1900, now_year - 8)}-01-01",
-                "first_air_date.lte": f"{now_year + 3}-12-31",
+                "first_air_date.lte": f"{now_year + 8}-12-31",
                 "page": 1,
             }
             try:
@@ -328,7 +328,7 @@ async def _fetch_tmdb_discover_candidates(
                 # We use only the queried genre for overlap, to keep filtering permissive.
                 if not _candidate_ok(it, allowed_langs, {int(gid)}, block_ids):
                     continue
-                out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_discover"})
+                out.append({"tmdb_id": int(it["id"]), "score_raw": 1.0, "source": "tmdb_discover", "name": it.get("name"), "overview": it.get("overview"), "poster_path": it.get("poster_path"), "first_air_date": it.get("first_air_date"), "origin_country": it.get("origin_country") or [], "original_language": it.get("original_language"), "genre_ids": it.get("genre_ids") or [], "vote_average": float(it.get("vote_average") or 0.0), "vote_count": int(it.get("vote_count") or 0), "popularity": float(it.get("popularity") or 0.0)})
                 if len(out) >= limit:
                     return out
 

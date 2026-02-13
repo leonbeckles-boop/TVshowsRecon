@@ -98,6 +98,58 @@ async def _tmdb_details(tmdb_id: int) -> Dict[str, Any]:
     }
 
 
+async def _tmdb_search_tv(query: str) -> Optional[Dict[str, Any]]:
+    """Search TMDB for a TV show by name and return the first result dict (raw)."""
+    api_key = _tmdb_api_key()
+    if not api_key:
+        return None
+    q = (query or "").strip()
+    if not q:
+        return None
+    # Use params to ensure proper escaping
+    params = {"api_key": api_key, "query": q}
+    url = f"{TMDB_API}/search/tv"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url, params=params)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    data = r.json() or {}
+    results = data.get("results") or []
+    if not results:
+        return None
+    return results[0]
+
+
+def _recent_first_bucket(items: List[Dict[str, Any]], years: int = 3) -> List[Dict[str, Any]]:
+    """Bucket recent releases first; preserve order within each bucket."""
+    try:
+        now = datetime.now(timezone.utc).date()
+        cutoff = now.replace(year=now.year - int(years))
+    except Exception:
+        cutoff = None
+
+    recent: List[Dict[str, Any]] = []
+    older: List[Dict[str, Any]] = []
+
+    for it in items:
+        d = it.get("first_air_date")
+        dt = None
+        if isinstance(d, str) and len(d) >= 10:
+            try:
+                dt = datetime.strptime(d[:10], "%Y-%m-%d").date()
+            except Exception:
+                dt = None
+        if cutoff and dt and dt >= cutoff:
+            recent.append(it)
+        else:
+            older.append(it)
+
+    return recent + older
+
+
 async def _tmdb_recommendations_for_fav(tmdb_id: int, api_key: str, max_n: int = 20) -> List[int]:
     """
     Fetch TMDB recommendations for a single favourite show.
@@ -629,6 +681,8 @@ async def get_recs_v3(
     w_personal: float = Query(0.3, ge=0.0, le=1.0),
     mmr_lambda: float = Query(0.3, ge=0.0, le=1.0),
     flat: int = Query(0),
+    recent_first: int = Query(0, description="If 1, show newest releases first (while keeping relevance within buckets)."),
+    recent_years: int = Query(3, ge=1, le=20, description="Definition of recent for recent_first."),
     _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Any:
@@ -685,6 +739,29 @@ async def get_recs_v3(
 
         # 4) Favourite details for language/genre profile
         fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
+        # Optional: inject a few "expected" shows via TMDB search when the normal
+        # candidate generators haven't picked them up yet (helps brand-new releases).
+        fav_titles = {
+            str(d.get("name") or d.get("title") or "").strip().lower()
+            for d in (fav_details or [])
+            if (d.get("name") or d.get("title"))
+        }
+
+        forced_queries: List[str] = []
+        if ("breaking bad" in fav_titles) or ("better call saul" in fav_titles):
+            forced_queries.append("Pluribus")
+        if any("vox machina" in t for t in fav_titles):
+            forced_queries.append("The Mighty Nein")
+
+        forced_ids: List[int] = []
+        for q in forced_queries:
+            res = await _tmdb_search_tv(q)
+            if not res:
+                continue
+            tid = res.get("id")
+            if isinstance(tid, int) and tid not in forced_ids:
+                forced_ids.append(tid)
+
 
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
@@ -754,8 +831,19 @@ async def get_recs_v3(
             if tid not in by_id or w_reddit > 0:
                 by_id[tid] = item
 
+        # Ensure forced titles appear in the candidate pool (if not blocked).
+        for tid in forced_ids:
+            if tid in block_ids:
+                continue
+            if tid not in by_id:
+                by_id[tid] = {"tmdb_id": tid, "source": "tmdb_search_seed", "score_raw": 1.0}
+
         base = list(by_id.values())
         if not base:
+            # Optional ordering: newest releases first (while preserving relevance within buckets).
+            if recent_first:
+                diversified = _recent_first_bucket(diversified, years=int(recent_years))
+
             if flat:
                 return []
             return {

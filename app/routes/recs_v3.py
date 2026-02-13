@@ -683,6 +683,8 @@ async def get_recs_v3(
     flat: int = Query(0),
     recent_first: int = Query(0, description="If 1, show newest releases first (while keeping relevance within buckets)."),
     recent_years: int = Query(3, ge=1, le=20, description="Definition of recent for recent_first."),
+    freshness_boost: int = Query(0, description="If 1, apply a recency boost to ranking (newer releases score higher)."),
+    fav_anchor_boost: float = Query(0.08, ge=0.0, le=0.3, description="Boost factor applied by fav_similarity (0 disables)."),
     _: Any = Depends(require_user_match),
     session: AsyncSession = Depends(get_async_session),
 ) -> Any:
@@ -840,9 +842,6 @@ async def get_recs_v3(
 
         base = list(by_id.values())
         if not base:
-            # Optional ordering: newest releases first (while preserving relevance within buckets).
-            if recent_first:
-                diversified = _recent_first_bucket(diversified, years=int(recent_years))
 
             if flat:
                 return []
@@ -979,6 +978,29 @@ async def get_recs_v3(
 
             score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
 
+            # Optional: boost items that are strongly anchored to the user's favourites.
+            if fav_anchor_boost > 0:
+                try:
+                    fs = float(it.get("fav_similarity", 0.0) or 0.0)
+                except Exception:
+                    fs = 0.0
+                if fs > 0:
+                    fs = max(0.0, min(1.0, fs))
+                    score *= (1.0 + (fav_anchor_boost * fs))
+
+            # Optional: recency boost (keeps relevance but gently prefers newer releases).
+            if freshness_boost:
+                d = it.get("first_air_date") or ""
+                year = None
+                if isinstance(d, str) and len(d) >= 4 and d[:4].isdigit():
+                    year = int(d[:4])
+                if year is not None:
+                    age_years = max(0, now_year - year)
+                    window = max(1, int(recent_years))
+                    if age_years <= window:
+                        recency = (window - age_years) / window  # 1.0 for this year
+                        score *= (1.0 + (0.20 * recency))
+
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit
             enriched["score_tmdb"] = score_tmdb
@@ -992,6 +1014,11 @@ async def get_recs_v3(
             diversified = _mmr_diversify(combined_items, k=limit, mmr_lambda=mmr_lambda)
         else:
             diversified = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:limit]
+
+        # Optional ordering: newest releases first (while keeping relevance within buckets).
+        # Note: This is separate from freshness_boost, which adjusts scores earlier.
+        if recent_first and not freshness_boost:
+            diversified = _recent_first_bucket(diversified, years=int(recent_years))
 
         if flat:
             return diversified

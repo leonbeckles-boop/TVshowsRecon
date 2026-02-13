@@ -699,6 +699,14 @@ async def get_recs_v3(
                     continue
                 fav_genre_counts[g] = fav_genre_counts.get(g, 0) + 1
         fav_genres_all = set(fav_genre_counts.keys())
+
+        # Hard exclusions: if Documentary/Reality are NOT part of the user's favourites profile,
+        # drop candidates that are *only* those genres (helps avoid Chef's Table / Life / etc.)
+        excluded_genres: set[int] = set()
+        if 99 not in fav_genres_all:
+            excluded_genres.add(99)  # Documentary
+        if 10764 not in fav_genres_all:
+            excluded_genres.add(10764)  # Reality
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites
@@ -715,6 +723,10 @@ async def get_recs_v3(
                 block_ids=block_ids,
                 limit=limit,
             )
+
+            # Cap trending contribution so it can't dominate the pool
+            trending_cap = min(max(5, int(limit * 0.15)), 12)
+            trending_base = trending_base[:trending_cap]
 
         # 7) Merge & dedupe by tmdb_id
         # Build the candidate pool in a stable order: trending -> tmdb recs -> reddit pairs.
@@ -774,17 +786,33 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
+            # Hard-exclude candidates that are ONLY Documentary/Reality when those genres aren't in favourites
+            if excluded_genres and gid_set and gid_set.issubset(excluded_genres):
+                continue
+
             if not _passes_quality_filter(merged, **quality_cfg):
                 continue
             items.append(merged)
 
-        # If filters removed everything, fall back to unfiltered merged candidates
+        # If filters removed everything, fall back to a relaxed merge (but still respect hard exclusions)
         if not items:
             for base_item, det in zip(base, details_list):
                 merged = dict(det or {})
                 merged.setdefault("tmdb_id", base_item["tmdb_id"])
                 merged["score_raw"] = float(base_item.get("score_raw") or 0.0)
                 merged["source"] = base_item.get("source", "reddit_pairs")
+
+                genre_ids = merged.get("genre_ids") or []
+                gid_set = set(int(g) for g in genre_ids if isinstance(g, int))
+
+                # Drop Talk (10767) and Soap (10766)
+                if 10767 in gid_set or 10766 in gid_set:
+                    continue
+
+                # Hard-exclude candidates that are ONLY Documentary/Reality when those genres aren't in favourites
+                if excluded_genres and gid_set and gid_set.issubset(excluded_genres):
+                    continue
+
                 items.append(merged)
 
         # 10) Build Reddit + TMDB score vectors and personalisation

@@ -700,13 +700,23 @@ async def get_recs_v3(
                 fav_genre_counts[g] = fav_genre_counts.get(g, 0) + 1
         fav_genres_all = set(fav_genre_counts.keys())
 
-        # Hard exclusions: if Documentary/Reality are NOT part of the user's favourites profile,
-        # drop candidates that are *only* those genres (helps avoid Chef's Table / Life / etc.)
+        # Hard exclusions: Documentary/Reality can "flood" results even if you have 1 favourite in that genre
+        # (e.g. a single reality favourite can let lots of unrelated reality shows through).
+        # So we exclude Documentary/Reality unless they are meaningfully represented in favourites.
         excluded_genres: set[int] = set()
-        if 99 not in fav_genres_all:
+        total_favs = max(1, len(fav_details))
+
+        # Consider a genre "represented" only if it appears in at least 2 favourites OR >=15% of favourites
+        rep_threshold = max(2, int(math.ceil(0.15 * total_favs)))
+
+        doc_count = fav_genre_counts.get(99, 0)
+        reality_count = fav_genre_counts.get(10764, 0)
+
+        if doc_count < rep_threshold:
             excluded_genres.add(99)  # Documentary
-        if 10764 not in fav_genres_all:
+        if reality_count < rep_threshold:
             excluded_genres.add(10764)  # Reality
+
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites

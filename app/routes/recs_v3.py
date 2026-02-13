@@ -679,7 +679,9 @@ async def get_recs_v3(
             }
 
         # 3) Reddit candidates (from global reddit_pairs anchored on favourites)
-        reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
+        reddit_base: List[Dict[str, Any]] = []
+        if w_reddit > 0:
+            reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
 
         # 4) Favourite details for language/genre profile
         fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
@@ -700,25 +702,35 @@ async def get_recs_v3(
         fav_genre_norm = math.sqrt(sum(c * c for c in fav_genre_counts.values())) or 1.0
 
         # 5) TMDB recs from favourites
-        tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
+        tmdb_base: List[Dict[str, Any]] = []
+        if w_tmdb > 0:
+            tmdb_base = await _fetch_tmdb_candidates(fav_ids, block_ids, limit)
 
         # 6) TMDB trending, filtered by taste
-        trending_base = await _fetch_tmdb_trending_candidates(
-            allowed_langs=allowed_langs,
-            fav_genres=fav_genres_all,
-            block_ids=block_ids,
-            limit=limit,
-        )
+        trending_base: List[Dict[str, Any]] = []
+        if w_tmdb > 0:
+            trending_base = await _fetch_tmdb_trending_candidates(
+                allowed_langs=allowed_langs,
+                fav_genres=fav_genres_all,
+                block_ids=block_ids,
+                limit=limit,
+            )
 
-        # 7) Merge & dedupe by tmdb_id (priority: reddit > tmdb recs > trending)
+        # 7) Merge & dedupe by tmdb_id
+        # Build the candidate pool in a stable order: trending -> tmdb recs -> reddit pairs.
+        # If a weight is 0, that source should not dominate/overwrite the pool.
         by_id: Dict[int, Dict[str, Any]] = {}
 
         for item in trending_base:
             by_id[item["tmdb_id"]] = item
         for item in tmdb_base:
             by_id[item["tmdb_id"]] = item
+
+        # Only allow reddit candidates to overwrite if reddit is actually in play
         for item in reddit_base:
-            by_id[item["tmdb_id"]] = item
+            tid = item["tmdb_id"]
+            if tid not in by_id or w_reddit > 0:
+                by_id[tid] = item
 
         base = list(by_id.values())
         if not base:
@@ -752,7 +764,7 @@ async def get_recs_v3(
             merged["source"] = base_item.get("source", "reddit_pairs")
 
             lang = merged.get("original_language")
-            if allowed_langs and lang not in allowed_langs:
+            if allowed_langs and lang and lang not in allowed_langs:
                 continue
 
             genre_ids = merged.get("genre_ids") or []
@@ -762,8 +774,6 @@ async def get_recs_v3(
             if 10767 in gid_set or 10766 in gid_set:
                 continue
 
-            if not _passes_quality_filter(merged, **quality_cfg):
-                continue
             if not _passes_quality_filter(merged, **quality_cfg):
                 continue
             items.append(merged)

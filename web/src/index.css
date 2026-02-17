@@ -31,3 +31,24 @@ body {
 #root, #root * {
   color: #e2e8f0;
 }
+
+/* Fix button visibility for dark theme */
+button {
+  color: #ffffff;
+  background-color: #1e293b; /* slate-800 */
+  border: 1px solid #334155;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #334155; /* slate-700 */
+}
+
+/* Disabled buttons */
+button:disabled {
+  background-color: #475569;
+  color: #cbd5e1;
+  cursor: not-allowed;
+}

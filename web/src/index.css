@@ -26,3 +26,8 @@ body {
   @apply bg-slate-950;
 }
 */
+
+/* Force readable text for dark theme */
+#root, #root * {
+  color: #e2e8f0;
+}

@@ -1,0 +1,50 @@
+/* postcss */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Remove browser default spacing */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+  background: #020617; /* dark background */
+}
+
+/* Ensure React root spans full screen */
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  background: #020617;
+  color: #e2e8f0; /* slate-200 - default readable text */
+}
+
+/* Ensure tables inherit correct color */
+table, th, td {
+  color: inherit;
+}
+
+/* Ensure form controls are readable */
+input, select, textarea {
+  color: #e2e8f0;
+  background: #0f172a; /* slate-900 */
+  border: 1px solid #334155; /* slate-700 */
+}
+
+/* Placeholder text color */
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8; /* slate-400 */
+}
+
+/* Ensure links remain visible */
+a {
+  color: #60a5fa; /* blue-400 */
+}
+
+a:hover {
+  color: #93c5fd; /* blue-300 */
+}

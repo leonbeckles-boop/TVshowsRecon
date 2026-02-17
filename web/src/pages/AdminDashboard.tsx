@@ -205,7 +205,7 @@ const AdminDashboard: React.FC = () => {
                   setStatsLoading(false);
                 }
               }}
-              className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
+              className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 transition"
             >
               Refresh all
             </button>
@@ -243,12 +243,12 @@ const AdminDashboard: React.FC = () => {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search users…"
-                  className="w-full sm:w-64 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  className="w-full sm:w-64 rounded-xl border border-slate-800 bg-slate-900 text-slate-100/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
                 <select
                   value={roleFilter}
                   onChange={(e) => setRoleFilter(e.target.value as any)}
-                  className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  className="rounded-xl border border-slate-800 bg-slate-900 text-slate-100/60 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 >
                   <option value="all">All</option>
                   <option value="admin">Admins</option>
@@ -257,7 +257,7 @@ const AdminDashboard: React.FC = () => {
               </div>
               <button
                 onClick={reloadUsers}
-                className="text-xs px-3 py-2 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
+                className="text-xs px-3 py-2 rounded-xl border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 transition"
               >
                 Refresh
               </button>
@@ -272,9 +272,9 @@ const AdminDashboard: React.FC = () => {
             ) : filtered.length === 0 ? (
               <div className="text-slate-400 text-sm">No users found.</div>
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/40">
+              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900 text-slate-100/40">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-900/80">
+                  <thead className="bg-slate-900 text-slate-100/80">
                     <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500">
                       <th className="px-3 py-2 font-medium">ID</th>
                       <th className="px-3 py-2 font-medium">Email</th>
@@ -288,7 +288,7 @@ const AdminDashboard: React.FC = () => {
                     {pageItems.map((u) => (
                       <tr
                         key={u.id}
-                        className="border-t border-slate-800/80 hover:bg-slate-900/60"
+                        className="border-t border-slate-800/80 hover:bg-slate-900 text-slate-100/60"
                       >
                         <td className="px-3 py-2 text-slate-300">{u.id}</td>
                         <td className="px-3 py-2 text-slate-100">{u.email}</td>
@@ -313,7 +313,7 @@ const AdminDashboard: React.FC = () => {
                           <div className="inline-flex items-center gap-2">
                             <button
                               onClick={() => openResetModal(u)}
-                              className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
+                              className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 transition"
                             >
                               Reset password
                             </button>
@@ -339,14 +339,14 @@ const AdminDashboard: React.FC = () => {
                     <button
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                       disabled={pageSafe <= 1}
-                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
+                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 disabled:opacity-60"
                     >
                       Prev
                     </button>
                     <button
                       onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                       disabled={pageSafe >= totalPages}
-                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
+                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 disabled:opacity-60"
                     >
                       Next
                     </button>
@@ -374,7 +374,7 @@ const AdminDashboard: React.FC = () => {
                 type="password"
                 value={resetPassword}
                 onChange={(e) => setResetPassword(e.target.value)}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="w-full rounded-xl border border-slate-800 bg-slate-900 text-slate-100 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 placeholder="At least 6 characters"
               />
             </label>
@@ -382,7 +382,7 @@ const AdminDashboard: React.FC = () => {
               <button
                 onClick={() => setResetUser(null)}
                 disabled={resetBusy}
-                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
+                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 disabled:opacity-60"
               >
                 Cancel
               </button>
@@ -412,7 +412,7 @@ const AdminDashboard: React.FC = () => {
               <button
                 onClick={() => setDeleteUser(null)}
                 disabled={deleteBusyId === deleteUser.id}
-                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
+                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800 disabled:opacity-60"
               >
                 Cancel
               </button>
@@ -433,7 +433,7 @@ const AdminDashboard: React.FC = () => {
 
 function StatCard({ label, value, sub }: { label: string; value: number; sub?: string }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-3">
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 text-slate-100/60 p-3">
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
       <div className="text-xl font-semibold">{value}</div>
       {sub ? <div className="text-[11px] text-slate-500 mt-1">{sub}</div> : null}

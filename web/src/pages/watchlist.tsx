@@ -25,7 +25,7 @@ export default function Watchlist() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/users/${userId}/watchlist`, { headers });
+      const res = await fetch(`https://whatnext-api.onrender.com/api/users/${userId}/watchlist`, { headers });
       if (!res.ok) throw new Error(`Failed: ${res.status}`);
       const data = await res.json();
       setItems(Array.isArray(data) ? data : []);
@@ -48,7 +48,7 @@ export default function Watchlist() {
     });
 
     try {
-      const url = `/api/users/${userId}/watchlist/${tmdbId}`;
+      const url = `https://whatnext-api.onrender.com/api/users/${userId}/watchlist/${tmdbId}`;
       const res = await fetch(url, {
         method: isInWatchlist ? "DELETE" : "POST",
         headers,

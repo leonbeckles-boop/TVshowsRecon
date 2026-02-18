@@ -286,6 +286,7 @@ async def _get_block_ids(session: AsyncSession, user_id: int) -> set[int]:
     IDs we must NOT recommend:
       - user_favorites.tmdb_id
       - not_interested.tmdb_id
+      - user_watchlist.tmdb_id
     """
     sql = text(
         """
@@ -295,6 +296,10 @@ async def _get_block_ids(session: AsyncSession, user_id: int) -> set[int]:
         UNION
         SELECT tmdb_id
         FROM not_interested
+        WHERE user_id = :uid
+        UNION
+        SELECT tmdb_id
+        FROM user_watchlist
         WHERE user_id = :uid
         """
     )

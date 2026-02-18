@@ -57,6 +57,17 @@ export type Favorite = {
   [k: string]: any;
 };
 
+
+export type WatchlistItem = {
+  user_id?: number;
+  tmdb_id: number;
+  added_at?: string;
+  title?: string;
+  poster_path?: string | null;
+  poster_url?: string | null;
+  [k: string]: any;
+};
+
 export type UserRating = {
   user_id?: number; // OPTIONAL for frontend
   tmdb_id: number;
@@ -283,6 +294,28 @@ export async function removeFavorite(
 }
 
 
+
+
+// Watchlist
+export async function listWatchlist(userId: number): Promise<WatchlistItem[]> {
+  return http(`/users/${userId}/watchlist`);
+}
+
+export async function addWatchlist(
+  userId: number,
+  tmdbId: number
+): Promise<{ ok: true }> {
+  await http(`/users/${userId}/watchlist/${tmdbId}`, { method: "POST" });
+  return { ok: true };
+}
+
+export async function removeWatchlist(
+  userId: number,
+  tmdbId: number
+): Promise<{ ok: true }> {
+  await http(`/users/${userId}/watchlist/${tmdbId}`, { method: "DELETE" });
+  return { ok: true };
+}
 
 // Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
 export async function listRatings(userId: number, ..._rest: any[]): Promise<UserRating[]> {

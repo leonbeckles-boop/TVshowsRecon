@@ -1,9 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import ShowCard from "../components/ShowCard";
@@ -50,6 +45,12 @@ function getTmdbId(any: any): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const h: Record<string, string> = {};
+  const token = window.localStorage.getItem("access_token");
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
 
 /* --------------------------- component ------------------------- */
 
@@ -64,6 +65,7 @@ const RecsPage: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
 
   const [favorites, setFavorites] = useState<Show[]>([]);
+  const [watchSet, setWatchSet] = useState<Set<number>>(new Set());
   const [favoritesLoaded, setFavoritesLoaded] = useState(false);
   const [hasEnoughFavorites, setHasEnoughFavorites] = useState(false);
 
@@ -105,7 +107,6 @@ const RecsPage: React.FC = () => {
   const loadRecs = useCallback(async () => {
     if (!userId) return;
     if (!hasEnoughFavorites) {
-      // Defensive: ensure we don't fetch recs for users with too few favourites
       setItems([]);
       return;
     }
@@ -124,7 +125,6 @@ const RecsPage: React.FC = () => {
 
       const list = Array.isArray(data) ? data : (data as any).items ?? [];
 
-      // Filter out “ghost” items with no title AND no poster
       const cleaned = (list as RecItem[]).filter((item) => {
         const title =
           (item as any).title ??
@@ -132,8 +132,7 @@ const RecsPage: React.FC = () => {
           (item as any).original_name ??
           "";
         const hasTitle = typeof title === "string" && title.trim().length > 0;
-        const hasPoster =
-          !!(item as any).poster_path || !!(item as any).poster_url;
+        const hasPoster = !!(item as any).poster_path || !!(item as any).poster_url;
         return hasTitle || hasPoster;
       });
 
@@ -171,19 +170,39 @@ const RecsPage: React.FC = () => {
     }
   }, [userId]);
 
+  const loadWatchlist = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const res = await fetch(`/api/users/${userId}/watchlist`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+
+      const ids = new Set<number>();
+      (Array.isArray(data) ? data : []).forEach((x: any) => {
+        const id = getTmdbId(x);
+        if (id) ids.add(id);
+      });
+      setWatchSet(ids);
+    } catch (e) {
+      console.error("Failed to load watchlist", e);
+      setWatchSet(new Set());
+    }
+  }, [userId]);
+
   /* --------------------------- effects -------------------------- */
 
   useEffect(() => {
     if (!userId) return;
     loadFavorites();
     loadRatings();
-  }, [userId, loadFavorites, loadRatings]);
+    loadWatchlist();
+  }, [userId, loadFavorites, loadRatings, loadWatchlist]);
 
-  // Trigger recs loading only when we have enough favourites
   useEffect(() => {
     if (!userId) return;
     if (!hasEnoughFavorites) {
-      // Not enough favourites: ensure we clear any previous recs
       setItems([]);
       return;
     }
@@ -222,6 +241,35 @@ const RecsPage: React.FC = () => {
       }
     } catch (e) {
       console.error("Failed to toggle favourite", e);
+    }
+  };
+
+  const handleToggleWatchlist = async (show: any) => {
+    if (!userId) return;
+    const tmdbId = getTmdbId(show);
+    if (!tmdbId) return;
+
+    const isIn = watchSet.has(tmdbId);
+
+    setWatchSet((prev) => {
+      const next = new Set(prev);
+      isIn ? next.delete(tmdbId) : next.add(tmdbId);
+      return next;
+    });
+
+    try {
+      const res = await fetch(`/api/users/${userId}/watchlist/${tmdbId}`, {
+        method: isIn ? "DELETE" : "POST",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+    } catch (e) {
+      console.error("Failed to toggle watchlist", e);
+      setWatchSet((prev) => {
+        const next = new Set(prev);
+        isIn ? next.add(tmdbId) : next.delete(tmdbId);
+        return next;
+      });
     }
   };
 
@@ -267,17 +315,10 @@ const RecsPage: React.FC = () => {
     }
   };
 
-  /* --------------------------- render states -------------------- */
-
-  // While redirecting, render nothing to avoid flicker
-  if (!userId) {
-    return null;
-  }
+  if (!userId) return null;
 
   const notEnoughFavorites =
     favoritesLoaded && !hasEnoughFavorites && favorites.length < MIN_FAVORITES;
-
-  /* --------------------------- main render ---------------------- */
 
   return (
     <>
@@ -286,7 +327,6 @@ const RecsPage: React.FC = () => {
         subtitle="Generated from your favourites – tuned to your taste profile."
       />
 
-      {/* Tile style toggle for testers */}
       <div className="max-w-screen-2xl mx-auto px-4 md:px-8 mt-3 flex justify-end">
         <div className="inline-flex items-center gap-2 rounded-full border border-slate-600/70 bg-slate-900/70 px-3 py-1 text-xs text-slate-200">
           <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400">
@@ -294,7 +334,6 @@ const RecsPage: React.FC = () => {
           </span>
 
           <span className="mx-1 h-4 w-px bg-slate-600/70" aria-hidden="true" />
-          
 
           <button
             type="button"
@@ -325,28 +364,26 @@ const RecsPage: React.FC = () => {
 
       <div style={BG_STYLE}>
         <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 pb-10 pt-6">
-          {/* Optional refresh button row */}
           <div className="flex items-center justify-between gap-4">
             <div className="text-sm text-slate-300">
               Use favourites + ratings to improve these recommendations.
             </div>
-                        <div className="flex items-center gap-3">
-<button
-              type="button"
-              onClick={handleRefresh}
-              className="inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium text-white"
-              style={{
-                background:
-                  "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))",
-                boxShadow: "0 15px 35px rgba(8, 47, 73, 0.9)",
-              }}
-            >
-              Refresh
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleRefresh}
+                className="inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium text-white"
+                style={{
+                  background:
+                    "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))",
+                  boxShadow: "0 15px 35px rgba(8, 47, 73, 0.9)",
+                }}
+              >
+                Refresh
+              </button>
             </div>
           </div>
 
-          {/* Status / helper states */}
           {err && (
             <div className="rounded-2xl border border-red-500/70 bg-red-950/80 px-4 py-3 text-sm text-red-100 shadow-lg shadow-red-950/70">
               {err}
@@ -355,9 +392,7 @@ const RecsPage: React.FC = () => {
 
           {loading ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-6 text-sm text-slate-300 shadow-lg shadow-slate-950/70">
-              <div className="mb-1 text-slate-100">
-                Loading recommendations…
-              </div>
+              <div className="mb-1 text-slate-100">Loading recommendations…</div>
               <div className="text-xs text-slate-400">
                 We&apos;re matching your favourites with fresh shows you&apos;re
                 likely to enjoy.
@@ -378,8 +413,7 @@ const RecsPage: React.FC = () => {
             </div>
           ) : items.length === 0 ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4 text-sm text-slate-300 shadow-lg shadow-slate-950/70">
-              No recommendations yet. Try adding
-              a couple more favourites.
+              No recommendations yet. Try adding a couple more favourites.
             </div>
           ) : (
             <section className="space-y-3">
@@ -392,14 +426,12 @@ const RecsPage: React.FC = () => {
                 </p>
               </div>
 
-              {/* Responsive grid – same sizing as Search/Favourites */}
               <div className="tile-grid">
                 {items.map((s) => {
                   const tmdbId = getTmdbId(s) ?? undefined;
-                  const key = String(
-                    tmdbId ?? (s as any).show_id ?? Math.random(),
-                  );
+                  const key = String(tmdbId ?? (s as any).show_id ?? Math.random());
                   const isFav = tmdbId ? favSet.has(tmdbId) : false;
+                  const isWatchlist = tmdbId ? watchSet.has(tmdbId) : false;
 
                   return (
                     <ShowCard
@@ -408,6 +440,8 @@ const RecsPage: React.FC = () => {
                       myRating={tmdbId ? ratingsMap[tmdbId] : undefined}
                       isFav={isFav}
                       onToggleFav={() => handleToggleFav(s)}
+                      isWatchlist={isWatchlist}
+                      onToggleWatchlist={() => handleToggleWatchlist(s)}
                       onRate={(r) => handleRate(s, r)}
                       onHide={() => handleHide(s)}
                       variant={tileVariant}

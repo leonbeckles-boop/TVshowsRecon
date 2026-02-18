@@ -34,7 +34,9 @@ const BG_STYLE = {
 } as const;
 
 function tmdbFromShow(s: Show): number | null {
-  const v = Number((s as any).tmdb_id ?? (s as any).external_id ?? (s as any).show_id);
+  const v = Number(
+    (s as any).tmdb_id ?? (s as any).external_id ?? (s as any).show_id,
+  );
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
@@ -49,22 +51,33 @@ export default function SearchPage() {
 
   // favourites + my ratings
   const [favSet, setFavSet] = useState<Set<number>>(new Set());
+  const [watchSet, setWatchSet] = useState<Set<number>>(new Set());
   const [ratingsMap, setRatingsMap] = useState<Record<number, number>>({});
 
-  // load favourites + ratings when user changes
+  // load favourites + ratings + watchlist when user changes
   useEffect(() => {
     let alive = true;
     async function run() {
       if (!userId) {
         setFavSet(new Set());
         setRatingsMap({});
+        setWatchSet(new Set());
         return;
       }
       try {
-        const [favs, ratings] = await Promise.all([
+        const [favs, ratings, watch] = await Promise.all([
           listFavorites(userId),
           listRatings(userId),
+          fetch(`/api/users/${userId}/watchlist`, {
+            headers: (() => {
+              const h: Record<string, string> = {};
+              const token = localStorage.getItem("access_token");
+              if (token) h["Authorization"] = `Bearer ${token}`;
+              return h;
+            })(),
+          }).then((r) => (r.ok ? r.json() : Promise.reject(r.status))),
         ]);
+
         if (!alive) return;
 
         const favIds = new Set<number>();
@@ -84,10 +97,21 @@ export default function SearchPage() {
           }
         });
         setRatingsMap(rmap);
+
+        const wset = new Set<number>();
+        (Array.isArray(watch) ? watch : []).forEach((x: any) => {
+          const t =
+            typeof x === "number"
+              ? x
+              : Number(x.tmdb_id ?? x.external_id ?? x.show_id);
+          if (Number.isFinite(t) && t > 0) wset.add(t);
+        });
+        setWatchSet(wset);
       } catch {
         if (!alive) return;
         setFavSet(new Set());
         setRatingsMap({});
+        setWatchSet(new Set());
       }
     }
     void run();
@@ -159,6 +183,44 @@ export default function SearchPage() {
     }
   }
 
+  async function toggleWatchlist(show: Show) {
+    if (!userId) {
+      alert("Please log in to use watchlist.");
+      return;
+    }
+    const tmdb = tmdbFromShow(show);
+    if (!tmdb) return;
+
+    const isIn = watchSet.has(tmdb);
+
+    // optimistic UI
+    setWatchSet((prev) => {
+      const next = new Set(prev);
+      isIn ? next.delete(tmdb) : next.add(tmdb);
+      return next;
+    });
+
+    try {
+      const token = localStorage.getItem("access_token");
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const res = await fetch(`/api/users/${userId}/watchlist/${tmdb}`, {
+        method: isIn ? "DELETE" : "POST",
+        headers,
+      });
+      if (!res.ok) throw new Error(`Failed: ${res.status}`);
+    } catch (e: any) {
+      // revert on failure
+      setWatchSet((prev) => {
+        const next = new Set(prev);
+        isIn ? next.add(tmdb) : next.delete(tmdb);
+        return next;
+      });
+      alert(e?.message || "Failed to update watchlist");
+    }
+  }
+
   async function rate(show: Show, rating: number) {
     if (!userId) {
       alert("Please log in to rate shows.");
@@ -184,7 +246,9 @@ export default function SearchPage() {
     try {
       if (userId && tmdb) await markNotInterested(userId, tmdb);
     } finally {
-      setResults((prev) => prev.filter((s: any) => s.show_id !== (show as any).show_id));
+      setResults((prev) =>
+        prev.filter((s: any) => s.show_id !== (show as any).show_id),
+      );
     }
   }
 
@@ -250,7 +314,6 @@ export default function SearchPage() {
       <PageHeader
         title="Search the TV universe"
         subtitle="Look up any show, then add it to your favourites or rate it to train your recommendations."
-        
       />
 
       <div style={BG_STYLE}>
@@ -298,6 +361,7 @@ export default function SearchPage() {
                 {results.map((show) => {
                   const tmdb = tmdbFromShow(show) ?? undefined;
                   const isFav = tmdb ? favSet.has(tmdb) : false;
+                  const isWatchlist = tmdb ? watchSet.has(tmdb) : false;
                   const myRating = tmdb ? ratingsMap[tmdb] : undefined;
 
                   return (
@@ -307,9 +371,13 @@ export default function SearchPage() {
                       myRating={myRating}
                       isFav={isFav}
                       onToggleFav={() => toggleFav(show)}
+                      isWatchlist={isWatchlist}
+                      onToggleWatchlist={() => toggleWatchlist(show)}
                       onRate={(r) => rate(show, r)}
                       onHide={() => hide(show)}
-                      reasons={(show as any).reasons ?? (show as any).debug_reasons}
+                      reasons={
+                        (show as any).reasons ?? (show as any).debug_reasons
+                      }
                     />
                   );
                 })}

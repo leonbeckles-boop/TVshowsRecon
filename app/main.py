@@ -12,6 +12,7 @@ from fastapi.routing import APIRouter
 from app.routes import auth, tmdb, discover, ratings, users, shows, not_interested
 from app.routes import recs_v3
 from app.routes import admin, wrapped
+from app.routes import watchlist
 
 log = logging.getLogger("uvicorn.error")
 
@@ -111,5 +112,6 @@ api.include_router(recs_v3.router)
 api.include_router(admin.router)
 api.include_router(wrapped.router)
 api.include_router(not_interested.router)
+api.include_router(watchlist.router)
 
 app.include_router(api)

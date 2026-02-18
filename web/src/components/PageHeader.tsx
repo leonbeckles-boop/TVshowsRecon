@@ -19,6 +19,7 @@ const NAV_LINKS: NavLinkDef[] = [
   { to: "/discover", label: "Discover", key: "discover" },
   { to: "/search", label: "Search", key: "search" },
   { to: "/favorites", label: "Favourites", key: "favourites" },
+  { to: "/watchlist", label: "Watchlist", key: "watchlist" },
   { to: "/recs", label: "Recommendations", key: "recs" },
   { to: "/wrapped", label: "Profile", key: "wrapped" },
 ];

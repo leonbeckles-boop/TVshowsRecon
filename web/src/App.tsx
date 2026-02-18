@@ -6,6 +6,7 @@ import Register from "./pages/register";
 import Recs from "./pages/recs";
 import Discover from "./pages/discover";
 import Favorites from "./pages/favorites";
+import Watchlist from "./pages/watchlist";
 import Search from "./pages/search";
 import Wrapped from "./pages/wrapped"; 
 import ShowDetails from "./components/ShowDetails";
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/discover" element={<Discover />} />
         <Route path="/search" element={<Search />} />
         <Route path="/favorites" element={<Favorites />} />
+        <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/recs" element={<Recs />} />
         <Route path="/wrapped" element={<Wrapped />} />
         <Route path="/show/:tmdb_id" element={<ShowDetails />} />

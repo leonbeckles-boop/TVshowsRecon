@@ -17,6 +17,10 @@ export type ShowCardProps = {
   onToggleFavorite?: () => void;
   onToggleNotInterested?: () => void;
 
+  // ✅ NEW — Watchlist support
+  isWatchlist?: boolean;
+  onToggleWatchlist?: () => void | Promise<void>;
+
   /** "poster" = clean poster-only, "glass" = poster + glass title bar (reserved for future) */
   variant?: "poster" | "glass";
 };
@@ -114,11 +118,16 @@ const ShowCard: React.FC<ShowCardProps> = ({
   onRate,
   onHide,
   reasons,
-  // new props (may or may not be provided)
+
+  // newer props
   isFavorite,
   isNotInterested,
   onToggleFavorite,
   onToggleNotInterested,
+
+  // ✅ NEW watchlist props
+  isWatchlist,
+  onToggleWatchlist,
 }) => {
   const navigate = useNavigate();
 
@@ -143,17 +152,22 @@ const ShowCard: React.FC<ShowCardProps> = ({
     return [];
   }, [reasons]);
 
-  // 🔧 Derive effective favourite / not-interested handlers so both "old" and "new" props work
+  // Favourite handlers
   const favActive = (isFav ?? isFavorite) ?? false;
   const handleFavToggle =
     onToggleFav ?? onToggleFavorite ?? undefined;
 
+  // Not interested handlers
   const niActive = (isNotInterested ?? false);
   const handleNiToggle =
     onHide ?? onToggleNotInterested ?? undefined;
 
+  // ✅ Watchlist handlers
+  const watchlistActive = isWatchlist ?? false;
+  const handleWatchlistToggle = onToggleWatchlist ?? undefined;
+
   const handleRatingChange = (ev: React.ChangeEvent<HTMLSelectElement>) => {
-    ev.stopPropagation(); // don’t trigger navigation
+    ev.stopPropagation();
     const val = Number(ev.target.value);
     if (!Number.isFinite(val) || val <= 0) {
       if (onRate) onRate(0);
@@ -193,7 +207,7 @@ const ShowCard: React.FC<ShowCardProps> = ({
 
         <div className="show-card__poster-gradient" />
 
-        {/* Favourite button (old + new props) */}
+        {/* Favourite button */}
         {handleFavToggle && (
           <button
             type="button"
@@ -206,13 +220,36 @@ const ShowCard: React.FC<ShowCardProps> = ({
               handleFavToggle();
             }}
             title={favActive ? "Remove from favourites" : "Add to favourites"}
-            aria-label={favActive ? "Remove from favourites" : "Add to favourites"}
           >
             {favActive ? "♥" : "♡"}
           </button>
         )}
 
-        {/* Not-interested / hide button (old + new props) */}
+        {/* ✅ NEW Watchlist button */}
+        {handleWatchlistToggle && (
+          <button
+            type="button"
+            className={
+              "show-card__icon-btn show-card__icon-btn--watchlist" +
+              (watchlistActive
+                ? " show-card__icon-btn--watchlist-active"
+                : "")
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              handleWatchlistToggle();
+            }}
+            title={
+              watchlistActive
+                ? "Remove from watchlist"
+                : "Add to watchlist"
+            }
+          >
+            {watchlistActive ? "🔖" : "📑"}
+          </button>
+        )}
+
+        {/* Not Interested button */}
         {handleNiToggle && (
           <button
             type="button"
@@ -222,13 +259,12 @@ const ShowCard: React.FC<ShowCardProps> = ({
               handleNiToggle();
             }}
             title={niActive ? "Undo Not Interested" : "Not interested"}
-            aria-label={niActive ? "Undo Not Interested" : "Not interested"}
           >
             ✕
           </button>
         )}
 
-        {/* TMDB score chip */}
+        {/* TMDB chip */}
         {tmdb.score != null && tmdb.votes != null && (
           <div className="show-card__tmdb-chip">
             <span className="show-card__tmdb-label">TMDB</span>
@@ -271,17 +307,17 @@ const ShowCard: React.FC<ShowCardProps> = ({
         {onRate && (
           <div
             className="show-card__rating-block"
-            onClick={(e) => e.stopPropagation()} // STOP tile click from firing
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="show-card__rating-label">Your rating</div>
             <select
               className="show-card__rating-select"
               value={myRating ?? 0}
-              onClick={(e) => e.stopPropagation()} // extra safety
+              onClick={(e) => e.stopPropagation()}
               onChange={handleRatingChange}
             >
               <option value={0}>No rating</option>
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+              {[1,2,3,4,5,6,7,8,9,10].map((n) => (
                 <option key={n} value={n}>
                   {n} / 10
                 </option>

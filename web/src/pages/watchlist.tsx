@@ -5,58 +5,122 @@ import { useAuth } from "../auth/AuthProvider";
 
 type WatchItem = any;
 
+function getAuthHeaders(): Record<string, string> {
+  const h: Record<string, string> = {};
+  const token = localStorage.getItem("access_token");
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+function getTmdbId(x: any): number | null {
+  const cand = x?.tmdb_id ?? x?.external_id ?? x?.show_id ?? x?.id;
+  const n = Number(cand);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export default function Watchlist() {
   const { user } = useAuth();
   const userId = user?.id;
 
   const [items, setItems] = useState<WatchItem[]>([]);
+  const [favSet, setFavSet] = useState<Set<number>>(new Set());
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const headers = useMemo(() => {
-    const h: Record<string, string> = {};
-    const token = localStorage.getItem("access_token"); // ✅ matches your AuthProvider.tsx
-    if (token) h["Authorization"] = `Bearer ${token}`;
-    return h;
-  }, []);
+  const headers = useMemo(() => getAuthHeaders(), []);
 
   const load = async () => {
     if (!userId) return;
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`https://whatnext-api.onrender.com/api/users/${userId}/watchlist`, { headers });
-      if (!res.ok) throw new Error(`Failed: ${res.status}`);
-      const data = await res.json();
-      setItems(Array.isArray(data) ? data : []);
+      // load watchlist + favorites (for heart state)
+      const [wlRes, favRes] = await Promise.all([
+        fetch(`/api/users/${userId}/watchlist`, { headers }),
+        fetch(`/api/users/${userId}/favorites`, { headers }),
+      ]);
+
+      if (!wlRes.ok) throw new Error(`Watchlist failed: ${wlRes.status}`);
+      if (!favRes.ok) throw new Error(`Favorites failed: ${favRes.status}`);
+
+      const wlData = await wlRes.json();
+      const favData = await favRes.json();
+
+      setItems(Array.isArray(wlData) ? wlData : []);
+
+      const favIds = new Set<number>();
+      (Array.isArray(favData) ? favData : []).forEach((s: any) => {
+        const id = getTmdbId(s);
+        if (id) favIds.add(id);
+      });
+      setFavSet(favIds);
     } catch (e: any) {
       setErr(e?.message ?? "Failed to load watchlist");
+      setItems([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const toggleWatchlist = async (tmdbId: number, isInWatchlist: boolean) => {
+  const removeFromWatchlist = async (tmdbId: number) => {
     if (!userId) return;
-
     // optimistic UI
-    setItems((prev) => {
-      if (isInWatchlist) {
-        return prev.filter((x) => Number(x?.tmdb_id ?? x?.show_id) !== tmdbId);
-      }
-      return [{ tmdb_id: tmdbId, show_id: tmdbId, title: `TMDb #${tmdbId}` }, ...prev];
-    });
+    setItems((prev) => prev.filter((x) => getTmdbId(x) !== tmdbId));
 
+    const res = await fetch(`/api/users/${userId}/watchlist/${tmdbId}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (!res.ok) {
+      // revert by reloading truth
+      await load();
+      throw new Error(`Remove watchlist failed: ${res.status}`);
+    }
+  };
+
+  const addToFavorites = async (tmdbId: number) => {
+    if (!userId) return;
+    const res = await fetch(`/api/users/${userId}/favorites/${tmdbId}`, {
+      method: "POST",
+      headers,
+    });
+    if (!res.ok) throw new Error(`Add favorite failed: ${res.status}`);
+    setFavSet((prev) => new Set(prev).add(tmdbId));
+  };
+
+  const addToNotInterested = async (tmdbId: number) => {
+    if (!userId) return;
+    // Your backend route earlier looked like /api/users/{id}/not-interested/{tmdb}
+    // If yours differs, tell me the exact path from /api/docs and I’ll adjust.
+    const res = await fetch(`/api/users/${userId}/not-interested/${tmdbId}`, {
+      method: "POST",
+      headers,
+    });
+    if (!res.ok) throw new Error(`Not interested failed: ${res.status}`);
+  };
+
+  // ✅ Favorite: remove from watchlist + add to favorites
+  const handleFavFromWatchlist = async (tmdbId: number) => {
     try {
-      const url = `https://whatnext-api.onrender.com/api/users/${userId}/watchlist/${tmdbId}`;
-      const res = await fetch(url, {
-        method: isInWatchlist ? "DELETE" : "POST",
-        headers,
-      });
-      if (!res.ok) throw new Error(`Failed: ${res.status}`);
-    } catch {
-      // revert to server truth if anything failed
-      load();
+      await Promise.all([
+        addToFavorites(tmdbId),
+        removeFromWatchlist(tmdbId),
+      ]);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // ✅ Not interested: remove from watchlist + mark not interested
+  const handleHideFromWatchlist = async (tmdbId: number) => {
+    try {
+      await Promise.all([
+        addToNotInterested(tmdbId),
+        removeFromWatchlist(tmdbId),
+      ]);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -111,13 +175,21 @@ export default function Watchlist() {
                 style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
               >
                 {items.map((show) => {
-                  const tmdbId = Number(show?.tmdb_id ?? show?.show_id);
+                  const tmdbId = getTmdbId(show);
+                  if (!tmdbId) return null;
+
+                  const isFav = favSet.has(tmdbId);
+
                   return (
                     <ShowCard
                       key={tmdbId}
                       show={show}
+                      // show all 3 buttons on watchlist page
+                      isFav={isFav}
+                      onToggleFav={() => handleFavFromWatchlist(tmdbId)}
+                      onHide={() => handleHideFromWatchlist(tmdbId)}
                       isWatchlist={true}
-                      onToggleWatchlist={() => toggleWatchlist(tmdbId, true)}
+                      onToggleWatchlist={() => removeFromWatchlist(tmdbId)}
                     />
                   );
                 })}

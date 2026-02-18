@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 from fastapi import APIRouter, Depends, Path, Request
-from sqlalchemy import text, bindparam
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
@@ -29,6 +31,12 @@ async def list_watchlist_for_user(
     _: Any = Depends(require_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> List[dict]:
+    """Return the user's watchlist, enriched with title/poster from `shows` when available.
+
+    If a TMDb id is missing from `shows`, we fall back to TMDb `/tv/{id}` (requires TMDB_API_KEY).
+    We *attempt* to cache the fetched title/poster into `shows`, but safely ignore if your schema
+    requires more columns.
+    """
 
     rows = (
         await db.execute(
@@ -49,7 +57,7 @@ async def list_watchlist_for_user(
 
     tmdb_ids = [int(r["tmdb_id"]) for r in rows]
 
-    # 1) Pull what we can from local shows table
+    # 1) Load metadata from local shows table
     shows = (
         await db.execute(
             text(
@@ -65,7 +73,8 @@ async def list_watchlist_for_user(
 
     show_map: Dict[int, Dict[str, Any]] = {}
     for s in shows:
-        show_map[int(s["show_id"])] = {
+        sid = int(s["show_id"])
+        show_map[sid] = {
             "title": s.get("title"),
             "poster_path": s.get("poster_path"),
         }
@@ -73,26 +82,16 @@ async def list_watchlist_for_user(
     missing = [tid for tid in tmdb_ids if tid not in show_map]
 
     # 2) Fallback to TMDb for missing ids
-    tmdb_client = request.app.state.tmdb_client
-    api_key = request.app.state.get("tmdb_api_key") if hasattr(request.app, "state") else None
+    fetched: Dict[int, Dict[str, Any]] = {}
+    tmdb_key = os.getenv("TMDB_API_KEY")
+    tmdb_client = getattr(request.app.state, "tmdb_client", None)
 
-    # In your app you likely keep TMDB key in env, so just read env directly if needed:
-    # But we’ll avoid importing os here and instead rely on your tmdb client being set up with key handling elsewhere.
-    #
-    # If your TMDb routes already work, the key is available; we can call the real TMDb endpoint directly.
     async def fetch_tmdb_tv(tid: int) -> Optional[Tuple[str, Optional[str]]]:
+        if not tmdb_key or tmdb_client is None:
+            return None
         try:
-            # Use the same TMDB key mechanism as your tmdb routes:
-            # Most implementations use env var TMDB_API_KEY and pass it as ?api_key=
-            # If your tmdb_client does not auto-attach, this still works if the key is in env and you already do it elsewhere.
-            import os
-
-            key = os.getenv("TMDB_API_KEY")
-            if not key:
-                return None
-
             url = f"https://api.themoviedb.org/3/tv/{tid}"
-            res = await tmdb_client.get(url, params={"api_key": key})
+            res = await tmdb_client.get(url, params={"api_key": tmdb_key})
             if res.status_code != 200:
                 return None
             j = res.json()
@@ -102,8 +101,6 @@ async def list_watchlist_for_user(
         except Exception:
             return None
 
-    fetched: Dict[int, Dict[str, Any]] = {}
-
     for tid in missing:
         data = await fetch_tmdb_tv(tid)
         if not data:
@@ -111,35 +108,40 @@ async def list_watchlist_for_user(
         title, poster_path = data
         fetched[tid] = {"title": title, "poster_path": poster_path}
 
-    # 3) (Optional but recommended) upsert fetched into shows table so future loads are fast
-    # Your shows table uses show_id as the TMDb id, title, poster_path.
-    for tid, meta in fetched.items():
-        try:
-            await db.execute(
-                text(
-                    """
-                    INSERT INTO shows (show_id, title, poster_path)
-                    VALUES (:show_id, :title, :poster_path)
-                    ON CONFLICT (show_id) DO UPDATE
-                      SET title = EXCLUDED.title,
-                          poster_path = EXCLUDED.poster_path
-                    """
-                ),
-                {"show_id": tid, "title": meta["title"], "poster_path": meta["poster_path"]},
-            )
-        except Exception:
-            # If your shows table has required columns beyond these, the insert may fail.
-            # In that case, we still return the TMDb-fetched data without caching.
-            pass
-
+    # 3) Optional cache into shows (safe, ignores schema mismatches)
     if fetched:
-        await db.commit()
+        for tid, meta in fetched.items():
+            try:
+                await db.execute(
+                    text(
+                        """
+                        INSERT INTO shows (show_id, title, poster_path)
+                        VALUES (:show_id, :title, :poster_path)
+                        ON CONFLICT (show_id) DO UPDATE
+                          SET title = EXCLUDED.title,
+                              poster_path = EXCLUDED.poster_path
+                        """
+                    ),
+                    {
+                        "show_id": tid,
+                        "title": meta["title"],
+                        "poster_path": meta["poster_path"],
+                    },
+                )
+            except Exception:
+                # If `shows` has required columns beyond these, the insert will fail.
+                # That's fine — we still return TMDb-fetched data.
+                pass
 
-    # Merge fetched into show_map for response
-    for tid, meta in fetched.items():
-        show_map[tid] = meta
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
-    # 4) Build response in the same order as watchlist rows
+        for tid, meta in fetched.items():
+            show_map[tid] = meta
+
+    # 4) Build response in watchlist order
     result: List[dict] = []
     for r in rows:
         tid = int(r["tmdb_id"])

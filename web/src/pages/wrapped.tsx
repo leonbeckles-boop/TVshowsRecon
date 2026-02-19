@@ -85,6 +85,8 @@ const WrappedPage: React.FC = () => {
   const [data, setData] = useState<WrappedPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [watchlistCount, setWatchlistCount] = useState<number>(0);
+  const [hiddenCount, setHiddenCount] = useState<number>(0);
 
   // redirect to login if not authenticated
   useEffect(() => {
@@ -100,15 +102,42 @@ const WrappedPage: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
+        const token = window.localStorage.getItem("access_token");
+        const authHeaders: Record<string, string> = { Accept: "application/json" };
+        if (token) authHeaders["Authorization"] = `Bearer ${token}`;
+
         const resp = await fetch(apiUrl(`/wrapped/${user.id}`), {
-          headers: {
-          Accept: "application/json",
-          },
+          headers: authHeaders,
         });
         if (!resp.ok) {
           throw new Error(`Failed to load wrapped (${resp.status})`);
         }
         const json = (await resp.json()) as WrappedPayload;
+        // fetch additional profile counts (watchlist + hidden)
+        try {
+          const [wlResp, hidResp] = await Promise.all([
+            fetch(apiUrl(`/users/${user.id}/watchlist`), { headers: authHeaders }),
+            fetch(apiUrl(`/users/${user.id}/not-interested`), { headers: authHeaders }),
+          ]);
+
+          if (wlResp.ok) {
+            const wl = await wlResp.json();
+            setWatchlistCount(Array.isArray(wl) ? wl.length : 0);
+          } else {
+            setWatchlistCount(0);
+          }
+
+          if (hidResp.ok) {
+            const hid = await hidResp.json();
+            setHiddenCount(Array.isArray(hid) ? hid.length : 0);
+          } else {
+            setHiddenCount(0);
+          }
+        } catch {
+          setWatchlistCount(0);
+          setHiddenCount(0);
+        }
+
         if (json.error) {
           setError(json.error);
         }
@@ -150,6 +179,9 @@ const WrappedPage: React.FC = () => {
 
       <div style={BG_STYLE}>
         <main className="mx-auto flex max-w-6xl flex-col gap-10 px-4 pb-16 pt-6">
+          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-100">
+            Wrapped v2 ✅
+          </div>
           {loading && (
             <section className="rounded-2xl border border-slate-700 bg-slate-900/70 px-5 py-4 text-sm text-slate-200 shadow-lg shadow-slate-950/70">
               Loading your Wrapped…
@@ -223,7 +255,54 @@ const WrappedPage: React.FC = () => {
                 </div>
               </section>
 
-              {/* TOP GENRES */}
+              
+              {/* TASTE PROFILE */}
+              <section className="rounded-3xl border border-slate-700/70 bg-slate-900/60 px-6 py-6 shadow-lg shadow-slate-950/60">
+                <h3 className="text-2xl font-bold text-slate-50">Taste Profile</h3>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-700 bg-slate-950/50 p-4">
+                    <div className="text-sm text-slate-300">Recommendation confidence</div>
+                    <div className="mt-1 text-2xl font-extrabold text-slate-50">
+                      {(() => {
+                        const total = (data.favorite_count || 0) + (data.rating_count || 0) + (watchlistCount || 0);
+                        if (total >= 20) return "HIGH";
+                        if (total >= 10) return "MEDIUM";
+                        return "LOW";
+                      })()}
+                    </div>
+                    <div className="mt-2 text-sm text-slate-300">
+                      Based on {data.favorite_count} favourites, {data.rating_count} ratings, and {watchlistCount} watchlist items.
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-700 bg-slate-950/50 p-4">
+                    <div className="text-sm text-slate-300">Your library at a glance</div>
+                    <ul className="mt-3 space-y-2 text-sm text-slate-200">
+                      <li className="flex items-center justify-between">
+                        <span>Total tracked</span>
+                        <span className="font-semibold text-slate-50">
+                          {(data.favorite_count || 0) + (data.rating_count || 0) + (watchlistCount || 0)}
+                        </span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>Favourites</span>
+                        <span className="font-semibold text-slate-50">{data.favorite_count}</span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>Watchlist</span>
+                        <span className="font-semibold text-slate-50">{watchlistCount}</span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>Hidden</span>
+                        <span className="font-semibold text-slate-50">{hiddenCount}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </section>
+
+{/* TOP GENRES */}
               {topGenresWithPercent.length > 0 && (
                 <section className="space-y-4">
                   <div>

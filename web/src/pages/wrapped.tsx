@@ -8,6 +8,7 @@ import { apiUrl } from "../api";
 
 const TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 
+
 type WrappedGenre = [string, number];
 
 type WrappedShow = {

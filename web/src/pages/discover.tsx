@@ -21,13 +21,6 @@ function getTmdbId(any: any): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function getAuthHeaders(): Record<string, string> {
-  const h: Record<string, string> = {};
-  const token = window.localStorage.getItem("access_token");
-  if (token) h["Authorization"] = `Bearer ${token}`;
-  return h;
-}
-
 const SECTION_TITLES = [
   "Top Featured",
   "New & Trending",
@@ -74,14 +67,13 @@ export default function DiscoverPage() {
   const { user } = useAuth();
   const userId = user?.id ?? null;
 
-  const [sections, setSections] = useState<{ title: string; items: Show[] }[]>(
-    [],
-  );
+  const [sections, setSections] = useState<
+    { title: string; items: Show[] }[]
+  >([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   const [favorites, setFavorites] = useState<Show[]>([]);
-  const [watchSet, setWatchSet] = useState<Set<number>>(new Set());
 
   /* ---- onboarding once per user ---- */
 
@@ -110,10 +102,10 @@ export default function DiscoverPage() {
       setLoading(true);
       const t0 = performance.now();
       try {
-        const response = await getDiscover();
+        const response = await getDiscover(userId ? { user_id: userId } : undefined);
         const t1 = performance.now();
         console.log(
-          `[Discover] getDiscover() took ${(t1 - t0).toFixed(0)} ms`,
+          `[Discover] getDiscover() took ${(t1 - t0).toFixed(0)} ms`
         );
 
         if (!isMounted) return;
@@ -127,8 +119,8 @@ export default function DiscoverPage() {
             }
           };
 
-          tryAdd("Top Featured", response.featured);
           tryAdd("New & Trending", response.trending);
+          tryAdd("Top Featured", response.featured);
           tryAdd("Top Shows of the Decade", response.top_decade);
           tryAdd("Top Drama", response.drama);
           tryAdd("Top Crime", response.crime);
@@ -162,7 +154,7 @@ export default function DiscoverPage() {
         console.log(
           `[Discover] listFavoriteShows(${userId}) took ${(t1 - t0).toFixed(
             0,
-          )} ms`,
+          )} ms`
         );
         setFavorites(favs ?? []);
       } catch (e) {
@@ -181,43 +173,6 @@ export default function DiscoverPage() {
     }
     return set;
   }, [favorites]);
-
-  /* ---- load watchlist ---- */
-
-  useEffect(() => {
-    if (!userId) {
-      setWatchSet(new Set());
-      return;
-    }
-
-    let alive = true;
-    const loadWatchlist = async () => {
-      try {
-        const res = await fetch(`/api/users/${userId}/watchlist`, {
-          headers: getAuthHeaders(),
-        });
-        if (!res.ok) throw new Error(String(res.status));
-        const data = await res.json();
-        if (!alive) return;
-
-        const ids = new Set<number>();
-        (Array.isArray(data) ? data : []).forEach((x: any) => {
-          const id = getTmdbId(x);
-          if (id) ids.add(id);
-        });
-        setWatchSet(ids);
-      } catch (e) {
-        if (!alive) return;
-        console.error("Failed to load watchlist for Discover", e);
-        setWatchSet(new Set());
-      }
-    };
-
-    void loadWatchlist();
-    return () => {
-      alive = false;
-    };
-  }, [userId]);
 
   /* ---- handlers ---- */
 
@@ -241,40 +196,6 @@ export default function DiscoverPage() {
       }
     },
     [userId, favSet],
-  );
-
-  const handleToggleWatchlist = useCallback(
-    async (show: any) => {
-      if (!userId) return;
-      const tmdbId = getTmdbId(show);
-      if (!tmdbId) return;
-
-      const isIn = watchSet.has(tmdbId);
-
-      // optimistic
-      setWatchSet((prev) => {
-        const next = new Set(prev);
-        isIn ? next.delete(tmdbId) : next.add(tmdbId);
-        return next;
-      });
-
-      try {
-        const res = await fetch(`/api/users/${userId}/watchlist/${tmdbId}`, {
-          method: isIn ? "DELETE" : "POST",
-          headers: getAuthHeaders(),
-        });
-        if (!res.ok) throw new Error(String(res.status));
-      } catch (e) {
-        console.error("Failed to toggle watchlist (Discover)", e);
-        // revert
-        setWatchSet((prev) => {
-          const next = new Set(prev);
-          isIn ? next.add(tmdbId) : next.delete(tmdbId);
-          return next;
-        });
-      }
-    },
-    [userId, watchSet],
   );
 
   const handleHide = useCallback(
@@ -332,7 +253,6 @@ export default function DiscoverPage() {
                 Math.random(),
             );
             const isFav = tmdbId ? favSet.has(tmdbId) : false;
-            const isWatchlist = tmdbId ? watchSet.has(tmdbId) : false;
 
             return (
               <ShowCard
@@ -340,10 +260,6 @@ export default function DiscoverPage() {
                 show={show}
                 isFav={isFav}
                 onToggleFav={userId ? () => handleToggleFav(show) : undefined}
-                isWatchlist={isWatchlist}
-                onToggleWatchlist={
-                  userId ? () => handleToggleWatchlist(show) : undefined
-                }
                 onHide={userId ? () => handleHide(show) : undefined}
               />
             );
@@ -365,10 +281,11 @@ export default function DiscoverPage() {
         centered
       />
 
-      <div
+       <div
         className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-8"
         style={{ paddingTop: "150px" }}
-      >
+        >
+
         {loading && !hasRealSections ? (
           <>
             {SECTION_TITLES.map((title) => (

@@ -9,8 +9,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_async_db
 
 router = APIRouter(prefix="/discover", tags=["discover"])
 
@@ -267,8 +270,36 @@ async def _fetch_by_genre(genre_id: int, label: str) -> List[DiscoverShow]:
     return [_map_tmdb_show(i, reason=f"Top {label}") for i in items]
 
 
+async def _fetch_excluded_ids(db: AsyncSession, user_id: int) -> set[int]:
+    """IDs that should not appear in Discover for this user."""
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT tmdb_id FROM user_favorites WHERE user_id = :uid
+                UNION
+                SELECT tmdb_id FROM user_watchlist WHERE user_id = :uid
+                UNION
+                SELECT tmdb_id FROM not_interested WHERE user_id = :uid
+                UNION
+                SELECT tmdb_id FROM ratings WHERE user_id = :uid
+                """
+            ),
+            {"uid": user_id},
+        )
+    ).scalars().all()
+    return {int(x) for x in rows if x is not None}
+
+def _filter_section(items: List[DiscoverShow], exclude: set[int]) -> List[DiscoverShow]:
+    if not exclude:
+        return items
+    return [s for s in items if int(s.tmdb_id) not in exclude]
+
 @router.get("", response_model=DiscoverResponse)
-async def get_discover() -> DiscoverResponse:
+async def get_discover(
+    user_id: int | None = Query(None, ge=1),
+    db: AsyncSession = Depends(get_async_db),
+) -> DiscoverResponse:
     """
     Main Discover endpoint.
 
@@ -276,15 +307,33 @@ async def get_discover() -> DiscoverResponse:
     - Otherwise fetches all sections from TMDb, then caches the result
     """
 
-    # ---- FAST PATH: return cached if fresh ----
+    # ---- FAST PATH: return cached base payload if fresh ----
     now = time.monotonic()
     cached = _DISCOVER_CACHE.get(_DISCOVER_CACHE_KEY)
     if cached is not None:
-        ts, payload = cached
+        ts, base_payload = cached
         if now - ts < DISCOVER_CACHE_TTL_SECONDS:
-            return payload
+            if user_id is None:
+                return base_payload
+
+            exclude = await _fetch_excluded_ids(db, user_id)
+            return DiscoverResponse(
+                featured=_filter_section(base_payload.featured, exclude),
+                top_decade=_filter_section(base_payload.top_decade, exclude),
+                trending=_filter_section(base_payload.trending, exclude),
+                drama=_filter_section(base_payload.drama, exclude),
+                crime=_filter_section(base_payload.crime, exclude),
+                documentary=_filter_section(base_payload.documentary, exclude),
+                scifi_fantasy=_filter_section(base_payload.scifi_fantasy, exclude),
+                thriller=_filter_section(base_payload.thriller, exclude),
+                comedy=_filter_section(base_payload.comedy, exclude),
+                action_adventure=_filter_section(base_payload.action_adventure, exclude),
+                animation=_filter_section(base_payload.animation, exclude),
+                family=_filter_section(base_payload.family, exclude),
+            )
 
     # ---- SLOW PATH: build the payload once ----
+
     (
         featured,
         top_decade,
@@ -313,7 +362,7 @@ async def get_discover() -> DiscoverResponse:
         _fetch_by_genre(GENRES["family"], "Family"),
     )
 
-    payload = DiscoverResponse(
+    base_payload = DiscoverResponse(
         featured=featured,
         top_decade=top_decade,
         trending=trending,
@@ -329,6 +378,24 @@ async def get_discover() -> DiscoverResponse:
     )
 
     # store in cache
-    _DISCOVER_CACHE[_DISCOVER_CACHE_KEY] = (now, payload)
+    _DISCOVER_CACHE[_DISCOVER_CACHE_KEY] = (now, base_payload)
 
-    return payload
+    if user_id is None:
+        return base_payload
+
+    exclude = await _fetch_excluded_ids(db, user_id)
+    return DiscoverResponse(
+    featured=_filter_section(base_payload.featured, exclude),
+    top_decade=_filter_section(base_payload.top_decade, exclude),
+    trending=_filter_section(base_payload.trending, exclude),
+    drama=_filter_section(base_payload.drama, exclude),
+    crime=_filter_section(base_payload.crime, exclude),
+    documentary=_filter_section(base_payload.documentary, exclude),
+    scifi_fantasy=_filter_section(base_payload.scifi_fantasy, exclude),
+    thriller=_filter_section(base_payload.thriller, exclude),
+    comedy=_filter_section(base_payload.comedy, exclude),
+    action_adventure=_filter_section(base_payload.action_adventure, exclude),
+    animation=_filter_section(base_payload.animation, exclude),
+    family=_filter_section(base_payload.family, exclude),
+)
+

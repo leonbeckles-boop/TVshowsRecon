@@ -181,7 +181,7 @@ FEATURED_TITLES: list[str] = [
 ]
 
 # limit how many featured titles we actually query each time
-FEATURED_MAX_RESULTS = 24
+FEATURED_MAX_RESULTS = 35
 
 
 async def _fetch_featured() -> List[DiscoverShow]:

@@ -21,6 +21,14 @@ function getTmdbId(any: any): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const h: Record<string, string> = {};
+  const token = window.localStorage.getItem("access_token");
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+
 const SECTION_TITLES = [
   "Top Featured",
   "New & Trending",
@@ -74,6 +82,7 @@ export default function DiscoverPage() {
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   const [favorites, setFavorites] = useState<Show[]>([]);
+  const [watchSet, setWatchSet] = useState<Set<number>>(new Set());
 
   /* ---- onboarding once per user ---- */
 
@@ -165,6 +174,45 @@ export default function DiscoverPage() {
     void loadFavorites();
   }, [userId]);
 
+  /* ---- load watchlist ---- */
+
+  useEffect(() => {
+    if (!userId) {
+      setWatchSet(new Set());
+      return;
+    }
+
+    let alive = true;
+    const loadWatchlist = async () => {
+      try {
+        const res = await fetch(`/api/users/${userId}/watchlist`, {
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        if (!alive) return;
+
+        const ids = new Set<number>();
+        (Array.isArray(data) ? data : []).forEach((x: any) => {
+          const id = getTmdbId(x);
+          if (id) ids.add(id);
+        });
+        setWatchSet(ids);
+      } catch (e) {
+        if (!alive) return;
+        console.error("Failed to load watchlist for Discover", e);
+        setWatchSet(new Set());
+      }
+    };
+
+    void loadWatchlist();
+    return () => {
+      alive = false;
+    };
+  }, [userId]);
+
+
+
   const favSet = useMemo(() => {
     const set = new Set<number>();
     for (const f of favorites) {
@@ -190,7 +238,15 @@ export default function DiscoverPage() {
         } else {
           await addFavorite(userId, tmdbId);
           setFavorites((prev) => [...prev, show as Show]);
-        }
+        
+          // remove from Discover immediately once favourited
+          setSections((prev) =>
+            prev.map((section) => ({
+              ...section,
+              items: section.items.filter((s) => getTmdbId(s) !== tmdbId),
+            })),
+          );
+}
       } catch (e) {
         console.error("Failed to toggle favourite (Discover)", e);
       }
@@ -253,6 +309,7 @@ export default function DiscoverPage() {
                 Math.random(),
             );
             const isFav = tmdbId ? favSet.has(tmdbId) : false;
+            const isWatchlist = tmdbId ? watchSet.has(tmdbId) : false;
 
             return (
               <ShowCard
@@ -260,6 +317,8 @@ export default function DiscoverPage() {
                 show={show}
                 isFav={isFav}
                 onToggleFav={userId ? () => handleToggleFav(show) : undefined}
+                isWatchlist={isWatchlist}
+                onToggleWatchlist={userId ? () => handleToggleWatchlist(show) : undefined}
                 onHide={userId ? () => handleHide(show) : undefined}
               />
             );

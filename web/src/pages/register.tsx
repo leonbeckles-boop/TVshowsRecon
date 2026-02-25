@@ -25,7 +25,7 @@ export default function Register() {
     try {
       await register(email, password);  // your backend register call
       await login(email, password);     // auto-login after registration
-      navigate("/recs");                // same default as login
+      navigate("/howtouse");                // same default as login
     } catch (err: any) {
       setError(err?.message || "Unable to create your account.");
     } finally {

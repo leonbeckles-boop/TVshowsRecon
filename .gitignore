@@ -53,3 +53,6 @@ folder_tree.txt
 *.sql
 *.backup
 *.bak
+
+.env.*
+docker-compose.override.yml

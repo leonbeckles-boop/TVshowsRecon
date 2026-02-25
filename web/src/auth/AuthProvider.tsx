@@ -42,12 +42,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return u;
       },
       async register(email: string, password: string) {
-        const tok = await apiRegister(email, password);
-        if (!tok?.access_token) throw new Error("No access token returned");
-        setToken(tok.access_token);
-        const u = await apiMe();
-        setUser(u);
-        return u;
+        // Register only creates the user. Our backend returns a user object (201 Created),
+        // not an access token. We then login separately to obtain the token.
+        const created = await apiRegister(email, password);
+        return created as unknown as User;
       },
       logout() {
         clearToken();

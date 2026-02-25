@@ -170,10 +170,7 @@ export default function Watchlist() {
                 </div>
               </div>
             ) : (
-              <div
-                className="mt-6 grid gap-4"
-                style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
-              >
+              <div className="mt-6 tile-grid">
                 {items.map((show) => {
                   const tmdbId = getTmdbId(show);
                   if (!tmdbId) return null;

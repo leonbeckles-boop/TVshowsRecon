@@ -20,6 +20,11 @@ import "./tileGrid.css";
 // Require at least this many favourites before showing any recommendations
 const MIN_FAVORITES = 3;
 
+
+
+// Shared glass UI styles (keeps UI consistent across pages)
+const GLASS_CARD_CLASS = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-xl shadow-black/40";
+const GLASS_PILL_CLASS = "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 backdrop-blur-md px-3 py-1 text-xs text-slate-200";
 // Shared background with faint grid lines + radial glow at top
 const BG_STYLE = {
   minHeight: "100vh",

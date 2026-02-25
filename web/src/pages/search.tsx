@@ -331,33 +331,17 @@ export default function SearchPage() {
           ) : (
             <>
               {loading && (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns:
-                      "repeat(auto-fill, minmax(270px, 1fr))",
-                    gap: "24px",
-                    alignItems: "flex-start",
-                  }}
-                >
+                <div className="tile-grid">
                   {Array.from({ length: 12 }).map((_, i) => (
                     <div
                       key={i}
-                      className="aspect-[2/3] animate-pulse rounded-2xl bg-slate-800/80"
+                      className="aspect-[2/3] w-full max-w-[240px] animate-pulse rounded-2xl bg-slate-800/80"
                     />
                   ))}
                 </div>
               )}
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "repeat(auto-fill, minmax(270px, 1fr))",
-                  gap: "24px",
-                  alignItems: "flex-start",
-                }}
-              >
+              <div className="tile-grid">
                 {results.map((show) => {
                   const tmdb = tmdbFromShow(show) ?? undefined;
                   const isFav = tmdb ? favSet.has(tmdb) : false;

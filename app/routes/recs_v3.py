@@ -633,6 +633,31 @@ async def get_recs_v3(
             reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
         # Favourite details for language/genre profile
         fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
+
+        # Build quick maps for explanations
+        fav_title_map: Dict[int, str] = {}
+        fav_genres_map: Dict[int, set[int]] = {}
+        for d in fav_details:
+            try:
+                fid = int(d.get("id") or 0)
+            except Exception:
+                fid = 0
+            if not fid:
+                continue
+            title = d.get("name") or d.get("title") or ""
+            if title:
+                fav_title_map[fid] = str(title)
+            # TMDB returns genres as list of {id,name}
+            gs = d.get("genres") or []
+            gset: set[int] = set()
+            try:
+                for g in gs:
+                    gid = g.get("id")
+                    if gid is not None:
+                        gset.add(int(gid))
+            except Exception:
+                gset = set()
+            fav_genres_map[fid] = gset
         # Language profile
         allowed_langs = {d.get("original_language") for d in fav_details if d.get("original_language")}
         # Genre profile (counts for taste vector)
@@ -846,7 +871,62 @@ async def get_recs_v3(
             diversified = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:limit]
         if recent_first and not freshness_boost:
             diversified = _recent_first_bucket(diversified, years=int(recent_years))
-        # Clean up internal fields before returning
+        
+        # Add short "reasons" for UI (used by ShowCard)
+        for item in diversified:
+            reasons: List[str] = []
+            # Find best anchor favourite by genre overlap
+            cand_genres: set[int] = set()
+            try:
+                if item.get("genre_ids"):
+                    cand_genres = {int(g) for g in (item.get("genre_ids") or []) if g is not None}
+                else:
+                    gs = item.get("genres") or []
+                    cand_genres = {int(g.get("id")) for g in gs if isinstance(g, dict) and g.get("id") is not None}
+            except Exception:
+                cand_genres = set()
+
+            best_fid: Optional[int] = None
+            best_overlap = 0
+            if cand_genres and fav_genres_map:
+                for fid, fgs in fav_genres_map.items():
+                    if not fgs:
+                        continue
+                    ov = len(cand_genres & fgs)
+                    if ov > best_overlap:
+                        best_overlap = ov
+                        best_fid = fid
+            if best_fid and best_overlap > 0:
+                anchor_title = fav_title_map.get(best_fid) or "one of your favourites"
+                reasons.append(f"Because you liked {anchor_title}")
+
+            # Signal-based reasons
+            try:
+                if float(item.get("score_personal") or 0.0) > 0:
+                    reasons.append("Matches your taste profile")
+                elif float(item.get("score_tmdb") or 0.0) > 0:
+                    reasons.append("Similar genres & tone")
+                if float(item.get("score_reddit") or 0.0) > 0:
+                    reasons.append("Popular with fans of your favourites")
+            except Exception:
+                pass
+
+            # Freshness hint (only if relevant)
+            try:
+                if recent_first or freshness_boost:
+                    d = item.get("first_air_date")
+                    if isinstance(d, str) and len(d) >= 4:
+                        y = int(d[:4])
+                        if y >= now_year - 2:
+                            reasons.append("Newer release")
+            except Exception:
+                pass
+
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            reasons = [r for r in reasons if not (r in seen or seen.add(r))]
+            item["reasons"] = reasons[:2]
+# Clean up internal fields before returning
         for item in diversified:
             item.pop("scores_by_source", None)
         if flat:

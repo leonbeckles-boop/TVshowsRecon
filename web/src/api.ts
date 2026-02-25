@@ -114,8 +114,8 @@ export type RecsOptions = {
 const DEFAULT_PROD_API = "https://whatnext-api.onrender.com/api";
 
 const BASE =
-  (import.meta.env.VITE_API_BASE as string | undefined) ??
-  (import.meta.env.MODE === "development" ? "/api" : DEFAULT_PROD_API);
+    import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV ? "http://localhost:8000/api" : "/api");
 
 // Normalise to no trailing slash
 const BASE_NORM = BASE.replace(/\/+$/, "");

@@ -303,13 +303,7 @@ export default function Discover() {
             <section key={sec.key} style={{ marginBottom: 28 }}>
               <h2 style={{ fontSize: 22, marginBottom: 12 }}>{sec.title}</h2>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                  gap: 18,
-                }}
-              >
+              <div className="tile-grid">
                 {sec.items.map((show) => {
                   const tmdbId = getTmdbId(show);
                   const key = tmdbId ? `tmdb:${tmdbId}` : JSON.stringify(show);

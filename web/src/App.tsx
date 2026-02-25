@@ -13,11 +13,13 @@ import ShowDetails from "./components/ShowDetails";
 
 
 import AdminDashboard from "./pages/AdminDashboard"; // ← NEW
+import HowToUse from "./pages/HowToUse";
 
 export default function App() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100">
       <Routes>
+        <Route path="/HowToUse" element={<HowToUse />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/discover" element={<Discover />} />

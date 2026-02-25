@@ -1,0 +1,26 @@
+services:
+  backend:
+    working_dir: /app
+    volumes:
+      - ./:/app
+    environment:
+      - CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+      - DATABASE_URL=postgresql+asyncpg://whatnextdb_3tu2_user:nKq5GdRRtJIo47O8ZskPa6Fryb7fpV8o@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com:5432/whatnext_db?ssl=require
+      - DATABASE_URL_SYNC=postgresql+psycopg://whatnextdb_3tu2_user:nKq5GdRRtJIo47O8ZskPa6Fryb7fpV8o@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com:5432/whatnext_db?sslmode=require
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+
+  web:
+    image: node:20
+    working_dir: /web
+    volumes:
+
+      - ./web:/web
+      - /web/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=/api
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    command: bash -lc "cd /web && npm install && npm run dev -- --host 0.0.0.0 --port 5173"

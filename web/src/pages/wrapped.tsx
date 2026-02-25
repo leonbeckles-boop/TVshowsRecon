@@ -9,17 +9,10 @@ type Show = {
   id?: number;
   title?: string;
   name?: string;
-  genres?: string[]; // sometimes comes as strings
-  genre_names?: string[]; // sometimes you used this shape
-  genre_ids?: number[]; // fallback (not used for names)
+  poster_path?: string | null;
+  poster_url?: string | null;
   [key: string]: any;
 };
-
-function getTmdbId(x: any): number | null {
-  const cand = x?.tmdb_id ?? x?.external_id ?? x?.show_id ?? x?.id;
-  const n = Number(cand);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
 
 function getAuthHeaders(): Record<string, string> {
   const h: Record<string, string> = {};
@@ -45,6 +38,8 @@ export default function Wrapped() {
   const [hidden, setHidden] = useState<Show[]>([]);
   const [ratings, setRatings] = useState<any[]>([]);
 
+  const [genreProfile, setGenreProfile] = useState<{ genre: string; count: number }[]>([]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,24 +54,30 @@ export default function Wrapped() {
 
     const loadAll = async () => {
       try {
-        const [favRes, rateRes, watchRes, hiddenRes] = await Promise.all([
+        const [favRes, rateRes, watchRes, hiddenRes, genreRes] = await Promise.all([
           fetch(`/api/users/${userId}/favorites`, { headers }),
           fetch(`/api/ratings/ratings?user_id=${userId}`, { headers }),
           fetch(`/api/users/${userId}/watchlist`, { headers }),
           fetch(`/api/users/${userId}/not-interested`, { headers }),
+          fetch(`/api/users/${userId}/genre-profile?limit=60`, { headers }),
         ]);
 
         if (!favRes.ok) throw new Error(`Favorites failed: ${favRes.status}`);
         if (!rateRes.ok) throw new Error(`Ratings failed: ${rateRes.status}`);
         if (!watchRes.ok) throw new Error(`Watchlist failed: ${watchRes.status}`);
         if (!hiddenRes.ok) throw new Error(`Hidden failed: ${hiddenRes.status}`);
+        // genre-profile can fail gracefully (don’t block whole page)
+        const favData = await favRes.json();
+        const rateData = await rateRes.json();
+        const watchData = await watchRes.json();
+        const hiddenData = await hiddenRes.json();
 
-        const [favData, rateData, watchData, hiddenData] = await Promise.all([
-          favRes.json(),
-          rateRes.json(),
-          watchRes.json(),
-          hiddenRes.json(),
-        ]);
+        let gp: any = null;
+        try {
+          gp = genreRes.ok ? await genreRes.json() : null;
+        } catch {
+          gp = null;
+        }
 
         if (!alive) return;
 
@@ -84,6 +85,13 @@ export default function Wrapped() {
         setRatings(Array.isArray(rateData) ? rateData : []);
         setWatchlist(Array.isArray(watchData) ? watchData : []);
         setHidden(Array.isArray(hiddenData) ? hiddenData : []);
+
+        const top = Array.isArray(gp?.top_genres) ? gp.top_genres : [];
+        setGenreProfile(
+          top
+            .map((x: any) => ({ genre: String(x?.genre ?? ""), count: Number(x?.count ?? 0) }))
+            .filter((x: any) => x.genre && Number.isFinite(x.count) && x.count > 0),
+        );
       } catch (e: any) {
         if (!alive) return;
         setError(e?.message ?? "Failed to load Wrapped");
@@ -105,47 +113,13 @@ export default function Wrapped() {
   const ratedCount = ratings.length;
 
   const avgRating = useMemo(() => {
-    const nums = ratings
-      .map((r) => Number(r?.rating))
-      .filter((x) => Number.isFinite(x));
+    const nums = ratings.map((r) => Number(r?.rating)).filter((x) => Number.isFinite(x));
     if (!nums.length) return null;
     const sum = nums.reduce((a, b) => a + b, 0);
     return Math.round((sum / nums.length) * 10) / 10;
   }, [ratings]);
 
-  const genreCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-
-    const bump = (g: string) => {
-      const key = (g || "").trim();
-      if (!key) return;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    };
-
-    // Use favourites + watchlist (this feels most “taste profile”)
-    const pool = [...favorites, ...watchlist];
-
-    pool.forEach((s) => {
-      const gs: any =
-        s?.genres ??
-        s?.genre_names ??
-        s?.genreNames ??
-        s?.genres_names ??
-        null;
-
-      if (Array.isArray(gs)) {
-        gs.forEach((x) => bump(String(x)));
-      }
-    });
-
-    const list = Array.from(counts.entries())
-      .map(([genre, count]) => ({ genre, count }))
-      .sort((a, b) => b.count - a.count);
-
-    return list;
-  }, [favorites, watchlist]);
-
-  const topGenre = genreCounts[0]?.genre ?? "Mixed";
+  const topGenre = genreProfile[0]?.genre ?? "Mixed";
 
   const confidence = useMemo(() => {
     const signals = favCount + watchCount + ratedCount;
@@ -156,8 +130,7 @@ export default function Wrapped() {
 
   const totalTracked = favCount + watchCount + ratedCount;
 
-  // ----- Styles (keeps your dark theme but modernises UI) -----
-
+  // ----- Styles -----
   const pageWrap: React.CSSProperties = {
     paddingTop: 120,
     paddingLeft: 16,
@@ -232,39 +205,31 @@ export default function Wrapped() {
     height: "100%",
     width: `${Math.round(clamp01(pct) * 100)}%`,
     borderRadius: 999,
-    background: "rgba(56,189,248,0.75)", // same vibe as your cyan highlight
+    background: "rgba(56,189,248,0.75)",
   });
 
   return (
     <div>
-      <PageHeader
-        title="Your WhatNext Wrapped"
-        subtitle="A cinematic recap of your TV taste and habits."
-      />
+      <PageHeader title="Your WhatNext Wrapped" subtitle="A cinematic recap of your TV taste and habits." />
 
       <div style={pageWrap}>
-        {/* visible version marker (keep for now, remove later) */}
-        <div style={{ ...pill, marginBottom: 10 }}>Wrapped v2 ✅</div>
+        <div style={{ ...pill, marginBottom: 10 }}>Wrapped v3 ✅</div>
 
         {error && (
-          <div style={{ ...glass, padding: 14, borderColor: "rgba(255,0,0,0.25)" }}>
-            {error}
-          </div>
+          <div style={{ ...glass, padding: 14, borderColor: "rgba(255,0,0,0.25)" }}>{error}</div>
         )}
 
         <div style={{ ...glass, padding: 18 }}>
           <div style={h1}>Your TV year in review</div>
-          <div style={sub}>
-            Here’s how your taste shaped up — from the shows you saved to what you queued next.
-          </div>
+          <div style={sub}>Here’s how your taste shaped up — from the shows you saved to what you queued next.</div>
+
+          {loading && <div style={{ marginTop: 10, opacity: 0.75 }}>Loading…</div>}
 
           <div style={grid}>
             <div style={metricCard}>
               <div style={metricLabel}>SHOWS RATED</div>
               <div style={metricValue}>{fmt(ratedCount)}</div>
-              <div style={{ opacity: 0.7, marginTop: 2 }}>
-                Avg rating: {avgRating == null ? "—" : avgRating}
-              </div>
+              <div style={{ opacity: 0.7, marginTop: 2 }}>Avg rating: {avgRating == null ? "—" : avgRating}</div>
             </div>
 
             <div style={metricCard}>
@@ -294,8 +259,12 @@ export default function Wrapped() {
             <div style={pill}>
               Recommendation confidence: <strong>{confidence}</strong>
             </div>
-            <div style={pill}>Total tracked: <strong>{fmt(totalTracked)}</strong></div>
-            <div style={pill}>Signals: <strong>{fmt(favCount + watchCount + ratedCount)}</strong></div>
+            <div style={pill}>
+              Total tracked: <strong>{fmt(totalTracked)}</strong>
+            </div>
+            <div style={pill}>
+              Signals: <strong>{fmt(favCount + watchCount + ratedCount)}</strong>
+            </div>
           </div>
 
           <div style={{ marginTop: 14, opacity: 0.85, lineHeight: 1.7 }}>
@@ -307,30 +276,28 @@ export default function Wrapped() {
         <div style={sectionCard}>
           <h2 style={sectionTitle}>Genre spread</h2>
 
-          {genreCounts.length === 0 ? (
+          {genreProfile.length === 0 ? (
             <div style={{ opacity: 0.8 }}>
-              Add a few favourites / watchlist shows to build your genre profile.
+              Genre spread will appear once we can read genres from TMDb (check TMDB_API_KEY) and you have favourites/watchlist.
             </div>
           ) : (
-            <>
-              {(() => {
-                const top = genreCounts.slice(0, 8);
-                const max = top[0]?.count ?? 1;
-                return (
-                  <div>
-                    {top.map((g) => (
-                      <div key={g.genre} style={barRow}>
-                        <div style={{ opacity: 0.85 }}>{g.genre}</div>
-                        <div style={barOuter}>
-                          <div style={barInner(g.count / max)} />
-                        </div>
-                        <div style={{ textAlign: "right", opacity: 0.85 }}>{g.count}</div>
+            (() => {
+              const top = genreProfile.slice(0, 8);
+              const max = top[0]?.count ?? 1;
+              return (
+                <div>
+                  {top.map((g) => (
+                    <div key={g.genre} style={barRow}>
+                      <div style={{ opacity: 0.85 }}>{g.genre}</div>
+                      <div style={barOuter}>
+                        <div style={barInner(g.count / max)} />
                       </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </>
+                      <div style={{ textAlign: "right", opacity: 0.85 }}>{g.count}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()
           )}
         </div>
       </div>

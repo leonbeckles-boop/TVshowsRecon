@@ -63,7 +63,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="WhatNext API", lifespan=lifespan)
 
 # ✅ CORS MUST be installed on `app` (not the APIRouter)
-cors_origins = _cors_origins()
+cors_origins = _cors_origins() or []
+
+# ✅ ALWAYS allow localhost dev servers (safe, does not affect production security)
+dev_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# Merge safely without duplicates
+cors_origins = list(set(cors_origins + dev_origins))
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,6 +82,7 @@ app.add_middleware(
     allow_methods=["*"],  # includes OPTIONS (preflight)
     allow_headers=["*"],  # includes Authorization, Content-Type, etc.
 )
+
 
 
 @app.get("/")

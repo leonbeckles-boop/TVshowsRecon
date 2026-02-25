@@ -22,6 +22,7 @@ const NAV_LINKS: NavLinkDef[] = [
   { to: "/watchlist", label: "Watchlist", key: "watchlist" },
   { to: "/recs", label: "Recommendations", key: "recs" },
   { to: "/wrapped", label: "Profile", key: "wrapped" },
+  { to: "/HowToUse", label: "HowToUse", key: "HowToUse" },
 ];
 
 function useIsMobile(breakpoint: number = 768): boolean {
@@ -103,7 +104,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
               style={{
                 // Bigger + rectangular so the full logo (incl. text) is readable
                 height: isMobile ? 52 : 64,
-                width: isMobile ? 150 : 190,
+                width: isMobile ? 100 : 140,
                 backgroundColor: "rgba(255,255,255,0.98)",
                 border: "1px solid rgba(56,189,248,0.78)",
                 boxShadow:
@@ -201,7 +202,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
           </div>
         ) : (
           <div className="flex items-center justify-end md:min-w-[420px] pr-4">
-            <nav className="flex items-center gap-2 pr-2">
+            <nav className="flex items-center gap-2 pr-2 sm:gap-3 overflow-x-auto whitespace-nowrap no-scrollbar [-ms-overflow-style:none] [scrollbar-width:none]">
               {NAV_LINKS.map((link) => {
                 const isActive = location.pathname === link.to;
                 return (

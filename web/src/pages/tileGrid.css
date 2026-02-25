@@ -1,22 +1,23 @@
-/* 3 columns on phones, 4 on small screens, 6 on desktop/laptop */
-
+/* tileGrid.css — shared grid for Discover / Search / Favorites / Watchlist (and anywhere else) */
 
 .tile-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.9rem;
+
+  /* Mobile-first: allow 2 cols on small phones, 3 cols on larger phones */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 @media (min-width: 640px) {
   .tile-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 }
 
 @media (min-width: 1024px) {
   .tile-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 1.25rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 }

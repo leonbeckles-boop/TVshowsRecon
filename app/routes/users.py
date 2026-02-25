@@ -5,8 +5,8 @@ import os
 from typing import Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, Path
-from sqlalchemy import and_, select
+from fastapi import APIRouter, Depends, Path, Query, Request
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
@@ -87,6 +87,30 @@ def _serialize_show(s: Show) -> dict[str, Any]:
         "external_id": ext,
     }
 
+
+
+
+async def _tmdb_genres(tmdb_id: int) -> list[str]:
+    """Fetch genre names for a TMDb TV show."""
+    if not TMDB_KEY:
+        return []
+    url = f"{TMDB_API}/tv/{tmdb_id}?api_key={TMDB_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
+        if r.status_code != 200:
+            return []
+        data = r.json() or {}
+        genres = data.get("genres") or []
+        out: list[str] = []
+        if isinstance(genres, list):
+            for g in genres:
+                name = (g or {}).get("name")
+                if isinstance(name, str) and name.strip():
+                    out.append(name.strip())
+        return out
+    except Exception:
+        return []
 
 @router.get("/{user_id}/favorites")
 async def list_favorites(
@@ -228,3 +252,76 @@ async def list_hidden_for_user(
         await db.execute(select(NotInterested.tmdb_id).where(NotInterested.user_id == user_id))
     ).scalars().all()
     return [int(x) for x in ids if x is not None]
+
+
+@router.get("/{user_id}/genre-profile")
+async def genre_profile(
+    request: Request,
+    user_id: int,
+    limit: int = Query(40, ge=1, le=200),
+    _: Any = Depends(require_user_match),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict[str, Any]:
+    """Return genre counts for a user's favourites + watchlist (via TMDb)."""
+
+    # 1) Collect ids from favourites
+    fav_rows = (
+        (await db.execute(
+            select(FavoriteTmdb.tmdb_id).where(FavoriteTmdb.user_id == user_id)
+        ))
+        .scalars()
+        .all()
+    )
+    fav_ids = [int(x) for x in fav_rows if x is not None]
+
+    # 2) Collect ids from watchlist (table exists in DB)
+    watch_ids: list[int] = []
+    try:
+        watch_rows = (
+            (await db.execute(
+                text("SELECT tmdb_id FROM user_watchlist WHERE user_id = :uid ORDER BY added_at DESC"),
+                {"uid": user_id},
+            ))
+            .scalars()
+            .all()
+        )
+        watch_ids = [int(x) for x in watch_rows if x is not None]
+    except Exception:
+        watch_ids = []
+
+    # Merge distinct, favouring favourites first then watchlist
+    seen: set[int] = set()
+    merged: list[int] = []
+    for tid in fav_ids + watch_ids:
+        if tid in seen:
+            continue
+        seen.add(tid)
+        merged.append(tid)
+        if len(merged) >= int(limit):
+            break
+
+    if not merged:
+        return {"top_genres": [], "sample_size": 0, "favorites": len(fav_ids), "watchlist": len(watch_ids)}
+
+    # 3) Fetch genres from TMDb with small in-request cache
+    counts: dict[str, int] = {}
+    cache: dict[int, list[str]] = {}
+
+    for tid in merged:
+        if tid not in cache:
+            cache[tid] = await _tmdb_genres(int(tid))
+        for g in cache[tid]:
+            counts[g] = counts.get(g, 0) + 1
+
+    top = sorted(
+        [{"genre": k, "count": v} for k, v in counts.items()],
+        key=lambda x: (-int(x["count"]), str(x["genre"])),
+    )
+
+    return {
+        "top_genres": top[:30],
+        "sample_size": len(merged),
+        "favorites": len(fav_ids),
+        "watchlist": len(watch_ids),
+    }
+

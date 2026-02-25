@@ -4,7 +4,6 @@ import "./ShowCard.css";
 
 export type ShowCardProps = {
   show: any;
-  reason?: string;
   myRating?: number;
   isFav?: boolean;
   onToggleFav?: () => void | Promise<void>;

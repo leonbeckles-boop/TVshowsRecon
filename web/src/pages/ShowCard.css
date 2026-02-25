@@ -1,4 +1,5 @@
 .show-card {
+  width: 100%;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -23,6 +24,7 @@
 /* Poster */
 
 .show-card__poster {
+  width: 100%;
   position: relative;
   aspect-ratio: 2 / 3;
   background: #020617;
@@ -33,6 +35,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
   transform-origin: center;
   transition: transform 0.25s ease-out;
 }
@@ -202,23 +205,6 @@
     rgba(15, 23, 42, 0.98),
     rgba(15, 23, 42, 0.94)
   );
-}
-
-/* ------------------------------
-   Tile grid alignment helpers
-
-   Fixes the "single result stretches full width" issue on Search/Discover/Recs
-   while keeping multi-tile rows aligned to the left (no strange spacing).
------------------------------- */
-
-.tile-grid {
-  justify-content: flex-start;
-  justify-items: start;
-}
-
-.tile-grid .show-card {
-  width: 100%;
-  max-width: 240px;
 }
 
 .show-card__rating-block {

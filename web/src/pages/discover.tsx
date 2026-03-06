@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import PageHeader from "../components/PageHeader";
 import ShowCard from "../components/ShowCard";
 import { useAuth } from "../auth/AuthProvider";
 
@@ -66,7 +65,7 @@ export default function Discover() {
 
   const headers = useMemo(() => getAuthHeaders(), []);
 
-  /* ---------- Load discover (backend filters when user_id present) ---------- */
+  /* ---------- Load discover ---------- */
 
   useEffect(() => {
     let alive = true;
@@ -81,10 +80,6 @@ export default function Discover() {
         const data: DiscoverResponse = await res.json();
         if (!alive) return;
 
-        // UI order you want:
-        // 1) New & Trending (data.featured is already remapped server-side)
-        // 2) Top Featured (data.top_decade is already remapped server-side)
-        // 3) Trending Now (data.trending is already remapped server-side)
         const next: DiscoverSection[] = [
           { key: "featured", title: "New & Trending", items: data.featured ?? [] },
           { key: "top_decade", title: "Top Featured", items: data.top_decade ?? [] },
@@ -113,13 +108,14 @@ export default function Discover() {
     };
   }, [userId, headers]);
 
-  /* ---------- Load favorites set ---------- */
+  /* ---------- Load favorites ---------- */
 
   useEffect(() => {
     if (!userId) {
       setFavSet(new Set());
       return;
     }
+
     let alive = true;
 
     const loadFavs = async () => {
@@ -146,13 +142,14 @@ export default function Discover() {
     };
   }, [userId, headers]);
 
-  /* ---------- Load watchlist set ---------- */
+  /* ---------- Load watchlist ---------- */
 
   useEffect(() => {
     if (!userId) {
       setWatchSet(new Set());
       return;
     }
+
     let alive = true;
 
     const loadWatch = async () => {
@@ -181,152 +178,115 @@ export default function Discover() {
 
   /* ---------- Actions ---------- */
 
-  const handleToggleFav = useCallback(
-    async (show: Show) => {
-      if (!userId) return;
-      const tmdbId = getTmdbId(show);
-      if (!tmdbId) return;
+  const handleToggleFav = useCallback(async (show: Show) => {
+    if (!userId) return;
+    const tmdbId = getTmdbId(show);
+    if (!tmdbId) return;
 
-      const isFav = favSet.has(tmdbId);
+    const isFav = favSet.has(tmdbId);
 
-      // optimistic
-      setFavSet((prev) => {
-        const next = new Set(prev);
-        isFav ? next.delete(tmdbId) : next.add(tmdbId);
-        return next;
+    setFavSet((prev) => {
+      const next = new Set(prev);
+      isFav ? next.delete(tmdbId) : next.add(tmdbId);
+      return next;
+    });
+
+    if (!isFav) setSections((prev) => removeFromSections(prev, tmdbId));
+
+    try {
+      await fetch(`/api/users/${userId}/favorites/${tmdbId}`, {
+        method: isFav ? "DELETE" : "POST",
+        headers,
       });
+    } catch {}
+  }, [userId, favSet, headers]);
 
-      // if adding to favs, remove from discover immediately
-      if (!isFav) setSections((prev) => removeFromSections(prev, tmdbId));
+  const handleToggleWatchlist = useCallback(async (show: Show) => {
+    if (!userId) return;
+    const tmdbId = getTmdbId(show);
+    if (!tmdbId) return;
 
-      try {
-        const res = await fetch(`/api/users/${userId}/favorites/${tmdbId}`, {
-          method: isFav ? "DELETE" : "POST",
-          headers,
-        });
-        if (!res.ok) throw new Error(String(res.status));
-      } catch (e) {
-        // revert
-        setFavSet((prev) => {
-          const next = new Set(prev);
-          isFav ? next.add(tmdbId) : next.delete(tmdbId);
-          return next;
-        });
-      }
-    },
-    [userId, favSet, headers],
-  );
+    const isIn = watchSet.has(tmdbId);
 
-  const handleToggleWatchlist = useCallback(
-    async (show: Show) => {
-      if (!userId) return;
-      const tmdbId = getTmdbId(show);
-      if (!tmdbId) return;
+    setWatchSet((prev) => {
+      const next = new Set(prev);
+      isIn ? next.delete(tmdbId) : next.add(tmdbId);
+      return next;
+    });
 
-      const isIn = watchSet.has(tmdbId);
+    if (!isIn) setSections((prev) => removeFromSections(prev, tmdbId));
 
-      // optimistic
-      setWatchSet((prev) => {
-        const next = new Set(prev);
-        isIn ? next.delete(tmdbId) : next.add(tmdbId);
-        return next;
+    try {
+      await fetch(`/api/users/${userId}/watchlist/${tmdbId}`, {
+        method: isIn ? "DELETE" : "POST",
+        headers,
       });
+    } catch {}
+  }, [userId, watchSet, headers]);
 
-      // if adding to watchlist, remove from discover immediately
-      if (!isIn) setSections((prev) => removeFromSections(prev, tmdbId));
+  const handleHide = useCallback(async (show: Show) => {
+    if (!userId) return;
+    const tmdbId = getTmdbId(show);
+    if (!tmdbId) return;
 
-      try {
-        const res = await fetch(`/api/users/${userId}/watchlist/${tmdbId}`, {
-          method: isIn ? "DELETE" : "POST",
-          headers,
-        });
-        if (!res.ok) throw new Error(String(res.status));
-      } catch (e) {
-        // revert
-        setWatchSet((prev) => {
-          const next = new Set(prev);
-          isIn ? next.add(tmdbId) : next.delete(tmdbId);
-          return next;
-        });
-      }
-    },
-    [userId, watchSet, headers],
-  );
+    setSections((prev) => removeFromSections(prev, tmdbId));
 
-  const handleHide = useCallback(
-    async (show: Show) => {
-      if (!userId) return;
-      const tmdbId = getTmdbId(show);
-      if (!tmdbId) return;
-
-      // optimistic: remove from grid immediately
-      setSections((prev) => removeFromSections(prev, tmdbId));
-
-      try {
-        const res = await fetch(`/api/users/${userId}/not-interested/${tmdbId}`, {
-          method: "POST",
-          headers,
-        });
-        if (!res.ok) throw new Error(String(res.status));
-      } catch (e) {
-        console.error("Failed to mark not-interested from Discover", e);
-      }
-    },
-    [userId, headers],
-  );
+    try {
+      await fetch(`/api/users/${userId}/not-interested/${tmdbId}`, {
+        method: "POST",
+        headers,
+      });
+    } catch {}
+  }, [userId, headers]);
 
   /* ---------- Render ---------- */
 
   return (
-    <div>
-      <PageHeader title="Discover" subtitle="Find something new to watch" />
+    <div style={{ paddingTop: 116, paddingLeft: 16, paddingRight: 16, paddingBottom: 24 }}>
+      {error && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid rgba(255,0,0,0.35)",
+            background: "rgba(255,0,0,0.08)",
+          }}
+        >
+          {error}
+        </div>
+      )}
 
-      <div style={{ paddingTop: 120, paddingLeft: 16, paddingRight: 16, paddingBottom: 24 }}>
-        {error && (
-          <div
-            style={{
-              marginBottom: 16,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid rgba(255,0,0,0.35)",
-              background: "rgba(255,0,0,0.08)",
-            }}
-          >
-            {error}
-          </div>
-        )}
+      {loading && <div style={{ opacity: 0.8 }}>Loading…</div>}
 
-        {loading && <div style={{ opacity: 0.8 }}>Loading…</div>}
+      {!loading &&
+        sections.map((sec) => (
+          <section key={sec.key} style={{ marginBottom: 28 }}>
+            <h2 style={{ fontSize: 22, marginBottom: 12 }}>{sec.title}</h2>
 
-        {!loading &&
-          sections.map((sec) => (
-            <section key={sec.key} style={{ marginBottom: 28 }}>
-              <h2 style={{ fontSize: 22, marginBottom: 12 }}>{sec.title}</h2>
+            <div className="tile-grid">
+              {sec.items.map((show) => {
+                const tmdbId = getTmdbId(show);
+                const key = tmdbId ? `tmdb:${tmdbId}` : JSON.stringify(show);
 
-              <div className="tile-grid">
-                {sec.items.map((show) => {
-                  const tmdbId = getTmdbId(show);
-                  const key = tmdbId ? `tmdb:${tmdbId}` : JSON.stringify(show);
+                const isFav = tmdbId ? favSet.has(tmdbId) : false;
+                const isWatchlist = tmdbId ? watchSet.has(tmdbId) : false;
 
-                  const isFav = tmdbId ? favSet.has(tmdbId) : false;
-                  const isWatchlist = tmdbId ? watchSet.has(tmdbId) : false;
-
-                  return (
-                    <ShowCard
-                      key={key}
-                      show={show}
-                      isFav={isFav}
-                      onToggleFav={userId ? () => handleToggleFav(show) : undefined}
-                      isWatchlist={isWatchlist}
-                      onToggleWatchlist={userId ? () => handleToggleWatchlist(show) : undefined}
-                      onHide={userId ? () => handleHide(show) : undefined}
-                    />
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-      </div>
+                return (
+                  <ShowCard
+                    key={key}
+                    show={show}
+                    isFav={isFav}
+                    onToggleFav={userId ? () => handleToggleFav(show) : undefined}
+                    isWatchlist={isWatchlist}
+                    onToggleWatchlist={userId ? () => handleToggleWatchlist(show) : undefined}
+                    onHide={userId ? () => handleHide(show) : undefined}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        ))}
     </div>
   );
 }

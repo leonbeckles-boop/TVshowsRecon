@@ -21,9 +21,7 @@ const BG_STYLE = {
   paddingTop: "156px", // space under fixed PageHeader + big logo
   backgroundColor: "#020617",
   backgroundImage: [
-    // stronger top glow to tie into header
     "radial-gradient(circle at top center, rgba(30,58,138,0.45) 0%, rgba(2,6,23,0.9) 55%, #020617 100%)",
-    // faint gridlines
     "linear-gradient(to right, rgba(148,163,184,0.09) 1px, transparent 1px)",
     "linear-gradient(to bottom, rgba(148,163,184,0.09) 1px, transparent 1px)",
   ].join(", "),
@@ -32,6 +30,17 @@ const BG_STYLE = {
   backgroundBlendMode: "normal, soft-light, soft-light",
   color: "#e5e7eb",
 } as const;
+
+const POPULAR_SEARCHES = [
+  "Breaking Bad",
+  "Game of Thrones",
+  "The Office",
+  "Fallout",
+  "The Last of Us",
+  "House of the Dragon",
+  "The Boys",
+  "Stranger Things",
+];
 
 function tmdbFromShow(s: Show): number | null {
   const v = Number(
@@ -44,7 +53,7 @@ export default function SearchPage() {
   const { user } = useAuth();
   const userId = user?.id ?? 0;
 
-  const [query, setQuery] = useState("Breaking Bad"); // preload
+  const [query, setQuery] = useState("");
   const [results, setResults] = useState<Show[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -142,6 +151,7 @@ export default function SearchPage() {
       void run();
     } else {
       setResults([]);
+      setLoading(false);
     }
     return () => {
       alive = false;
@@ -162,7 +172,6 @@ export default function SearchPage() {
     if (!tmdb) return;
 
     const isFav = favSet.has(tmdb);
-    // optimistic UI
     setFavSet((prev) => {
       const next = new Set(prev);
       isFav ? next.delete(tmdb) : next.add(tmdb);
@@ -173,7 +182,6 @@ export default function SearchPage() {
       if (isFav) await removeFavorite(userId, tmdb);
       else await addFavorite(userId, tmdb);
     } catch (e: any) {
-      // revert on failure
       setFavSet((prev) => {
         const next = new Set(prev);
         isFav ? next.add(tmdb) : next.delete(tmdb);
@@ -193,7 +201,6 @@ export default function SearchPage() {
 
     const isIn = watchSet.has(tmdb);
 
-    // optimistic UI
     setWatchSet((prev) => {
       const next = new Set(prev);
       isIn ? next.delete(tmdb) : next.add(tmdb);
@@ -211,7 +218,6 @@ export default function SearchPage() {
       });
       if (!res.ok) throw new Error(`Failed: ${res.status}`);
     } catch (e: any) {
-      // revert on failure
       setWatchSet((prev) => {
         const next = new Set(prev);
         isIn ? next.add(tmdb) : next.delete(tmdb);
@@ -252,7 +258,6 @@ export default function SearchPage() {
     }
   }
 
-  // Centered, chunky search bar
   const form = useMemo(
     () => (
       <form
@@ -262,7 +267,7 @@ export default function SearchPage() {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          marginBottom: "2.5rem",
+          marginBottom: "2rem",
           marginTop: "1.5rem",
           width: "100%",
         }}
@@ -270,7 +275,7 @@ export default function SearchPage() {
         <input
           value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
-          placeholder="Search for a TV show…"
+          placeholder="Type in a show and hit Search to start..."
           style={{
             width: "100%",
             maxWidth: "720px",
@@ -286,7 +291,7 @@ export default function SearchPage() {
         />
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !query.trim()}
           title="Search"
           style={{
             marginTop: "1rem",
@@ -296,10 +301,10 @@ export default function SearchPage() {
             fontWeight: 600,
             color: "#ffffff",
             backgroundColor: "rgba(15, 23, 42, 0.9)",
-            border: "2px solid rgb(251,191,36)", // amber-400
+            border: "2px solid rgb(251,191,36)",
             boxShadow: "0 0 10px rgba(251,191,36,0.8)",
-            cursor: loading ? "default" : "pointer",
-            opacity: loading ? 0.7 : 1,
+            cursor: loading || !query.trim() ? "default" : "pointer",
+            opacity: loading || !query.trim() ? 0.7 : 1,
           }}
         >
           🔍 {loading ? "Searching…" : "Search"}
@@ -307,6 +312,49 @@ export default function SearchPage() {
       </form>
     ),
     [query, loading],
+  );
+
+  const suggestions = !query && !results.length && !loading && (
+    <div
+      style={{
+        marginTop: "0.5rem",
+        marginBottom: "1.75rem",
+        textAlign: "center",
+        opacity: 0.9,
+      }}
+    >
+      <div style={{ marginBottom: "0.75rem", fontSize: "0.95rem" }}>
+        Popular searches
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          justifyContent: "center",
+          gap: "0.5rem",
+        }}
+      >
+        {POPULAR_SEARCHES.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setQuery(s)}
+            style={{
+              padding: "0.4rem 0.95rem",
+              borderRadius: "9999px",
+              fontSize: "0.9rem",
+              background: "rgba(15,23,42,0.85)",
+              border: "1px solid rgba(56,189,248,0.35)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 
   return (
@@ -317,8 +365,9 @@ export default function SearchPage() {
       />
 
       <div style={BG_STYLE}>
-        <main className="mx-auto max-w-6xl px-4 pb-10 pt-6">
+        <main className="px-6 pb-10 pt-6">
           {form}
+          {suggestions}
 
           {err && (
             <div className="mb-3 rounded border border-red-500/70 bg-red-950/80 px-3 py-2 text-sm text-red-100">
@@ -327,7 +376,9 @@ export default function SearchPage() {
           )}
 
           {!results.length && !loading ? (
-            <div className="text-sm text-slate-400">No results.</div>
+            <div className="text-sm text-slate-400 text-center mt-8">
+              Type a TV show in the search bar and press <b>Search</b> to begin.
+            </div>
           ) : (
             <>
               {loading && (

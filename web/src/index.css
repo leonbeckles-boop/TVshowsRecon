@@ -21,12 +21,6 @@ html, body {
   background: #020617; /* matches page background */
 }
 
-/* OPTIONAL (fine to keep or remove)
-body {
-  @apply bg-slate-950;
-}
-*/
-
 /* Force readable text for dark theme */
 #root, #root * {
   color: #e2e8f0;
@@ -51,4 +45,218 @@ button:disabled {
   background-color: #475569;
   color: #cbd5e1;
   cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------
+   WhatNext Header — PRO styles
+   ------------------------------------------------------------ */
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* subtle dark glow behind the fixed header */
+.wn-header-fixed {
+  background: radial-gradient(circle at top, rgba(2,6,23,0.85) 0%, rgba(2,6,23,0.55) 60%, rgba(2,6,23,0) 100%);
+  backdrop-filter: blur(16px);
+}
+
+/* small gutter so the header card doesn’t touch the browser edge */
+.wn-header-outer {
+  width: 100%;
+  padding: 10px 12px;
+}
+
+/* full-width header card */
+.wn-header-inner {
+  width: 100%;
+  max-width: none;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: linear-gradient(to bottom, rgba(2, 6, 23, 0.96), rgba(2, 6, 23, 0.88));
+  box-shadow:
+    0 18px 40px rgba(15, 23, 42, 0.9),
+    0 0 0 1px rgba(56, 189, 248, 0.14);
+  overflow: hidden; /* keeps it clean */
+}
+
+/* PRO grid layout: logo | title | nav */
+.wn-header-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: 14px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.wn-header-left { display: flex; align-items: center; }
+.wn-header-center { text-align: center; line-height: 1.2; }
+.wn-header-right { display: flex; justify-content: flex-end; align-items: center; }
+
+/* Title styling (matches your “new” look) */
+.wn-header-title {
+  margin: 0;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #f9fafb;
+  text-shadow: 0 0 14px rgba(15,23,42,0.9), 0 0 26px rgba(56,189,248,0.7);
+  font-size: 30px;
+}
+
+.wn-header-subtitle {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  color: #cbd5f5;
+}
+
+/* make title scale down nicely on smaller screens */
+@media (max-width: 767px) {
+  .wn-header-title { font-size: 22px; }
+}
+
+/* Nav wrap: lets nav scroll if screen is tight */
+.wn-desktop-navwrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.wn-nav {
+  display: flex;
+  align-items: center;
+  gap: 5px;                 /* ensures pills don’t touch */
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding-right: 4px;
+}
+
+/* Logo glow + box */
+.wn-logo-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 9999px;
+  opacity: 0.75;
+  filter: blur(18px);
+  background: radial-gradient(circle at 30% 10%, rgba(56, 189, 248, 0.9), transparent 60%);
+}
+
+.wn-logo-box {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.78);
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.35),
+    0 0 28px rgba(56, 189, 248, 0.75),
+    0 10px 26px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------
+   WhatNext Header — FULL WIDTH "PRO" styles
+   ------------------------------------------------------------ */
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* subtle dark glow behind the fixed header */
+.wn-header-fixed {
+  background: radial-gradient(circle at top, rgba(2,6,23,0.85) 0%, rgba(2,6,23,0.55) 60%, rgba(2,6,23,0) 100%);
+  backdrop-filter: blur(16px);
+}
+
+/* small gutter so the header card doesn’t touch the browser edge */
+.wn-header-outer {
+  width: 100%;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+/* FULL WIDTH header card (this is the key change) */
+.wn-header-inner {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: linear-gradient(to bottom, rgba(2, 6, 23, 0.96), rgba(2, 6, 23, 0.88));
+  box-shadow:
+    0 18px 40px rgba(15, 23, 42, 0.9),
+    0 0 0 1px rgba(56, 189, 248, 0.14);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* PRO grid layout: logo | title | nav */
+.wn-header-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: 14px;
+  padding-left: 16px;
+  padding-right: 16px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.wn-header-left { display: flex; align-items: center; }
+.wn-header-center { text-align: center; line-height: 1.2; min-width: 0; }
+.wn-header-right { display: flex; justify-content: flex-end; align-items: center; min-width: 0; }
+
+.wn-header-title {
+  margin: 0;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #f9fafb;
+  text-shadow: 0 0 14px rgba(15,23,42,0.9), 0 0 26px rgba(56,189,248,0.7);
+  font-size: 30px;
+}
+
+.wn-header-subtitle {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  color: #cbd5f5;
+}
+
+/* Nav wrap: scrolls gracefully if screen is tight */
+.wn-desktop-navwrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.wn-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px; /* <— change this to reduce/increase spacing between pills */
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding-right: 4px;
+}
+
+/* Logo glow + box */
+.wn-logo-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 9999px;
+  opacity: 0.75;
+  filter: blur(18px);
+  background: radial-gradient(circle at 30% 10%, rgba(56, 189, 248, 0.9), transparent 60%);
+}
+
+.wn-logo-box {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.78);
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.35),
+    0 0 28px rgba(56, 189, 248, 0.75),
+    0 10px 26px rgba(0, 0, 0, 0.45);
+}
+
+/* title scale */
+@media (max-width: 767px) {
+  .wn-header-title { font-size: 22px; }
 }

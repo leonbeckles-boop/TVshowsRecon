@@ -5,8 +5,8 @@ services:
       - ./:/app
     environment:
       - CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-      - DATABASE_URL=postgresql+asyncpg://whatnextdb_3tu2_user:nKq5GdRRtJIo47O8ZskPa6Fryb7fpV8o@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com:5432/whatnext_db?ssl=require
-      - DATABASE_URL_SYNC=postgresql+psycopg://whatnextdb_3tu2_user:nKq5GdRRtJIo47O8ZskPa6Fryb7fpV8o@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com:5432/whatnext_db?sslmode=require
+      - DATABASE_URL=postgresql+asyncpg://whatnext_app_2026_02:XIVY4Hlb2nWZROkDeS6YpNpgQb5Yl722@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com/whatnext_db?ssl=require
+      - DATABASE_URL_SYNC=postgresql+asyncpg://whatnext_app_2026_02:XIVY4Hlb2nWZROkDeS6YpNpgQb5Yl722@dpg-d5il9v15pdvs73c4o9sg-a.virginia-postgres.render.com/whatnext_db?ssl=require
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 

@@ -2,7 +2,6 @@ import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 
-
 export type PageHeaderProps = {
   title: string;
   subtitle?: string;
@@ -42,12 +41,16 @@ function useIsMobile(breakpoint: number = 768): boolean {
   return isMobile;
 }
 
-const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) => {
+export default function PageHeader({ title, subtitle }: PageHeaderProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const isMobile = useIsMobile(768);
+
+  const brandTitle = "WhatNext";
+  const displaySubtitle = subtitle ?? title;
+  const authLabel = user ? "Sign out" : "Sign in";
 
   const handleAuthClick = async () => {
     if (user) {
@@ -67,237 +70,234 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, subtitle, centered }) =>
     setMobileMenuOpen(false);
   };
 
-  const authLabel = user ? "Sign out" : "Sign in";
+  const pillBaseStyle: React.CSSProperties = {
+    padding: "6px 10px",
+    backgroundColor: "rgba(15,23,42,0.95)",
+    border: "1px solid rgba(33, 200, 242, 0.9)",
+    boxShadow: "0 0 10px rgba(15,23,42,0.9)",
+    whiteSpace: "nowrap",
+    color: "#ffffff",
+    textDecoration: "none",
+  };
+
+  const pillActiveStyle: React.CSSProperties = {
+    backgroundColor: "rgba(33, 200, 242, 0.9)",
+    boxShadow: "0 0 18px rgba(33, 200, 242, 0.9)",
+  };
 
   return (
     <header
-      className="fixed inset-x-0 top-0 z-50"
+      className="fixed inset-x-0 top-0 z-50 wn-header-fixed"
       style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
         width: "100%",
-        background:
-          "radial-gradient(circle at top, #020617 0%, #020617 55%, #020617 100%)",
-        boxShadow: "0 18px 40px rgba(15,23,42,0.9)",
-        backdropFilter: "blur(18px)",
+        maxWidth: "100%",
       }}
     >
-      {/* MAIN ROW */}
       <div
-        className="flex w-full items-center justify-between gap-3 px-4 md:px-8"
+        className="wn-header-outer"
         style={{
-          paddingTop: isMobile ? 8 : 12,
-          paddingBottom: isMobile ? 8 : 12,
-          color: "#e5e7eb",
+          width: "100%",
+          maxWidth: "100%",
+          margin: 0,
+          paddingLeft: 0,
+          paddingRight: 0,
         }}
       >
-        {/* LEFT: LOGO + NAME */}
-        <div className="flex items-center gap-3 min-w-[160px] md:min-w-[220px]">
-          <div className="relative">
-            <div
-              className="pointer-events-none absolute -inset-2 md:-inset-3 rounded-full opacity-80 blur-2xl"
-              style={{
-                background:
-                  "radial-gradient(circle at 30% 10%, rgba(56,189,248,0.9), transparent 60%)",
-              }}
-            />
-            <div
-              className="relative overflow-hidden rounded-xl transition-transform duration-200 hover:scale-[1.03]"
-              style={{
-                // Bigger + rectangular so the full logo (incl. text) is readable
-                height: isMobile ? 52 : 64,
-                width: isMobile ? 100 : 140,
-                backgroundColor: "rgba(255,255,255,0.98)",
-                border: "1px solid rgba(56,189,248,0.78)",
-                boxShadow:
-                  "0 0 0 1px rgba(56,189,248,0.35), 0 0 30px rgba(56,189,248,0.9), 0 10px 26px rgba(0,0,0,0.45)",
-              }}
-            >
-              <img
-                src={"/logo1.png"}
-                alt="WhatNext"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  display: "block",
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* CENTER: TITLE + SUBTITLE (subtitle desktop only) */}
         <div
-          className="px-2"
+          className="wn-header-inner"
           style={{
-            flex: 1,
-            textAlign: "center",
-            lineHeight: 1.25,
-            maxWidth: centered ? 760 : 640,
+            width: "100%",
+            maxWidth: "100%",
+            margin: 0,
+            borderRadius: 0,
           }}
         >
-          <h1
+          <div
+            className="wn-header-grid"
             style={{
-              margin: 0,
-              fontSize: isMobile ? 18 : 24,
-              fontWeight: 800,
-              letterSpacing: "0.05em",
-              color: "#f9fafb",
-              textShadow:
-                "0 0 14px rgba(15,23,42,0.9), 0 0 26px rgba(56,189,248,0.7)",
+              width: "100%",
+              maxWidth: "100%",
+              paddingTop: isMobile ? 10 : 12,
+              paddingBottom: isMobile ? 10 : 12,
+              paddingLeft: isMobile ? 12 : 16,
+              paddingRight: isMobile ? 12 : 16,
             }}
           >
-            {title}
-          </h1>
-
-          {!isMobile && subtitle && (
-            <p
-              style={{
-                marginTop: 4,
-                marginBottom: 0,
-                fontSize: 13,
-                color: "#cbd5f5",
-              }}
-            >
-              {subtitle}
-            </p>
-          )}
-        </div>
-
-        {/* RIGHT: NAV / AUTH */}
-        {isMobile ? (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleAuthClick}
-              className="inline-flex items-center justify-center rounded-full text-xs font-semibold select-none transition-colors duration-200"
-              style={{
-                padding: "6px 12px",
-                backgroundColor: user ? "#ffffff" : "rgba(15,23,42,0.95)",
-                color: user ? "#000000" : "#e5e7eb",
-                border: user
-                  ? "1px solid rgba(148,163,184,0.8)"
-                  : "1px solid rgba(148,163,184,0.6)",
-                boxShadow: "0 0 10px rgba(15,23,42,0.9)",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {authLabel}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen((v) => !v)}
-              aria-label="Toggle navigation menu"
-              className="inline-flex items-center justify-center rounded-full border text-xs font-semibold select-none transition-colors duration-200"
-              style={{
-                padding: "6px 10px",
-                backgroundColor: "rgba(15,23,42,0.95)",
-                color: "#e5e7eb",
-                borderColor: "rgba(148,163,184,0.7)",
-                boxShadow: "0 0 10px rgba(15,23,42,0.9)",
-              }}
-            >
-              {mobileMenuOpen ? "Close" : "Menu"}
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-end md:min-w-[420px] pr-4">
-            <nav className="flex items-center gap-2 pr-2 sm:gap-3 overflow-x-auto whitespace-nowrap no-scrollbar [-ms-overflow-style:none] [scrollbar-width:none]">
-              {NAV_LINKS.map((link) => {
-                const isActive = location.pathname === link.to;
-                return (
-                  <Link
-                    key={link.key}
-                    to={link.to}
-                    className="inline-flex items-center justify-center rounded-full text-[14px] md:text-[16px] font-semibold no-underline select-none transition-all duration-200"
-                    style={{
-                      padding: "10px 22px",
-                      backgroundColor: isActive
-                        ? "rgba(33, 200, 242, 0.9)"
-                        : "rgba(15,23,42,0.95)",
-                      border: "1px solid rgba(33, 200, 242, 0.9)",
-                      boxShadow: isActive
-                        ? "0 0 20px rgba(33, 200, 242, 0.9)"
-                        : "0 0 10px rgba(15,23,42,0.9)",
-                      whiteSpace: "nowrap",
-                      color: "#ffffff",
-                      textDecoration: "none",
-                    }}
-                  >
-                    {link.label}
-                  </Link>
-                );
-              })}
-            </nav>
-
-            <button
-              type="button"
-              onClick={handleAuthClick}
-              className="inline-flex items-center justify-center rounded-full text-[14px] md:text-[16px] font-semibold select-none transition-colors duration-200"
-              style={{
-                padding: "10px 22px",
-                backgroundColor: user ? "#ffffff" : "rgba(15,23,42,0.95)",
-                color: user ? "#000000" : "#e5e7eb",
-                border: user
-                  ? "1px solid rgba(148,163,184,0.8)"
-                  : "1px solid rgba(148,163,184,0.6)",
-                boxShadow: "0 0 12px rgba(15,23,42,0.9)",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {authLabel}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* MOBILE DROPDOWN NAV */}
-      {isMobile && mobileMenuOpen && (
-        <div
-          className="border-t border-slate-700 md:hidden"
-          style={{
-            background:
-              "linear-gradient(to bottom, rgba(15,23,42,0.98), rgba(15,23,42,0.96))",
-          }}
-        >
-          <nav className="flex flex-col px-4 py-3 gap-2">
-            {NAV_LINKS.map((link) => {
-              const isActive = location.pathname === link.to;
-              return (
-                <button
-                  key={link.key}
-                  type="button"
-                  onClick={() => handleNavClick(link.to)}
-                  className="w-full inline-flex items-center justify-between rounded-xl text-sm font-semibold px-3 py-2 transition-all duration-200"
+            <div className="wn-header-left">
+              <div className="relative">
+                <div className="pointer-events-none wn-logo-glow" />
+                <div
+                  className="relative overflow-hidden transition-transform duration-200 hover:scale-[1.03] wn-logo-box"
                   style={{
-                    backgroundColor: isActive
-                      ? "rgba(33, 200, 242, 0.15)"
-                      : "rgba(15,23,42,0.95)",
-                    border: "1px solid rgba(148,163,184,0.7)",
-                    color: "#e5e7eb",
+                    height: isMobile ? 64 : 84,
+                    width: isMobile ? 64 : 84,
                   }}
                 >
-                  <span>{link.label}</span>
-                  {isActive && (
-                    <span
+                  <img
+                    src={"/logo1.png"}
+                    alt="WhatNext"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                      padding: 2,
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="wn-header-center">
+              <h1 className="wn-header-title">{brandTitle}</h1>
+              {!isMobile && displaySubtitle && (
+                <p className="wn-header-subtitle">{displaySubtitle}</p>
+              )}
+            </div>
+
+            <div className="wn-header-right">
+              {isMobile ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleAuthClick}
+                    className="wn-pill wn-auth"
+                    style={{
+                      padding: "7px 12px",
+                      backgroundColor: user ? "#ffffff" : "rgba(15,23,42,0.95)",
+                      color: user ? "#000000" : "#e5e7eb",
+                      border: user
+                        ? "1px solid rgba(148,163,184,0.8)"
+                        : "1px solid rgba(148,163,184,0.6)",
+                      boxShadow: "0 0 10px rgba(15,23,42,0.9)",
+                      borderRadius: 9999,
+                      whiteSpace: "nowrap",
+                      fontWeight: 800,
+                      fontSize: 13,
+                    }}
+                  >
+                    {authLabel}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMobileMenuOpen((v) => !v)}
+                    aria-label="Toggle navigation menu"
+                    className="wn-pill"
+                    style={{
+                      padding: "7px 12px",
+                      backgroundColor: "rgba(15,23,42,0.95)",
+                      color: "#e5e7eb",
+                      border: "1px solid rgba(148,163,184,0.7)",
+                      boxShadow: "0 0 10px rgba(15,23,42,0.9)",
+                      borderRadius: 9999,
+                      whiteSpace: "nowrap",
+                      fontWeight: 700,
+                      fontSize: 13,
+                    }}
+                  >
+                    {mobileMenuOpen ? "Close" : "Menu"}
+                  </button>
+                </div>
+              ) : (
+                <div className="wn-desktop-navwrap">
+                  <nav className="wn-nav no-scrollbar">
+                    {NAV_LINKS.map((link) => {
+                      const isActive = location.pathname === link.to;
+                      return (
+                        <Link
+                          key={link.key}
+                          to={link.to}
+                          className="wn-pill"
+                          style={{
+                            ...pillBaseStyle,
+                            ...(isActive ? pillActiveStyle : null),
+                            fontSize: 14,
+                            borderRadius: 9999,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {link.label}
+                        </Link>
+                      );
+                    })}
+                  </nav>
+
+                  <button
+                    type="button"
+                    onClick={handleAuthClick}
+                    className="wn-pill wn-auth"
+                    style={{
+                      padding: "8px 16px",
+                      backgroundColor: user ? "#ffffff" : "rgba(15,23,42,0.95)",
+                      color: user ? "#000000" : "#e5e7eb",
+                      border: user
+                        ? "1px solid rgba(148,163,184,0.8)"
+                        : "1px solid rgba(148,163,184,0.6)",
+                      boxShadow: "0 0 12px rgba(15,23,42,0.9)",
+                      whiteSpace: "nowrap",
+                      borderRadius: 9999,
+                      fontSize: 14,
+                      fontWeight: 800,
+                    }}
+                  >
+                    {authLabel}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {isMobile && mobileMenuOpen && (
+            <div
+              className="border-t border-slate-700 md:hidden"
+              style={{
+                background:
+                  "linear-gradient(to bottom, rgba(15,23,42,0.98), rgba(15,23,42,0.96))",
+              }}
+            >
+              <nav className="flex flex-col px-4 py-3 gap-2">
+                {NAV_LINKS.map((link) => {
+                  const isActive = location.pathname === link.to;
+                  return (
+                    <button
+                      key={link.key}
+                      type="button"
+                      onClick={() => handleNavClick(link.to)}
+                      className="w-full inline-flex items-center justify-between rounded-xl text-sm font-semibold px-3 py-2 transition-all duration-200"
                       style={{
-                        fontSize: 11,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.1em",
-                        opacity: 0.8,
+                        backgroundColor: isActive
+                          ? "rgba(33, 200, 242, 0.15)"
+                          : "rgba(15,23,42,0.95)",
+                        border: "1px solid rgba(148,163,184,0.7)",
+                        color: "#e5e7eb",
                       }}
                     >
-                      Active
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+                      <span>{link.label}</span>
+                      {isActive && (
+                        <span
+                          style={{
+                            fontSize: 11,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.1em",
+                            opacity: 0.8,
+                          }}
+                        >
+                          Active
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </header>
   );
-};
-
-export default PageHeader;
+}

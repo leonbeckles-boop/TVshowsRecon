@@ -5,7 +5,7 @@ import PageHeader from "../components/PageHeader";
 export default function HowToUse() {
   // ----- Styles (matched to Wrapped/Profile glass format) -----
   const pageWrap: React.CSSProperties = {
-    paddingTop: 120,
+    paddingTop: 140,
     paddingLeft: 16,
     paddingRight: 16,
     paddingBottom: 40,
@@ -101,7 +101,7 @@ export default function HowToUse() {
         <div style={{ ...pill, marginBottom: 10 }}>New here? Start in under 60 seconds ✅</div>
 
         <div style={{ ...glass, padding: 18 }}>
-          <div style={h1}>Get better recs in 3 quick steps</div>
+          <div style={h1}>Get better recrecommendationss in 3 quick steps</div>
           <div style={sub}>
             WhatNext learns from the shows you save and rate. The more signal you give it, the smarter it gets.
           </div>

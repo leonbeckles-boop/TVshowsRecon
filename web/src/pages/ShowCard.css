@@ -215,7 +215,7 @@
 
 .show-card__rating-label {
   font-size: 11px;
-  color: #cbd5f5;
+  color: #050505;
 }
 
 .show-card__rating-select {
@@ -226,6 +226,10 @@
   background: #ffffff;
   color: #111827;
   outline: none;
+}
+.show-card__rating-select option {
+  color: #000000;
+  background: #ffffff;
 }
 
 .show-card__rating-select:focus {

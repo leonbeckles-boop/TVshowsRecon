@@ -115,6 +115,12 @@ export default function App() {
         <Route path="/admin" element={<AdminDashboard />} />
         <Route path="*" element={<Discover />} />
       </Routes>
+
+      <footer className="wn-footer">
+        © {new Date().getFullYear()} WhatNextTV.org  
+        <br />
+        Personalised TV recommendations
+      </footer>
     </div>
   );
 }

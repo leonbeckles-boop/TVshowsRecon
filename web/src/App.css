@@ -53,3 +53,12 @@ header a {
   color: #ffffff !important;
   text-decoration: none !important;
 }
+
+.wn-footer {
+  text-align: center;
+  font-size: 12px;
+  padding: 18px 10px;
+  margin-top: 40px;
+  color: #94a3b8;
+  border-top: 1px solid rgba(148,163,184,0.15);
+}

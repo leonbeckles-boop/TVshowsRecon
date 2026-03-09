@@ -365,7 +365,7 @@ export default function SearchPage() {
       />
 
       <div style={BG_STYLE}>
-        <main className="px-6 pb-10 pt-6">
+        <main className="mx-auto max-w-[1600px] px-6 pb-10 pt-6">
           {form}
           {suggestions}
 

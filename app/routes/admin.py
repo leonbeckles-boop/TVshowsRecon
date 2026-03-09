@@ -1,4 +1,3 @@
-# app/routes/admin.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, List
@@ -32,13 +31,35 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 # ───────────────── Admin guard ─────────────────
-async def require_admin(user = Depends(get_current_user)):
+async def require_admin(user=Depends(get_current_user)):
     if not getattr(user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
     return user
+
+
+# ───────────────── Internal helpers ─────────────────
+def _pick_auth_user_login_field() -> Optional[str]:
+    """Return the first login/seen column present on AuthUser, if any."""
+    for field_name in ("last_login_at", "last_seen_at", "last_login", "last_seen"):
+        if hasattr(AuthUser, field_name):
+            return field_name
+    return None
+
+
+async def _fetch_user_count_map(db: AsyncSession, table_name: str) -> Dict[int, int]:
+    rows = await db.execute(
+        text(
+            f"""
+            SELECT user_id, COUNT(*) AS item_count
+            FROM {table_name}
+            GROUP BY user_id
+            """
+        )
+    )
+    return {int(row.user_id): int(row.item_count or 0) for row in rows}
 
 
 # ───────────────── Reddit admin endpoints ─────────────────
@@ -137,27 +158,42 @@ async def reddit_status(_admin: Any = Depends(require_admin)) -> Dict[str, Any]:
 @router.get("/users", summary="List all users")
 async def list_users(
     db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
+    _admin=Depends(require_admin),
 ):
-    res = await db.execute(select(AuthUser))
+    res = await db.execute(select(AuthUser).order_by(AuthUser.id.desc()))
     users = res.scalars().all()
-    return [
-        {
-            "id": u.id,
-            "email": u.email,
-            "username": u.username,
-            "created_at": u.created_at,
-            "is_admin": getattr(u, "is_admin", False),
-        }
-        for u in users
-    ]
+
+    favorite_counts = await _fetch_user_count_map(db, "user_favorites")
+    rating_counts = await _fetch_user_count_map(db, "ratings")
+    not_interested_counts = await _fetch_user_count_map(db, "not_interested")
+
+    login_field_name = _pick_auth_user_login_field()
+
+    payload = []
+    for u in users:
+        last_login_value = getattr(u, login_field_name, None) if login_field_name else None
+        payload.append(
+            {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "created_at": u.created_at,
+                "is_admin": getattr(u, "is_admin", False),
+                "favorites_count": favorite_counts.get(int(u.id), 0),
+                "ratings_count": rating_counts.get(int(u.id), 0),
+                "not_interested_count": not_interested_counts.get(int(u.id), 0),
+                "last_login_at": last_login_value,
+            }
+        )
+
+    return payload
 
 
 @router.delete("/users/{user_id}", status_code=204, response_class=Response, dependencies=[Depends(require_admin)])
 async def delete_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
+    _admin=Depends(require_admin),
 ):
     user = await db.get(AuthUser, user_id)
     if not user:
@@ -180,7 +216,7 @@ async def reset_password(
     user_id: int,
     body: ResetPasswordBody,
     db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
+    _admin=Depends(require_admin),
 ):
     user = await db.get(AuthUser, user_id)
     if not user:
@@ -195,7 +231,7 @@ async def reset_password(
 @router.get("/stats", summary="Basic user analytics")
 async def admin_stats(
     db: AsyncSession = Depends(get_db),
-    _admin = Depends(require_admin),
+    _admin=Depends(require_admin),
 ):
     # Total users
     total_users = await db.scalar(select(func.count(AuthUser.id)))
@@ -220,6 +256,57 @@ async def admin_stats(
         text("SELECT COUNT(DISTINCT user_id) FROM ratings")
     )
 
+    users_with_5_favorites = await db.scalar(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT user_id
+                FROM user_favorites
+                GROUP BY user_id
+                HAVING COUNT(*) >= 5
+            ) t
+            """
+        )
+    )
+    users_with_10_favorites = await db.scalar(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT user_id
+                FROM user_favorites
+                GROUP BY user_id
+                HAVING COUNT(*) >= 10
+            ) t
+            """
+        )
+    )
+    users_with_20_favorites = await db.scalar(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT user_id
+                FROM user_favorites
+                GROUP BY user_id
+                HAVING COUNT(*) >= 20
+            ) t
+            """
+        )
+    )
+
+    returned_users = 0
+    login_field_name = _pick_auth_user_login_field()
+    if login_field_name:
+        login_field = getattr(AuthUser, login_field_name)
+        returned_users = await db.scalar(
+            select(func.count(AuthUser.id)).where(
+                login_field.is_not(None),
+                login_field > AuthUser.created_at,
+            )
+        )
+
     return {
         "total_users": int(total_users or 0),
         "new_users_last_7_days": int(new_users or 0),
@@ -228,4 +315,9 @@ async def admin_stats(
         "total_not_interested": int(total_not_interested or 0),
         "users_with_favorites": int(users_with_favorites or 0),
         "users_with_ratings": int(users_with_ratings or 0),
+        "users_with_5_favorites": int(users_with_5_favorites or 0),
+        "users_with_10_favorites": int(users_with_10_favorites or 0),
+        "users_with_20_favorites": int(users_with_20_favorites or 0),
+        "returned_users": int(returned_users or 0),
+        "last_login_field": login_field_name,
     }

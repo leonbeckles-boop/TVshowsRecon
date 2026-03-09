@@ -24,6 +24,7 @@ class AuthUser(Base):
     password_hash = Column(String(255), nullable=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     is_admin = Column(Boolean, nullable=False, server_default="false")
     
     __table_args__ = (

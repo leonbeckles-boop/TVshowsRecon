@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt, JWTError
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, EmailStr, Field
@@ -160,6 +160,13 @@ async def login(payload: LoginIn, session: AsyncSession = Depends(get_db)) -> To
     hashed = getattr(user, PWD_FIELD, "")
     if not hashed or not _verify_password(payload.password, hashed):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == user.id)
+        .values(last_login_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
 
     token = _create_access_token(user_id=user.id, email=user.email)
     return TokenOut(access_token=token, user_id=user.id, email=user.email)

@@ -16,7 +16,20 @@ function formatDate(value?: string | null) {
   return d.toLocaleString();
 }
 
+function safeNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 const PAGE_SIZE = 25;
+
+type AdminUserRow = AdminUser & {
+  favorites_count?: number;
+  ratings_count?: number;
+  not_interested_count?: number;
+  last_login_at?: string | null;
+  last_seen_at?: string | null;
+  login_count?: number;
+};
 
 const AdminDashboard: React.FC = () => {
   const { user, loading } = useAuth();
@@ -24,7 +37,7 @@ const AdminDashboard: React.FC = () => {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
 
-  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState<string | null>(null);
 
@@ -32,11 +45,11 @@ const AdminDashboard: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<"all" | "admin" | "user">("all");
   const [page, setPage] = useState(1);
 
-  const [resetUser, setResetUser] = useState<AdminUser | null>(null);
+  const [resetUser, setResetUser] = useState<AdminUserRow | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
 
-  const [deleteUser, setDeleteUser] = useState<AdminUser | null>(null);
+  const [deleteUser, setDeleteUser] = useState<AdminUserRow | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -60,7 +73,7 @@ const AdminDashboard: React.FC = () => {
       setUsersLoading(true);
       setUsersError(null);
       const res = await adminListUsers();
-      setUsers(res);
+      setUsers((res as AdminUserRow[]) || []);
     } catch (err) {
       console.error("Failed to load users", err);
       setUsersError("Failed to load users");
@@ -85,9 +98,11 @@ const AdminDashboard: React.FC = () => {
         return e.includes(q) || un.includes(q) || String(u.id).includes(q);
       })
       .sort((a, b) => {
+        const bd = safeNumber(b.favorites_count) - safeNumber(a.favorites_count);
+        if (bd !== 0) return bd;
         const ad = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const bd = b.created_at ? new Date(b.created_at).getTime() : 0;
-        if (bd !== ad) return bd - ad;
+        const bdd = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (bdd !== ad) return bdd - ad;
         return (b.id || 0) - (a.id || 0);
       });
   }, [users, query, roleFilter]);
@@ -103,6 +118,43 @@ const AdminDashboard: React.FC = () => {
     const start = (pageSafe - 1) * PAGE_SIZE;
     return filtered.slice(start, start + PAGE_SIZE);
   }, [filtered, pageSafe]);
+
+  const engagement = useMemo(() => {
+    const standardUsers = users.filter((u) => !u.is_admin);
+    const usersWithCounts = standardUsers.filter(
+      (u) =>
+        typeof u.favorites_count === "number" ||
+        typeof u.ratings_count === "number" ||
+        typeof u.not_interested_count === "number"
+    );
+
+    const usersWith5PlusFavorites = standardUsers.filter(
+      (u) => safeNumber(u.favorites_count) >= 5
+    ).length;
+    const usersWith10PlusFavorites = standardUsers.filter(
+      (u) => safeNumber(u.favorites_count) >= 10
+    ).length;
+    const usersWith20PlusFavorites = standardUsers.filter(
+      (u) => safeNumber(u.favorites_count) >= 20
+    ).length;
+
+    const returnedUsers = standardUsers.filter((u) => {
+      const lastLogin = u.last_login_at || u.last_seen_at;
+      if (!lastLogin || !u.created_at) return false;
+      const createdMs = new Date(u.created_at).getTime();
+      const lastLoginMs = new Date(lastLogin).getTime();
+      if (Number.isNaN(createdMs) || Number.isNaN(lastLoginMs)) return false;
+      return lastLoginMs - createdMs > 60 * 1000;
+    }).length;
+
+    return {
+      hasPerUserCounts: usersWithCounts.length > 0,
+      usersWith5PlusFavorites,
+      usersWith10PlusFavorites,
+      usersWith20PlusFavorites,
+      returnedUsers,
+    };
+  }, [users]);
 
   if (loading) {
     return (
@@ -132,7 +184,7 @@ const AdminDashboard: React.FC = () => {
     );
   }
 
-  const openResetModal = (u: AdminUser) => {
+  const openResetModal = (u: AdminUserRow) => {
     setResetUser(u);
     setResetPassword("");
   };
@@ -173,7 +225,7 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="max-w-6xl mx-auto px-4 py-6 space-y-8">
+      <div className="max-w-7xl mx-auto px-4 py-6 space-y-8">
         <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
@@ -216,13 +268,46 @@ const AdminDashboard: React.FC = () => {
           ) : !stats ? (
             <div className="!text-slate-400 text-sm">No stats available.</div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-              <StatCard label="Total users" value={stats.total_users} />
-              <StatCard label="New (7 days)" value={stats.new_users_last_7_days} />
-              <StatCard label="Total favourites" value={stats.total_favorites} sub={`Used by ${stats.users_with_favorites} users`} />
-              <StatCard label="Total ratings" value={stats.total_ratings} sub={`Used by ${stats.users_with_ratings} users`} />
-              <StatCard label="Not-interested" value={stats.total_not_interested} />
-            </div>
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
+                <StatCard label="Total users" value={stats.total_users} />
+                <StatCard label="New (7 days)" value={stats.new_users_last_7_days} />
+                <StatCard
+                  label="Total favourites"
+                  value={stats.total_favorites}
+                  sub={`Used by ${stats.users_with_favorites} users`}
+                />
+                <StatCard
+                  label="Total ratings"
+                  value={stats.total_ratings}
+                  sub={`Used by ${stats.users_with_ratings} users`}
+                />
+                <StatCard label="Not-interested" value={stats.total_not_interested} />
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+                <StatCard
+                  label="Users with 5+ favourites"
+                  value={engagement.usersWith5PlusFavorites}
+                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
+                />
+                <StatCard
+                  label="Users with 10+ favourites"
+                  value={engagement.usersWith10PlusFavorites}
+                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
+                />
+                <StatCard
+                  label="Users with 20+ favourites"
+                  value={engagement.usersWith20PlusFavorites}
+                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
+                />
+                <StatCard
+                  label="Returned users"
+                  value={engagement.returnedUsers}
+                  sub="Based on last login / last seen"
+                />
+              </div>
+            </>
           )}
         </section>
 
@@ -279,55 +364,74 @@ const AdminDashboard: React.FC = () => {
                       <th className="px-3 py-2 font-medium">ID</th>
                       <th className="px-3 py-2 font-medium">Email</th>
                       <th className="px-3 py-2 font-medium">Username</th>
+                      <th className="px-3 py-2 font-medium text-center">Favs</th>
+                      <th className="px-3 py-2 font-medium text-center">Ratings</th>
+                      <th className="px-3 py-2 font-medium text-center">Hidden</th>
                       <th className="px-3 py-2 font-medium">Created</th>
+                      <th className="px-3 py-2 font-medium">Last login</th>
                       <th className="px-3 py-2 font-medium text-center">Role</th>
                       <th className="px-3 py-2 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {pageItems.map((u) => (
-                      <tr
-                        key={u.id}
-                        className="border-t border-slate-800/80 hover:bg-slate-900/60"
-                      >
-                        <td className="px-3 py-2 !text-slate-300">{u.id}</td>
-                        <td className="px-3 py-2 text-slate-100">{u.email}</td>
-                        <td className="px-3 py-2 !text-slate-300">
-                          {u.username || <span className="!text-slate-500">—</span>}
-                        </td>
-                        <td className="px-3 py-2 !text-slate-400">
-                          {formatDate(u.created_at)}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {u.is_admin ? (
-                            <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/40">
-                              Admin
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full bg-slate-700/40 px-2 py-0.5 text-[11px] font-medium text-slate-200 border border-slate-700">
-                              User
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              onClick={() => openResetModal(u)}
-                              className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
-                            >
-                              Reset password
-                            </button>
-                            <button
-                              onClick={() => setDeleteUser(u)}
-                              disabled={deleteBusyId === u.id}
-                              className="text-xs px-2 py-1 rounded-full border border-red-700/70 bg-red-900/20 text-red-300 hover:bg-red-900/40 disabled:opacity-60 disabled:cursor-not-allowed transition"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {pageItems.map((u) => {
+                      const lastLogin = u.last_login_at || u.last_seen_at;
+                      return (
+                        <tr
+                          key={u.id}
+                          className="border-t border-slate-800/80 hover:bg-slate-900/60"
+                        >
+                          <td className="px-3 py-2 !text-slate-300">{u.id}</td>
+                          <td className="px-3 py-2 text-slate-100">{u.email}</td>
+                          <td className="px-3 py-2 !text-slate-300">
+                            {u.username || <span className="!text-slate-500">—</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center !text-slate-300">
+                            {typeof u.favorites_count === "number" ? u.favorites_count : <span className="!text-slate-600">—</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center !text-slate-300">
+                            {typeof u.ratings_count === "number" ? u.ratings_count : <span className="!text-slate-600">—</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center !text-slate-300">
+                            {typeof u.not_interested_count === "number" ? u.not_interested_count : <span className="!text-slate-600">—</span>}
+                          </td>
+                          <td className="px-3 py-2 !text-slate-400">
+                            {formatDate(u.created_at)}
+                          </td>
+                          <td className="px-3 py-2 !text-slate-400">
+                            {lastLogin ? formatDate(lastLogin) : <span className="!text-slate-600">—</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {u.is_admin ? (
+                              <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/40">
+                                Admin
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center rounded-full bg-slate-700/40 px-2 py-0.5 text-[11px] font-medium text-slate-200 border border-slate-700">
+                                User
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <button
+                                onClick={() => openResetModal(u)}
+                                className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
+                              >
+                                Reset password
+                              </button>
+                              <button
+                                onClick={() => setDeleteUser(u)}
+                                disabled={deleteBusyId === u.id}
+                                className="text-xs px-2 py-1 rounded-full border border-red-700/70 bg-red-900/20 text-red-300 hover:bg-red-900/40 disabled:opacity-60 disabled:cursor-not-allowed transition"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
 

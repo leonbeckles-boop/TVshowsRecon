@@ -108,7 +108,7 @@ export default function ShowsLikeHub() {
         <h1 className="shows-like-title">Find Shows Like Your Favourites</h1>
         <p className="shows-like-intro">
           Browse curated pages for popular TV series and discover what to watch next.
-          Each page uses WhatNext recommendation signals to surface similar shows.
+          Each page uses WhatNext recommendation signals to surface similar shows. !! Click on your favourite shows below and find similar shows !!
         </p>
       </section>
 
@@ -157,7 +157,7 @@ export default function ShowsLikeHub() {
                 to={`/shows-like/${slugify(s.title)}`}
                 className="shows-like-hub-link"
               >
-                Shows like {s.title}
+                 {s.title}
               </Link>
             ))}
           </div>

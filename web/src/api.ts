@@ -26,14 +26,19 @@ export type User = {
 export type AdminUser = User & {
   created_at?: string;
   last_login_at?: string | null;
+  favorites_count: number;
+  ratings_count: number;
+  not_interested_count: number;
 };
 
 export type AdminStats = {
-  users_total?: number;
-  users_active_7d?: number;
-  favorites_total?: number;
-  ratings_total?: number;
-  reddit_posts_total?: number;
+  total_users: number;
+  new_users_last_7_days: number;
+  total_favorites: number;
+  users_with_favorites: number;
+  total_ratings: number;
+  users_with_ratings: number;
+  total_not_interested: number;
   [k: string]: any;
 };
 

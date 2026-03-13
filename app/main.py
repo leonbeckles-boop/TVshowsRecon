@@ -13,6 +13,10 @@ from app.routes import auth, tmdb, discover, ratings, users, shows, not_interest
 from app.routes import recs_v3
 from app.routes import admin, wrapped
 from app.routes import watchlist
+from app.routes import seo
+from app.routes import seo_index
+from app.routes import sitemap
+
 
 log = logging.getLogger("uvicorn.error")
 
@@ -123,5 +127,10 @@ api.include_router(admin.router)
 api.include_router(wrapped.router)
 api.include_router(not_interested.router)
 api.include_router(watchlist.router)
+app.include_router(seo.router)
+app.include_router(seo_index.router)
+app.include_router(sitemap.router)
+
+
 
 app.include_router(api)

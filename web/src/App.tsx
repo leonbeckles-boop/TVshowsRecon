@@ -13,8 +13,14 @@ import Wrapped from "./pages/wrapped";
 import ShowDetails from "./components/ShowDetails";
 import AdminDashboard from "./pages/AdminDashboard";
 import HowToUse from "./pages/HowToUse";
+import ShowsLike from "./pages/ShowsLike";
+import ShowsLikeHub from "./pages/ShowsLikeHub";
+import BestShows from "./pages/BestShows";
+
+
 
 function getHeaderMeta(pathname: string) {
+
   if (pathname === "/discover") {
     return {
       title: "Discover",
@@ -46,7 +52,8 @@ function getHeaderMeta(pathname: string) {
   if (pathname === "/recs") {
     return {
       title: "Recommendations",
-      subtitle: "Personalised picks for you based on your favourite shows and ratings",
+      subtitle:
+        "Personalised picks for you based on your favourite shows and ratings",
     };
   }
 
@@ -78,11 +85,26 @@ function getHeaderMeta(pathname: string) {
     };
   }
 
+  if (pathname === "/shows-like") {
+    return {
+      title: "Shows Like",
+      subtitle: "Browse similar shows by category",
+    };
+  }
+
+  if (pathname.startsWith("/shows-like/")) {
+    return {
+      title: "Shows Like",
+      subtitle: "Find similar shows to watch next",
+    };
+  }
+
   return {
     title: "Discover",
     subtitle: "Discover new & trending shows to add to your library",
   };
 }
+
 
 export default function App() {
   const location = useLocation();
@@ -113,11 +135,61 @@ export default function App() {
         <Route path="/wrapped" element={<Wrapped />} />
         <Route path="/show/:tmdb_id" element={<ShowDetails />} />
         <Route path="/admin" element={<AdminDashboard />} />
-        <Route path="*" element={<Discover />} />
+
+        {/* Shows Like pages */}
+        <Route path="/shows-like" element={<ShowsLikeHub />} />
+        <Route path="/shows-like/:slug" element={<ShowsLike />} />
+
+        <Route
+          path="/best-crime-tv-shows"
+          element={
+            <BestShows
+              title="Best Crime TV Shows"
+              intro="Looking for the best crime TV series ever made? These gripping dramas feature unforgettable characters, intense storytelling and some of the most acclaimed shows in television history."
+              endpoint="/seo/best-crime"
+            />
+          }
+        />
+
+        <Route
+          path="/best-drama-tv-shows"
+          element={
+            <BestShows
+              title="Best Drama TV Shows"
+              intro="Looking for the best drama TV series ever made? These critically acclaimed shows feature powerful storytelling, unforgettable characters and some of the most gripping television ever produced."
+              endpoint="/seo/best-drama"
+            />
+          }
+        />
+
+        <Route
+          path="/best-sci-fi-tv-series"
+          element={
+            <BestShows
+              title="Best Sci-Fi TV Series"
+              intro="From mind-bending mysteries to futuristic worlds, these are some of the best science fiction TV shows to watch if you love sci-fi storytelling."
+              endpoint="/seo/best-scifi"
+            />
+          }
+        />
+
+        <Route
+          path="/best-tv-shows-like-breaking-bad"
+          element={
+            <BestShows
+              title="Best TV Shows Like Breaking Bad"
+              intro="If you loved Breaking Bad, these shows deliver similar dark storytelling, anti-heroes and gripping drama."
+              endpoint="/seo/best-like-breaking-bad"
+            />
+          }
+        />
+
+        
+
       </Routes>
 
       <footer className="wn-footer">
-        © {new Date().getFullYear()} WhatNextTV.org  
+        © {new Date().getFullYear()} WhatNextTV.org
         <br />
         Personalised TV recommendations
       </footer>

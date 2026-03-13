@@ -1,4 +1,19 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Users,
+  Star,
+  ThumbsUp,
+  EyeOff,
+  UserPlus,
+  RefreshCw,
+  Search,
+  Shield,
+  Trash2,
+  KeyRound,
+  TrendingUp,
+  ArrowLeft,
+  ArrowRight,
+} from "lucide-react";
 import { useAuth } from "../auth/AuthProvider";
 import {
   adminListUsers,
@@ -8,36 +23,29 @@ import {
   type AdminUser,
   type AdminStats,
 } from "../api";
+import GlassStatCard from "../pages/GlassStatCard";
+import GlassModal from "../pages/GlassModal";
 
 function formatDate(value?: string | null) {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString();
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }
 
-function safeNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-const PAGE_SIZE = 25;
-
-type AdminUserRow = AdminUser & {
-  favorites_count?: number;
-  ratings_count?: number;
-  not_interested_count?: number;
-  last_login_at?: string | null;
-  last_seen_at?: string | null;
-  login_count?: number;
-};
+const PAGE_SIZE = 10;
 
 const AdminDashboard: React.FC = () => {
-  const { user, loading } = useAuth();
+  const { user, loading } = useAuth() as any;
 
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
 
-  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState<string | null>(null);
 
@@ -45,74 +53,77 @@ const AdminDashboard: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<"all" | "admin" | "user">("all");
   const [page, setPage] = useState(1);
 
-  const [resetUser, setResetUser] = useState<AdminUserRow | null>(null);
+  const [resetUser, setResetUser] = useState<AdminUser | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
 
-  const [deleteUser, setDeleteUser] = useState<AdminUserRow | null>(null);
+  const [deleteUser, setDeleteUser] = useState<AdminUser | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<number | null>(null);
 
-  useEffect(() => {
+  const loadStats = useCallback(async () => {
     if (!user?.is_admin) return;
-    (async () => {
-      try {
-        setStatsLoading(true);
-        const res = await getAdminStats();
-        setStats(res);
-      } catch (err) {
-        console.error("Failed to load admin stats", err);
-      } finally {
-        setStatsLoading(false);
-      }
-    })();
+
+    try {
+      setStatsLoading(true);
+      const res = await getAdminStats();
+      setStats(res);
+    } catch (err) {
+      console.error("Failed to load admin stats", err);
+    } finally {
+      setStatsLoading(false);
+    }
   }, [user?.is_admin]);
 
   const reloadUsers = useCallback(async () => {
     if (!user?.is_admin) return;
+
     try {
       setUsersLoading(true);
       setUsersError(null);
       const res = await adminListUsers();
-      setUsers((res as AdminUserRow[]) || []);
+      setUsers(Array.isArray(res) ? res : []);
     } catch (err) {
       console.error("Failed to load users", err);
-      setUsersError("Failed to load users");
+      setUsersError("Failed to load users.");
     } finally {
       setUsersLoading(false);
     }
   }, [user?.is_admin]);
 
   useEffect(() => {
+    if (!user?.is_admin) return;
+    loadStats();
+  }, [user?.is_admin, loadStats]);
+
+  useEffect(() => {
+    if (!user?.is_admin) return;
     reloadUsers();
-  }, [reloadUsers]);
+  }, [user?.is_admin, reloadUsers]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, roleFilter]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+
     return users
       .filter((u) => {
         if (roleFilter === "admin" && !u.is_admin) return false;
         if (roleFilter === "user" && u.is_admin) return false;
         if (!q) return true;
-        const e = (u.email || "").toLowerCase();
-        const un = (u.username || "").toLowerCase();
-        return e.includes(q) || un.includes(q) || String(u.id).includes(q);
+
+        return (
+          (u.email || "").toLowerCase().includes(q) ||
+          (u.username || "").toLowerCase().includes(q) ||
+          String(u.id).includes(q)
+        );
       })
-      .sort((a, b) => {
-        const bd = safeNumber(b.favorites_count) - safeNumber(a.favorites_count);
-        if (bd !== 0) return bd;
-        const ad = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const bdd = b.created_at ? new Date(b.created_at).getTime() : 0;
-        if (bdd !== ad) return bdd - ad;
-        return (b.id || 0) - (a.id || 0);
-      });
+      .sort((a, b) => b.favorites_count - a.favorites_count);
   }, [users, query, roleFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageSafe = Math.min(Math.max(1, page), totalPages);
-
-  useEffect(() => {
-    setPage(1);
-  }, [query, roleFilter]);
 
   const pageItems = useMemo(() => {
     const start = (pageSafe - 1) * PAGE_SIZE;
@@ -120,429 +131,400 @@ const AdminDashboard: React.FC = () => {
   }, [filtered, pageSafe]);
 
   const engagement = useMemo(() => {
-    const standardUsers = users.filter((u) => !u.is_admin);
-    const usersWithCounts = standardUsers.filter(
-      (u) =>
-        typeof u.favorites_count === "number" ||
-        typeof u.ratings_count === "number" ||
-        typeof u.not_interested_count === "number"
-    );
-
-    const usersWith5PlusFavorites = standardUsers.filter(
-      (u) => safeNumber(u.favorites_count) >= 5
-    ).length;
-    const usersWith10PlusFavorites = standardUsers.filter(
-      (u) => safeNumber(u.favorites_count) >= 10
-    ).length;
-    const usersWith20PlusFavorites = standardUsers.filter(
-      (u) => safeNumber(u.favorites_count) >= 20
-    ).length;
-
-    const returnedUsers = standardUsers.filter((u) => {
-      const lastLogin = u.last_login_at || u.last_seen_at;
-      if (!lastLogin || !u.created_at) return false;
-      const createdMs = new Date(u.created_at).getTime();
-      const lastLoginMs = new Date(lastLogin).getTime();
-      if (Number.isNaN(createdMs) || Number.isNaN(lastLoginMs)) return false;
-      return lastLoginMs - createdMs > 60 * 1000;
-    }).length;
+    const standard = users.filter((u) => !u.is_admin);
 
     return {
-      hasPerUserCounts: usersWithCounts.length > 0,
-      usersWith5PlusFavorites,
-      usersWith10PlusFavorites,
-      usersWith20PlusFavorites,
-      returnedUsers,
+      fav5: standard.filter((u) => u.favorites_count >= 5).length,
+      fav10: standard.filter((u) => u.favorites_count >= 10).length,
+      fav20: standard.filter((u) => u.favorites_count >= 20).length,
+      returned: standard.filter((u) => {
+        if (!u.last_login_at || !u.created_at) return false;
+        return new Date(u.last_login_at).getTime() - new Date(u.created_at).getTime() > 60000;
+      }).length,
     };
   }, [users]);
 
+  const handleRefresh = async () => {
+    await Promise.all([loadStats(), reloadUsers()]);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetUser || !resetPassword.trim()) return;
+
+    try {
+      setResetBusy(true);
+      await adminResetPassword(resetUser.id, resetPassword.trim());
+      setResetUser(null);
+      setResetPassword("");
+    } catch (err) {
+      console.error("Failed to reset password", err);
+      alert("Failed to reset password.");
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!deleteUser) return;
+
+    try {
+      setDeleteBusyId(deleteUser.id);
+      await adminDeleteUser(deleteUser.id);
+      setDeleteUser(null);
+      await Promise.all([reloadUsers(), loadStats()]);
+    } catch (err) {
+      console.error("Failed to delete user", err);
+      alert("Failed to delete user.");
+    } finally {
+      setDeleteBusyId(null);
+    }
+  };
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 text-slate-100 [&_*]:!text-slate-100">
-        <p className="text-slate-100 text-lg font-medium">Loading…</p>
+      <div className="admin-page">
+        <div className="admin-shell">
+          <div className="glass-card admin-empty">Loading...</div>
+        </div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950">
-        <p className="text-slate-100 text-lg font-medium">
-          You need to be logged in to view this page.
-        </p>
+      <div className="admin-page">
+        <div className="admin-shell">
+          <div className="glass-card admin-empty">
+            You need to be logged in to view this page.
+          </div>
+        </div>
       </div>
     );
   }
 
   if (!user.is_admin) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950">
-        <p className="text-slate-100 text-lg font-medium">
-          You do not have permission to view this page.
-        </p>
+      <div className="admin-page">
+        <div className="admin-shell">
+          <div className="glass-card admin-empty">
+            You do not have permission to view this page.
+          </div>
+        </div>
       </div>
     );
   }
 
-  const openResetModal = (u: AdminUserRow) => {
-    setResetUser(u);
-    setResetPassword("");
-  };
-
-  const handleResetPassword = async () => {
-    if (!resetUser) return;
-    if (!resetPassword || resetPassword.length < 6) {
-      alert("Password must be at least 6 characters");
-      return;
-    }
-    try {
-      setResetBusy(true);
-      await adminResetPassword(resetUser.id, resetPassword);
-      setResetUser(null);
-      setResetPassword("");
-    } catch (err) {
-      console.error("Failed to reset password", err);
-      alert("Failed to reset password");
-    } finally {
-      setResetBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteUser) return;
-    try {
-      setDeleteBusyId(deleteUser.id);
-      await adminDeleteUser(deleteUser.id);
-      setDeleteUser(null);
-      await reloadUsers();
-    } catch (err) {
-      console.error("Failed to delete user", err);
-      alert("Failed to delete user");
-    } finally {
-      setDeleteBusyId(null);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="max-w-7xl mx-auto px-4 py-6 space-y-8">
-        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Admin Dashboard
-            </h1>
-            <p className="text-sm !text-slate-400">
-              Monitor WhatNext usage and manage user accounts.
-            </p>
+    <div className="admin-page">
+      <div className="admin-bg-orb admin-bg-orb--left" />
+      <div className="admin-bg-orb admin-bg-orb--right" />
+
+      <div className="admin-shell">
+        <header className="admin-header glass-card">
+          <div className="admin-header__left">
+            <div className="admin-title-row">
+              <Shield size={22} className="admin-title-icon" />
+              <h1 className="admin-title">Admin Dashboard</h1>
+            </div>
+            <p className="admin-subtitle">Monitor usage and manage user accounts</p>
           </div>
-          <div className="text-xs !text-slate-400">
-            Logged in as{" "}
-            <span className="font-medium text-slate-100">{user.email}</span>
+
+          <div className="admin-header__right">
+            <span className="admin-logged-in">
+              Logged in as <strong>{user.email}</strong>
+            </span>
+
+            <button type="button" className="glass-button" onClick={handleRefresh}>
+              <RefreshCw size={14} />
+              <span>{statsLoading || usersLoading ? "Refreshing..." : "Refresh"}</span>
+            </button>
           </div>
         </header>
 
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold !text-slate-300">App overview</h2>
-            <button
-              onClick={async () => {
-                await reloadUsers();
-                try {
-                  setStatsLoading(true);
-                  const res = await getAdminStats();
-                  setStats(res);
-                } catch (e) {
-                  console.error(e);
-                } finally {
-                  setStatsLoading(false);
-                }
-              }}
-              className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
-            >
-              Refresh all
-            </button>
+        {usersError && (
+          <div className="glass-card admin-empty" style={{ marginBottom: 16 }}>
+            {usersError}
+          </div>
+        )}
+
+        <section className="admin-section">
+          <div className="admin-section__label">App Overview</div>
+
+          <div className="admin-stats-grid admin-stats-grid--top">
+            <GlassStatCard label="Total users" value={stats?.total_users ?? 0} icon={Users} glow />
+            <GlassStatCard
+              label="New (7 days)"
+              value={stats?.new_users_last_7_days ?? 0}
+              icon={UserPlus}
+            />
+            <GlassStatCard
+              label="Total favourites"
+              value={stats?.total_favorites ?? 0}
+              icon={Star}
+              sub={`Used by ${stats?.users_with_favorites ?? 0} users`}
+            />
+            <GlassStatCard
+              label="Total ratings"
+              value={stats?.total_ratings ?? 0}
+              icon={ThumbsUp}
+              sub={`Used by ${stats?.users_with_ratings ?? 0} users`}
+            />
+            <GlassStatCard
+              label="Not interested"
+              value={stats?.total_not_interested ?? 0}
+              icon={EyeOff}
+            />
           </div>
 
-          {statsLoading ? (
-            <div className="!text-slate-400 text-sm">Loading stats…</div>
-          ) : !stats ? (
-            <div className="!text-slate-400 text-sm">No stats available.</div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
-                <StatCard label="Total users" value={stats.total_users} />
-                <StatCard label="New (7 days)" value={stats.new_users_last_7_days} />
-                <StatCard
-                  label="Total favourites"
-                  value={stats.total_favorites}
-                  sub={`Used by ${stats.users_with_favorites} users`}
-                />
-                <StatCard
-                  label="Total ratings"
-                  value={stats.total_ratings}
-                  sub={`Used by ${stats.users_with_ratings} users`}
-                />
-                <StatCard label="Not-interested" value={stats.total_not_interested} />
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
-                <StatCard
-                  label="Users with 5+ favourites"
-                  value={engagement.usersWith5PlusFavorites}
-                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
-                />
-                <StatCard
-                  label="Users with 10+ favourites"
-                  value={engagement.usersWith10PlusFavorites}
-                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
-                />
-                <StatCard
-                  label="Users with 20+ favourites"
-                  value={engagement.usersWith20PlusFavorites}
-                  sub={engagement.hasPerUserCounts ? undefined : "Needs per-user counts from API"}
-                />
-                <StatCard
-                  label="Returned users"
-                  value={engagement.returnedUsers}
-                  sub="Based on last login / last seen"
-                />
-              </div>
-            </>
-          )}
+          <div className="admin-stats-grid admin-stats-grid--bottom">
+            <GlassStatCard label="5+ favourites" value={engagement.fav5} icon={TrendingUp} />
+            <GlassStatCard label="10+ favourites" value={engagement.fav10} />
+            <GlassStatCard label="20+ favourites" value={engagement.fav20} />
+            <GlassStatCard
+              label="Returned users"
+              value={engagement.returned}
+              sub="Based on last login"
+            />
+          </div>
         </section>
 
-        <section>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <section className="admin-section">
+          <div className="admin-users-header">
             <div>
-              <h2 className="text-sm font-semibold !text-slate-300">
-                Users ({filtered.length})
-              </h2>
-              <p className="text-xs !text-slate-500">
-                Search by id, email, or username.
-              </p>
+              <div className="admin-section__label">
+                Users ({usersLoading ? "..." : filtered.length})
+              </div>
+              <p className="admin-users-subtitle">Search by ID, email, or username</p>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2">
-              <div className="flex items-center gap-2">
+            <div className="admin-filters">
+              <div className="admin-search-wrap">
+                <Search size={14} className="admin-search-icon" />
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search users…"
-                  className="w-full sm:w-64 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 placeholder:!text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="Search users..."
+                  className="glass-input admin-search-input"
                 />
-                <select
-                  value={roleFilter}
-                  onChange={(e) => setRoleFilter(e.target.value as any)}
-                  className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  <option value="all">All</option>
-                  <option value="admin">Admins</option>
-                  <option value="user">Users</option>
-                </select>
               </div>
-              <button
-                onClick={reloadUsers}
-                className="text-xs px-3 py-2 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
+
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value as "all" | "admin" | "user")}
+                className="glass-input admin-role-select"
               >
-                Refresh
-              </button>
+                <option value="all">All roles</option>
+                <option value="admin">Admins</option>
+                <option value="user">Users</option>
+              </select>
             </div>
           </div>
 
-          <div className="mt-3">
-            {usersLoading ? (
-              <div className="!text-slate-400 text-sm">Loading users…</div>
-            ) : usersError ? (
-              <div className="text-red-400 text-sm">{usersError}</div>
-            ) : filtered.length === 0 ? (
-              <div className="!text-slate-400 text-sm">No users found.</div>
-            ) : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/40">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-900/80">
-                    <tr className="text-left text-[11px] uppercase tracking-wide !text-slate-500">
-                      <th className="px-3 py-2 font-medium">ID</th>
-                      <th className="px-3 py-2 font-medium">Email</th>
-                      <th className="px-3 py-2 font-medium">Username</th>
-                      <th className="px-3 py-2 font-medium text-center">Favs</th>
-                      <th className="px-3 py-2 font-medium text-center">Ratings</th>
-                      <th className="px-3 py-2 font-medium text-center">Hidden</th>
-                      <th className="px-3 py-2 font-medium">Created</th>
-                      <th className="px-3 py-2 font-medium">Last login</th>
-                      <th className="px-3 py-2 font-medium text-center">Role</th>
-                      <th className="px-3 py-2 font-medium text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pageItems.map((u) => {
-                      const lastLogin = u.last_login_at || u.last_seen_at;
-                      return (
-                        <tr
-                          key={u.id}
-                          className="border-t border-slate-800/80 hover:bg-slate-900/60"
-                        >
-                          <td className="px-3 py-2 !text-slate-300">{u.id}</td>
-                          <td className="px-3 py-2 text-slate-100">{u.email}</td>
-                          <td className="px-3 py-2 !text-slate-300">
-                            {u.username || <span className="!text-slate-500">—</span>}
-                          </td>
-                          <td className="px-3 py-2 text-center !text-slate-300">
-                            {typeof u.favorites_count === "number" ? u.favorites_count : <span className="!text-slate-600">—</span>}
-                          </td>
-                          <td className="px-3 py-2 text-center !text-slate-300">
-                            {typeof u.ratings_count === "number" ? u.ratings_count : <span className="!text-slate-600">—</span>}
-                          </td>
-                          <td className="px-3 py-2 text-center !text-slate-300">
-                            {typeof u.not_interested_count === "number" ? u.not_interested_count : <span className="!text-slate-600">—</span>}
-                          </td>
-                          <td className="px-3 py-2 !text-slate-400">
-                            {formatDate(u.created_at)}
-                          </td>
-                          <td className="px-3 py-2 !text-slate-400">
-                            {lastLogin ? formatDate(lastLogin) : <span className="!text-slate-600">—</span>}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            {u.is_admin ? (
-                              <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/40">
-                                Admin
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center rounded-full bg-slate-700/40 px-2 py-0.5 text-[11px] font-medium text-slate-200 border border-slate-700">
-                                User
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            <div className="inline-flex items-center gap-2">
-                              <button
-                                onClick={() => openResetModal(u)}
-                                className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition"
-                              >
-                                Reset password
-                              </button>
-                              <button
-                                onClick={() => setDeleteUser(u)}
-                                disabled={deleteBusyId === u.id}
-                                className="text-xs px-2 py-1 rounded-full border border-red-700/70 bg-red-900/20 text-red-300 hover:bg-red-900/40 disabled:opacity-60 disabled:cursor-not-allowed transition"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+          <div className="glass-card admin-table-card">
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Email</th>
+                    <th>Username</th>
+                    <th className="is-center">Favs</th>
+                    <th className="is-center">Ratings</th>
+                    <th className="is-center">Hidden</th>
+                    <th>Created</th>
+                    <th>Last login</th>
+                    <th className="is-center">Role</th>
+                    <th className="is-right">Actions</th>
+                  </tr>
+                </thead>
 
-                <div className="flex items-center justify-between px-3 py-3 border-t border-slate-800/80">
-                  <div className="text-xs !text-slate-400">
-                    Page {pageSafe} of {totalPages}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={pageSafe <= 1}
-                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
-                    >
-                      Prev
-                    </button>
-                    <button
-                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      disabled={pageSafe >= totalPages}
-                      className="text-xs px-3 py-1 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
+                <tbody>
+                  {pageItems.map((u) => (
+                    <tr key={u.id}>
+                      <td className="admin-table__mono">{u.id}</td>
+                      <td>{u.email}</td>
+                      <td className="admin-table__muted">
+                        {u.username || <span className="admin-dash">—</span>}
+                      </td>
+                      <td className="is-center admin-table__muted">{u.favorites_count}</td>
+                      <td className="is-center admin-table__muted">{u.ratings_count}</td>
+                      <td className="is-center admin-table__muted">{u.not_interested_count}</td>
+                      <td className="admin-table__muted">{formatDate(u.created_at)}</td>
+                      <td className="admin-table__muted">
+                        {u.last_login_at ? formatDate(u.last_login_at) : <span className="admin-dash">—</span>}
+                      </td>
+                      <td className="is-center">
+                        {u.is_admin ? (
+                          <span className="admin-badge admin-badge--admin">
+                            <Shield size={10} />
+                            <span>Admin</span>
+                          </span>
+                        ) : (
+                          <span className="admin-badge admin-badge--user">User</span>
+                        )}
+                      </td>
+                      <td className="is-right">
+                        <div className="admin-actions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResetUser(u);
+                              setResetPassword("");
+                            }}
+                            className="glass-button"
+                          >
+                            <KeyRound size={12} />
+                            <span>Reset</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setDeleteUser(u)}
+                            className="glass-button-destructive"
+                            disabled={deleteBusyId === u.id}
+                          >
+                            <Trash2 size={12} />
+                            <span>{deleteBusyId === u.id ? "Deleting..." : "Delete"}</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {!usersLoading && pageItems.length === 0 && (
+                    <tr>
+                      <td colSpan={10}>
+                        <div className="admin-empty">No users found.</div>
+                      </td>
+                    </tr>
+                  )}
+
+                  {usersLoading && (
+                    <tr>
+                      <td colSpan={10}>
+                        <div className="admin-empty">Loading users...</div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="admin-pagination">
+              <div className="admin-pagination__info">
+                Page {pageSafe} of {totalPages}
               </div>
-            )}
+
+              <div className="admin-pagination__buttons">
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={pageSafe <= 1}
+                  className="glass-button"
+                >
+                  <ArrowLeft size={12} />
+                  <span>Prev</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={pageSafe >= totalPages}
+                  className="glass-button"
+                >
+                  <span>Next</span>
+                  <ArrowRight size={12} />
+                </button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
 
-      {resetUser && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-xl">
-            <h3 className="text-lg font-semibold mb-1">Reset password</h3>
-            <p className="text-sm !text-slate-400 mb-4">
-              Set a new password for{" "}
-              <span className="font-medium text-slate-100">{resetUser.email}</span>.
-            </p>
-            <label className="block mb-3">
-              <span className="block text-xs font-medium !text-slate-400 mb-1">
-                New password
-              </span>
-              <input
-                type="password"
-                value={resetPassword}
-                onChange={(e) => setResetPassword(e.target.value)}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                placeholder="At least 6 characters"
-              />
-            </label>
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setResetUser(null)}
-                disabled={resetBusy}
-                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleResetPassword}
-                disabled={resetBusy}
-                className="px-3 py-1.5 text-xs rounded-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium disabled:opacity-60"
-              >
-                {resetBusy ? "Saving…" : "Save password"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <GlassModal
+        open={!!resetUser}
+        onClose={() => {
+          if (!resetBusy) {
+            setResetUser(null);
+            setResetPassword("");
+          }
+        }}
+        title="Reset Password"
+      >
+        <p className="admin-modal-copy">
+          Set a new password for <span className="admin-modal-strong">{resetUser?.email}</span>
+        </p>
 
-      {deleteUser && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-xl">
-            <h3 className="text-lg font-semibold mb-1 text-red-200">Delete user</h3>
-            <p className="text-sm !text-slate-400 mb-4">
-              This will permanently delete{" "}
-              <span className="font-medium text-slate-100">{deleteUser.email}</span>{" "}
-              and their favourites/ratings/not-interested rows.
-            </p>
+        <label className="admin-form-row">
+          <span className="admin-form-label">New password</span>
+          <input
+            type="password"
+            value={resetPassword}
+            onChange={(e) => setResetPassword(e.target.value)}
+            className="glass-input admin-form-input"
+            placeholder="At least 6 characters"
+          />
+        </label>
 
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setDeleteUser(null)}
-                disabled={deleteBusyId === deleteUser.id}
-                className="px-3 py-1.5 text-xs rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDelete}
-                disabled={deleteBusyId === deleteUser.id}
-                className="px-3 py-1.5 text-xs rounded-full bg-red-600 hover:bg-red-500 text-white font-medium disabled:opacity-60"
-              >
-                {deleteBusyId === deleteUser.id ? "Deleting…" : "Delete user"}
-              </button>
-            </div>
-          </div>
+        <div className="admin-modal-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setResetUser(null);
+              setResetPassword("");
+            }}
+            className="glass-button"
+            disabled={resetBusy}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="glass-button-primary"
+            onClick={handleResetPassword}
+            disabled={resetBusy || !resetPassword.trim()}
+          >
+            {resetBusy ? "Saving..." : "Save password"}
+          </button>
         </div>
-      )}
+      </GlassModal>
+
+      <GlassModal
+        open={!!deleteUser}
+        onClose={() => {
+          if (deleteBusyId == null) {
+            setDeleteUser(null);
+          }
+        }}
+        title="Delete User"
+        titleClassName="admin-modal-title--danger"
+      >
+        <p className="admin-modal-copy">
+          This will permanently delete{" "}
+          <span className="admin-modal-strong">{deleteUser?.email}</span> and all associated data.
+        </p>
+
+        <div className="admin-modal-actions">
+          <button
+            type="button"
+            onClick={() => setDeleteUser(null)}
+            className="glass-button"
+            disabled={deleteBusyId === deleteUser?.id}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteUser}
+            className="glass-button-destructive"
+            disabled={deleteBusyId === deleteUser?.id}
+          >
+            {deleteBusyId === deleteUser?.id ? "Deleting..." : "Delete user"}
+          </button>
+        </div>
+      </GlassModal>
     </div>
   );
 };
-
-function StatCard({ label, value, sub }: { label: string; value: number; sub?: string }) {
-  return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-3">
-      <div className="text-[11px] uppercase tracking-wide !text-slate-500">{label}</div>
-      <div className="text-xl font-semibold">{value}</div>
-      {sub ? <div className="text-[11px] !text-slate-500 mt-1">{sub}</div> : null}
-    </div>
-  );
-}
 
 export default AdminDashboard;

@@ -22,6 +22,7 @@ const NAV_LINKS: NavLinkDef[] = [
   { to: "/recs", label: "Recommendations", key: "recs" },
   { to: "/wrapped", label: "Profile", key: "wrapped" },
   { to: "/HowToUse", label: "HowToUse", key: "HowToUse" },
+  { to: "/shows-like", label: "Shows Like", key: "shows-like" },
 ];
 
 function useIsMobile(breakpoint: number = 768): boolean {

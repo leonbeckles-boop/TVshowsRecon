@@ -8,6 +8,13 @@
     <priority>1.0</priority>
   </url>
 
+   <url>
+    <loc>https://whatnexttv.org/seo-index</loc>
+    <lastmod>2026-03-13</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+
   <url>
     <loc>https://whatnexttv.org/shows-like</loc>
     <lastmod>2026-03-13</lastmod>

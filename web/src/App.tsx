@@ -17,6 +17,8 @@ import ShowsLike from "./pages/ShowsLike";
 import ShowsLikeHub from "./pages/ShowsLikeHub";
 import BestShows from "./pages/BestShows";
 import SEOIndex from "./pages/SEOIndex";
+import { Navigate } from "react-router-dom";
+import { useAuth } from "./auth/AuthProvider";
 
 
 
@@ -109,6 +111,7 @@ function getHeaderMeta(pathname: string) {
 
 export default function App() {
   const location = useLocation();
+  const { user } = useAuth();
 
   const hideHeader =
     location.pathname === "/login" || location.pathname === "/register";
@@ -186,6 +189,11 @@ export default function App() {
         />
 
         <Route path="/seo-index" element={<SEOIndex />} />
+
+       <Route
+          path="/"
+            element={user ? <Navigate to="/discover" replace /> : <Navigate to="/shows-like" replace />}
+/>
 
       </Routes>
 

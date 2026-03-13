@@ -1029,3 +1029,75 @@ tbody tr {
   background: rgba(30, 41, 59, 0.9);
   transform: translateY(-1px);
 }
+
+
+/* =========================================
+   WhatNext SEO / shows-like mobile tile fix
+========================================= */
+
+.shows-like-page .tile-grid,
+.shows-like-page .show-grid,
+.shows-like-page .shows-grid,
+.shows-like-page .results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  width: 100%;
+  align-items: start;
+}
+
+.shows-like-page .show-card-link {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.shows-like-page .show-card,
+.shows-like-page .show-tile,
+.shows-like-page .result-card {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.shows-like-page img,
+.shows-like-page .show-card img,
+.shows-like-page .show-tile img,
+.shows-like-page .result-card img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 640px) {
+  .shows-like-page {
+    padding: 112px 12px 64px;
+  }
+
+  .shows-like-title {
+    font-size: 26px;
+  }
+
+  .shows-like-intro {
+    font-size: 14px;
+  }
+
+  .shows-like-page .tile-grid,
+  .shows-like-page .show-grid,
+  .shows-like-page .shows-grid,
+  .shows-like-page .results-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+@media (max-width: 380px) {
+  .shows-like-page .tile-grid,
+  .shows-like-page .show-grid,
+  .shows-like-page .shows-grid,
+  .shows-like-page .results-grid {
+    grid-template-columns: 1fr;
+  }
+}

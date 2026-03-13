@@ -16,6 +16,7 @@ import HowToUse from "./pages/HowToUse";
 import ShowsLike from "./pages/ShowsLike";
 import ShowsLikeHub from "./pages/ShowsLikeHub";
 import BestShows from "./pages/BestShows";
+import SEOIndex from "./pages/SEOIndex";
 
 
 
@@ -184,7 +185,7 @@ export default function App() {
           }
         />
 
-        
+        <Route path="/seo-index" element={<SEOIndex />} />
 
       </Routes>
 

@@ -201,6 +201,10 @@ export default function App() {
         © {new Date().getFullYear()} WhatNextTV.org
         <br />
         Personalised TV recommendations
+        <br />
+        <a href="/seo-index" className="wn-footer-link">
+          Browse all TV show recommendations
+        </a>
       </footer>
     </div>
   );

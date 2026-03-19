@@ -19,6 +19,7 @@ import BestShows from "./pages/BestShows";
 import SEOIndex from "./pages/SEOIndex";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "./auth/AuthProvider";
+import { Analytics } from "@vercel/analytics/react";
 
 
 
@@ -196,6 +197,8 @@ export default function App() {
 />
 
       </Routes>
+
+      <Analytics />
 
       <footer className="wn-footer">
         © {new Date().getFullYear()} WhatNextTV.org

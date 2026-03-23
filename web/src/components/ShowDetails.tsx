@@ -79,6 +79,8 @@ type TmdbVideoResult = {
   name?: string;
 };
 
+const PAGE_TOP_PADDING = "140px";
+
 function safeArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
 }
@@ -148,7 +150,6 @@ async function fetchFirstOkJson(urls: string[]): Promise<any | null> {
 }
 
 export default function ShowDetails() {
-  // Param-name agnostic: supports /show/:id or /show/:tmdbId (or any single param)
   const params = useParams<Record<string, string | undefined>>();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -174,7 +175,6 @@ export default function ShowDetails() {
   const [watchProviders, setWatchProviders] =
   useState<TmdbWatchProviderGroup | null>(null);
 
-
   const [favorites, setFavorites] = useState<number[]>([]);
   const [notInterested, setNotInterested] = useState<number[]>([]);
   const [busyFavorite, setBusyFavorite] = useState(false);
@@ -192,7 +192,6 @@ export default function ShowDetails() {
 
   const watch = watchProviders;
 
-
   const watchLists = useMemo(() => {
     const flatrate = uniqBy(safeArray<TmdbWatchProvider>(watch?.flatrate), (x) => x.provider_id);
     const rent = uniqBy(safeArray<TmdbWatchProvider>(watch?.rent), (x) => x.provider_id);
@@ -207,7 +206,10 @@ export default function ShowDetails() {
     return `https://www.youtube.com/embed/${trailerKey}`;
   }, [trailerKey]);
 
-  // Load user lists
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, [id]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -234,7 +236,6 @@ export default function ShowDetails() {
     };
   }, [user]);
 
-  // Load show details
   useEffect(() => {
     let cancelled = false;
 
@@ -262,7 +263,6 @@ export default function ShowDetails() {
       }
     }
 
-    // reset trailer when changing show
     setTrailerKey(null);
 
     loadShow();
@@ -271,14 +271,12 @@ export default function ShowDetails() {
     };
   }, [id, idStr]);
 
-  // Load trailer videos (best-effort, optional)
   useEffect(() => {
     let cancelled = false;
 
     async function loadTrailer() {
       if (!id || Number.isNaN(id) || id <= 0) return;
 
-      // Try a few common route shapes (depending on how your tmdb router is implemented)
       const payload = await fetchFirstOkJson([
         apiUrl(`/tmdb/tv/${id}/videos`),
         apiUrl(`/tmdb/tv/${id}/videos`),
@@ -296,43 +294,39 @@ export default function ShowDetails() {
     };
   }, [id]);
 
-  // Load watch providers (Where to watch)
-useEffect(() => {
-  let cancelled = false;
+  useEffect(() => {
+    let cancelled = false;
 
-  async function loadWatchProviders() {
-    if (!id || Number.isNaN(id) || id <= 0) return;
+    async function loadWatchProviders() {
+      if (!id || Number.isNaN(id) || id <= 0) return;
 
-    try {
-      const res = await fetch(apiUrl(`/tmdb/tv/${id}/watch/providers`));
-      if (!res.ok) return;
+      try {
+        const res = await fetch(apiUrl(`/tmdb/tv/${id}/watch/providers`));
+        if (!res.ok) return;
 
-      const data = await res.json();
+        const data = await res.json();
 
-      // Prefer UK (GB), fallback to US
-      const region =
-        data?.results?.GB ??
-        data?.results?.US ??
-        null;
+        const region =
+          data?.results?.GB ??
+          data?.results?.US ??
+          null;
 
-      if (!cancelled) {
-        setWatchProviders(region);
+        if (!cancelled) {
+          setWatchProviders(region);
+        }
+      } catch {
+        // optional feature – fail silently
       }
-    } catch {
-      // optional feature – fail silently
     }
-  }
 
-  setWatchProviders(null);
-  loadWatchProviders();
+    setWatchProviders(null);
+    loadWatchProviders();
 
-  return () => {
-    cancelled = true;
-  };
-}, [id]);
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
-
-  // Load reddit posts (right column)
   useEffect(() => {
     let cancelled = false;
 
@@ -361,7 +355,6 @@ useEffect(() => {
     };
   }, [id]);
 
-  // Load smart-similar recs (bottom main)
   useEffect(() => {
     let cancelled = false;
 
@@ -436,10 +429,9 @@ useEffect(() => {
     }
   }
 
-  // Loading skeleton (matches your CSS)
   if (loading) {
     return (
-      <div className="show-details-skeleton">
+      <div className="show-details-skeleton" style={{ paddingTop: PAGE_TOP_PADDING }}>
         <button className="show-details-back" onClick={() => navigate(-1)}>
           ← Back
         </button>
@@ -469,7 +461,7 @@ useEffect(() => {
 
   if (err) {
     return (
-      <div className="show-details-page">
+      <div className="show-details-page" style={{ paddingTop: PAGE_TOP_PADDING }}>
         <button className="show-details-back" onClick={() => navigate(-1)}>
           ← Back
         </button>
@@ -483,7 +475,7 @@ useEffect(() => {
 
   if (!show) {
     return (
-      <div className="show-details-page">
+      <div className="show-details-page" style={{ paddingTop: PAGE_TOP_PADDING }}>
         <button className="show-details-back" onClick={() => navigate(-1)}>
           ← Back
         </button>
@@ -495,7 +487,7 @@ useEffect(() => {
   }
 
   return (
-    <div className="show-details-page">
+    <div className="show-details-page" style={{ paddingTop: PAGE_TOP_PADDING }}>
       <button className="show-details-back" onClick={() => navigate(-1)}>
         ← Back
       </button>

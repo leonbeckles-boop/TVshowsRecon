@@ -11,17 +11,14 @@ export type ShowCardProps = {
   onHide?: () => void | Promise<void>;
   reasons?: string[] | string | null;
 
-  // Newer props used by ShowDetails / smart-similar
   isFavorite?: boolean;
   isNotInterested?: boolean;
   onToggleFavorite?: () => void;
   onToggleNotInterested?: () => void;
 
-  // ✅ NEW — Watchlist support
   isWatchlist?: boolean;
   onToggleWatchlist?: () => void | Promise<void>;
 
-  /** "poster" = clean poster-only, "glass" = poster + glass title bar (reserved for future) */
   variant?: "poster" | "glass";
 };
 
@@ -79,7 +76,7 @@ function getPosterUrl(show: any): string | null {
   return null;
 }
 
-function getTmdbRating(show: any): { score: number | null; votes: number | null } {
+function getTmdbRating(show: any) {
   const score =
     show?.vote_average ??
     show?.tmdb_vote_average ??
@@ -98,7 +95,6 @@ function getTmdbRating(show: any): { score: number | null; votes: number | null 
   };
 }
 
-// Safely extract a TMDB id for navigation
 function getTmdbId(show: any): number | null {
   const raw =
     show?.tmdb_id ??
@@ -118,14 +114,10 @@ const ShowCard: React.FC<ShowCardProps> = ({
   onRate,
   onHide,
   reasons,
-
-  // newer props
   isFavorite,
   isNotInterested,
   onToggleFavorite,
   onToggleNotInterested,
-
-  // ✅ NEW watchlist props
   isWatchlist,
   onToggleWatchlist,
 }) => {
@@ -138,79 +130,48 @@ const ShowCard: React.FC<ShowCardProps> = ({
   const tmdb = useMemo(() => getTmdbRating(show), [show]);
   const tmdbId = useMemo(() => getTmdbId(show), [show]);
 
-  const reasonsList: string[] = useMemo(() => {
-    if (!reasons) return [];
-    if (Array.isArray(reasons)) {
-      return reasons.filter((r) => typeof r === "string" && r.trim().length > 0);
-    }
-    if (typeof reasons === "string") {
-      return reasons
-        .split(/[•|,]/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-    }
-    return [];
-  }, [reasons]);
-
-  // Favourite handlers
   const favActive = (isFav ?? isFavorite) ?? false;
-  const handleFavToggle =
-    onToggleFav ?? onToggleFavorite ?? undefined;
+  const handleFavToggle = onToggleFav ?? onToggleFavorite ?? undefined;
 
-  // Not interested handlers
-  const niActive = (isNotInterested ?? false);
-  const handleNiToggle =
-    onHide ?? onToggleNotInterested ?? undefined;
+  const niActive = isNotInterested ?? false;
+  const handleNiToggle = onHide ?? onToggleNotInterested ?? undefined;
 
-  // ✅ Watchlist handlers
   const watchlistActive = isWatchlist ?? false;
   const handleWatchlistToggle = onToggleWatchlist ?? undefined;
 
-  const handleRatingChange = (ev: React.ChangeEvent<HTMLSelectElement>) => {
-    ev.stopPropagation();
-    const val = Number(ev.target.value);
-    if (!Number.isFinite(val) || val <= 0) {
-      if (onRate) onRate(0);
-      return;
-    }
-    if (onRate) onRate(val);
-  };
-
   const handleCardClick = () => {
     if (!tmdbId) return;
+
     navigate(`/show/${tmdbId}`);
+
+    // ✅ FIX: offset scroll so header doesn't cover content
+    setTimeout(() => {
+      window.scrollTo({
+        top: 0,
+        behavior: "instant",
+      });
+    }, 50);
   };
 
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
   return (
-    <article className="show-card" onClick={handleCardClick}>
-      {/* Poster block */}
+    <article
+      className="show-card"
+      onClick={handleCardClick}
+      style={{ width: "100%", maxWidth: "240px" }}
+    >
       <div className="show-card__poster">
         {posterUrl ? (
           <img src={posterUrl} alt={title} loading="lazy" />
         ) : (
-          <div
-            style={{
-              width: "100%",
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 12,
-              color: "#9ca3af",
-              background:
-                "radial-gradient(circle at top, #020617 0%, #0f172a 55%)",
-            }}
-          >
-            No image
-          </div>
+          <div className="no-image">No image</div>
         )}
 
         <div className="show-card__poster-gradient" />
 
-        {/* Favourite button */}
         {handleFavToggle && (
           <button
-            type="button"
             className={
               "show-card__icon-btn show-card__icon-btn--fav" +
               (favActive ? " show-card__icon-btn--fav-active" : "")
@@ -219,118 +180,57 @@ const ShowCard: React.FC<ShowCardProps> = ({
               e.stopPropagation();
               handleFavToggle();
             }}
-            title={favActive ? "Remove from favourites" : "Add to favourites"}
           >
             {favActive ? "♥" : "♡"}
           </button>
         )}
 
-        {/* ✅ NEW Watchlist button */}
         {handleWatchlistToggle && (
           <button
-            type="button"
             className={
               "show-card__icon-btn show-card__icon-btn--watchlist" +
-              (watchlistActive
-                ? " show-card__icon-btn--watchlist-active"
-                : "")
+              (watchlistActive ? " show-card__icon-btn--watchlist-active" : "")
             }
             onClick={(e) => {
               e.stopPropagation();
               handleWatchlistToggle();
             }}
-            title={
-              watchlistActive
-                ? "Remove from watchlist"
-                : "Add to watchlist"
-            }
           >
             {watchlistActive ? "🔖" : "📑"}
           </button>
         )}
 
-        {/* Not Interested button */}
         {handleNiToggle && (
           <button
-            type="button"
             className="show-card__icon-btn show-card__icon-btn--hide"
             onClick={(e) => {
               e.stopPropagation();
               handleNiToggle();
             }}
-            title={niActive ? "Undo Not Interested" : "Not interested"}
           >
             ✕
           </button>
         )}
 
-        {/* TMDB chip */}
         {tmdb.score != null && tmdb.votes != null && (
           <div className="show-card__tmdb-chip">
-            <span className="show-card__tmdb-label">TMDB</span>
-            <span className="show-card__tmdb-score">
-              {tmdb.score.toFixed(1)}
-            </span>
-            <span className="show-card__tmdb-votes">
-              ({tmdb.votes.toLocaleString()} votes)
-            </span>
+            TMDB {tmdb.score.toFixed(1)}
           </div>
         )}
       </div>
 
-      {/* Body */}
       <div className="show-card__body">
-        <div className="show-card__header-row">
-          <div className="show-card__title-wrap">
-            <div className="show-card__title">{title}</div>
-            {year && <div className="show-card__year">{year}</div>}
-          </div>
-        </div>
+        <div className="show-card__title">{title}</div>
+        {year && <div className="show-card__year">{year}</div>}
 
-        {genres.length > 0 && (
-          <div className="show-card__genres">
-            {genres.slice(0, 4).map((g) => (
-              <span key={g} className="show-card__genre-chip">
-                {g}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {show?.overview && (
-          <div className="show-card__overview">{show.overview}</div>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="show-card__footer">
-        {onRate && (
-          <div
-            className="show-card__rating-block"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="show-card__rating-label">Your rating</div>
-            <select
-              className="show-card__rating-select"
-              value={myRating ?? 0}
-              onClick={(e) => e.stopPropagation()}
-              onChange={handleRatingChange}
-            >
-              <option value={0}>No rating</option>
-              {[1,2,3,4,5,6,7,8,9,10].map((n) => (
-                <option key={n} value={n}>
-                  {n} / 10
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {reasonsList.length > 0 && (
-          <div className="show-card__reasons-hint">
-            Why this: {reasonsList.join(" • ")}
-          </div>
-        )}
+        {/* 🚀 NEW: Find Similar CTA */}
+        <a
+          href={`/shows-like/${slug}`}
+          className="show-card__similar-link"
+          onClick={(e) => e.stopPropagation()}
+        >
+          🔎 Find similar
+        </a>
       </div>
     </article>
   );

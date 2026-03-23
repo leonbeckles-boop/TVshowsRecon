@@ -288,6 +288,23 @@ export default function Homepage() {
           </Link>
         </div>
       </section>
+
+        <div className="wn-feedback-card">
+            <div className="wn-feedback-content">
+                <h2>💬 Help Shape WhatNext</h2>
+                <p>
+                Found a bug? Got an idea? Or just enjoying the app?
+                We’re actively improving WhatNext and would love your feedback.
+                </p>
+
+                <a
+                href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback"
+                className="wn-feedback-btn"
+                >
+                Contact Us
+                </a>
+            </div>
+            </div>
     </div>
   );
 }

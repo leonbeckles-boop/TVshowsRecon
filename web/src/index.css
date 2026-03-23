@@ -1475,3 +1475,98 @@ tbody tr {
     width: min(200px, 72%);
   }
 }
+
+.wn-feedback-card {
+  margin-top: 40px;
+  padding: 28px;
+  border-radius: 18px;
+
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(12px);
+
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.wn-feedback-content {
+  text-align: center;
+}
+
+.wn-feedback-content h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 10px;
+}
+
+.wn-feedback-content p {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 18px;
+}
+
+.wn-feedback-btn {
+  display: inline-block;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #10b981, #3b82f6);
+  color: white;
+  font-size: 13px;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.wn-feedback-btn:hover {
+  transform: translateY(-1px);
+  opacity: 0.9;
+}
+
+/* =========================================
+   Standard tile grid across app
+========================================= */
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px;
+  width: 100%;
+  align-items: start;
+  justify-items: center;
+}
+
+.tile-grid > * {
+  width: 100%;
+  max-width: 240px;
+}
+
+.tile-skeleton {
+  width: 100%;
+  max-width: 240px;
+  aspect-ratio: 2 / 3;
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.8);
+  animation: tile-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tile-pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+@media (max-width: 640px) {
+  .tile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .tile-grid > * {
+    max-width: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .tile-grid {
+    grid-template-columns: 1fr;
+  }
+}

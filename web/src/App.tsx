@@ -211,6 +211,13 @@ export default function App() {
         <a href="/seo-index" className="wn-footer-link">
           Browse all TV show recommendations
         </a>
+        <br />
+        <a
+        href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback"
+          className="wn-footer-link"
+        >
+          Contact
+        </a>
       </footer>
     </div>
   );

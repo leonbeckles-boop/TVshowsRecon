@@ -386,7 +386,7 @@ export default function SearchPage() {
                   {Array.from({ length: 12 }).map((_, i) => (
                     <div
                       key={i}
-                      className="aspect-[2/3] w-full max-w-[240px] animate-pulse rounded-2xl bg-slate-800/80"
+                      className="tile-skeleton"
                     />
                   ))}
                 </div>

@@ -1522,21 +1522,49 @@ tbody tr {
 }
 
 /* =========================================
-   Standard tile grid across app
+   Standard tile grid across app (UPDATED)
 ========================================= */
 
 .tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 18px;
+  gap: 16px;
   width: 100%;
   align-items: start;
   justify-items: center;
+
+  /* Desktop default */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .tile-grid > * {
   width: 100%;
   max-width: 240px;
+}
+
+/* 📱 Mobile: 2 tiles */
+@media (max-width: 640px) {
+  .tile-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .tile-grid > * {
+    max-width: none;
+  }
+}
+
+/* 📱 Larger mobile: 3 tiles (sweet spot) */
+@media (min-width: 500px) and (max-width: 768px) {
+  .tile-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* 📱 Very small phones fallback */
+@media (max-width: 380px) {
+  .tile-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tile-skeleton {

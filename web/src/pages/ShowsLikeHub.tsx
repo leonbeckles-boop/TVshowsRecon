@@ -79,6 +79,15 @@ const GROUPS: SeedGroup[] = [
   },
 ];
 
+const TOP_PICKS = [
+  "Breaking Bad",
+  "Dark",
+  "The Wire",
+  "Stranger Things",
+  "Game of Thrones",
+  "The Last of Us",
+];
+
 function slugify(title: string): string {
   return title
     .toLowerCase()
@@ -88,7 +97,6 @@ function slugify(title: string): string {
 }
 
 export default function ShowsLikeHub() {
-
   const [shows, setShows] = useState<any[]>([]);
 
   useEffect(() => {
@@ -97,28 +105,54 @@ export default function ShowsLikeHub() {
       const data = await r.json();
       setShows(data);
     }
-
     load();
   }, []);
 
   return (
     <div className="page-body shows-like-page">
 
+      {/* HERO */}
       <section className="shows-like-hub-hero">
-        <h1 className="shows-like-title">Find Shows Like Your Favourites</h1>
+        <h1 className="shows-like-title">Find TV Shows Like Your Favourites</h1>
+
         <p className="shows-like-intro">
-          Browse curated pages for popular TV series and discover what to watch next.
-          Each page uses WhatNext recommendation signals to surface similar shows. !! Click on your favourite shows below and find similar shows !!
+          Looking for TV shows similar to the ones you love? Browse curated recommendations by category
+          and discover your next binge-worthy series. Each page is powered by viewing patterns,
+          shared themes, and real audience behaviour.
         </p>
       </section>
 
-      <div className="shows-like-hub-groups">
+      {/* TOP PICKS */}
+      <section className="shows-like-hub-section glass-card">
+        <div className="shows-like-hub-section__header">
+          <h2 className="shows-like-hub-section__title">Popular Shows to Explore</h2>
+          <p className="shows-like-hub-section__desc">
+            Start with some of the most searched and recommended series.
+          </p>
+        </div>
 
+        <div className="shows-like-hub-links">
+          {TOP_PICKS.map((title) => (
+            <Link
+              key={title}
+              to={`/shows-like/${slugify(title)}`}
+              className="shows-like-hub-link"
+            >
+              {title}
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* CATEGORY GROUPS */}
+      <div className="shows-like-hub-groups">
         {GROUPS.map((group) => (
           <section key={group.heading} className="shows-like-hub-section glass-card">
 
             <div className="shows-like-hub-section__header">
-              <h2 className="shows-like-hub-section__title">{group.heading}</h2>
+              <h2 className="shows-like-hub-section__title">
+                {group.heading} Shows Like These
+              </h2>
               <p className="shows-like-hub-section__desc">{group.description}</p>
             </div>
 
@@ -129,24 +163,23 @@ export default function ShowsLikeHub() {
                   to={`/shows-like/${slugify(title)}`}
                   className="shows-like-hub-link"
                 >
-                 {title}
+                  {title}
                 </Link>
               ))}
             </div>
 
           </section>
         ))}
-
       </div>
 
-      {/* Auto SEO links */}
+      {/* AUTO SEO LINKS */}
       {shows.length > 0 && (
         <section className="shows-like-hub-section glass-card">
 
           <div className="shows-like-hub-section__header">
-            <h2 className="shows-like-hub-section__title">More Shows</h2>
+            <h2 className="shows-like-hub-section__title">Trending Searches</h2>
             <p className="shows-like-hub-section__desc">
-              Browse more shows people frequently search for.
+              Shows people are currently exploring on WhatNext.
             </p>
           </div>
 
@@ -157,13 +190,24 @@ export default function ShowsLikeHub() {
                 to={`/shows-like/${slugify(s.title)}`}
                 className="shows-like-hub-link"
               >
-                 {s.title}
+                {s.title}
               </Link>
             ))}
           </div>
 
         </section>
       )}
+
+      {/* FOOTER NAV */}
+      <section className="shows-like-hub-footer">
+        <h3>Explore more</h3>
+
+        <div className="shows-like-hub-links">
+          <Link to="/search" className="shows-like-hub-link">Search shows</Link>
+          <Link to="/discover" className="shows-like-hub-link">Discover trending</Link>
+          <Link to="/recs" className="shows-like-hub-link">Your recommendations</Link>
+        </div>
+      </section>
 
     </div>
   );

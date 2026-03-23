@@ -1031,76 +1031,6 @@ tbody tr {
 }
 
 
-/* =========================================
-   WhatNext SEO / shows-like mobile tile fix
-========================================= */
-
-.shows-like-page .tile-grid,
-.shows-like-page .show-grid,
-.shows-like-page .shows-grid,
-.shows-like-page .results-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px;
-  width: 100%;
-  align-items: start;
-}
-
-.shows-like-page .show-card-link {
-  display: block;
-  width: 100%;
-  min-width: 0;
-}
-
-.shows-like-page .show-card,
-.shows-like-page .show-tile,
-.shows-like-page .result-card {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
-}
-
-.shows-like-page img,
-.shows-like-page .show-card img,
-.shows-like-page .show-tile img,
-.shows-like-page .result-card img {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-}
-
-@media (max-width: 640px) {
-  .shows-like-page {
-    padding: 112px 12px 64px;
-  }
-
-  .shows-like-title {
-    font-size: 26px;
-  }
-
-  .shows-like-intro {
-    font-size: 14px;
-  }
-
-  .shows-like-page .tile-grid,
-  .shows-like-page .show-grid,
-  .shows-like-page .shows-grid,
-  .shows-like-page .results-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-}
-
-@media (max-width: 380px) {
-  .shows-like-page .tile-grid,
-  .shows-like-page .show-grid,
-  .shows-like-page .shows-grid,
-  .shows-like-page .results-grid {
-    grid-template-columns: 1fr;
-  }
-}
 
 /* SEO text block on ShowsLike pages */
 .shows-like-seo {
@@ -1522,7 +1452,7 @@ tbody tr {
 }
 
 /* =========================================
-   Standard tile grid across app (UPDATED)
+   Standard tile grid across app
 ========================================= */
 
 .tile-grid {
@@ -1530,46 +1460,44 @@ tbody tr {
   gap: 16px;
   width: 100%;
   align-items: start;
-  justify-items: center;
-
-  /* Desktop default */
+  justify-items: stretch;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .tile-grid > * {
   width: 100%;
-  max-width: 240px;
+  min-width: 0;
+  max-width: none;
 }
 
-/* 📱 Mobile: 2 tiles */
-@media (max-width: 640px) {
+/* Larger phones / small tablets: 3 tiles */
+@media (max-width: 768px) and (min-width: 500px) {
   .tile-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-  }
-
-  .tile-grid > * {
-    max-width: none;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
   }
 }
 
-/* 📱 Larger mobile: 3 tiles (sweet spot) */
-@media (min-width: 500px) and (max-width: 768px) {
+/* Small phones: 2 tiles */
+@media (max-width: 499px) {
   .tile-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 }
 
-/* 📱 Very small phones fallback */
-@media (max-width: 380px) {
+/* Very small phones */
+@media (max-width: 360px) {
   .tile-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 }
 
 .tile-skeleton {
   width: 100%;
-  max-width: 240px;
+  min-width: 0;
+  max-width: none;
   aspect-ratio: 2 / 3;
   border-radius: 16px;
   background: rgba(30, 41, 59, 0.8);
@@ -1580,21 +1508,4 @@ tbody tr {
   0% { opacity: 0.6; }
   50% { opacity: 1; }
   100% { opacity: 0.6; }
-}
-
-@media (max-width: 640px) {
-  .tile-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .tile-grid > * {
-    max-width: none;
-  }
-}
-
-@media (max-width: 380px) {
-  .tile-grid {
-    grid-template-columns: 1fr;
-  }
 }

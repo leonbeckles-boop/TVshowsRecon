@@ -13,6 +13,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, EmailStr, Field
+from fastapi import BackgroundTasks
+from app.services.email_service import send_email, welcome_email_html
 
 # ----- DB session dependency: support both names -----
 _db_dep: Optional[Callable[..., AsyncSession]] = None
@@ -128,7 +130,11 @@ require_user = get_current_user
 
 # -------- Routes --------
 @router.post("/register", response_model=MeOut, status_code=201, summary="Register")
-async def register(payload: RegisterIn, session: AsyncSession = Depends(get_db)) -> MeOut:
+async def register(
+    payload: RegisterIn,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+) -> MeOut:
     email_str = str(payload.email)
 
     if await _user_by_email(session, email_str):
@@ -144,6 +150,13 @@ async def register(payload: RegisterIn, session: AsyncSession = Depends(get_db))
     try:
         await session.commit()
         await session.refresh(user)
+        # Send welcome email (non-blocking)
+        background_tasks.add_task(
+            send_email,
+            user.email,
+            "Welcome to WhatNext 🎬",
+            welcome_email_html(getattr(user, "username", "there")),
+        )
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Email already registered")

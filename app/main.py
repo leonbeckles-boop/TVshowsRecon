@@ -16,6 +16,7 @@ from app.routes import watchlist
 from app.routes import seo
 from app.routes import seo_index
 from app.routes import sitemap
+from app.routes import admin_tasks
 
 
 log = logging.getLogger("uvicorn.error")
@@ -31,20 +32,16 @@ def _cors_origins() -> list[str]:
     if raw:
         return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
-    # Defaults (safe + practical)
     return [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
-        # Add your custom domain here if you have one:
-        # "https://whatnext.yourdomain.com",
     ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Shared TMDB client (connection pooling)
     limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
     timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
@@ -52,7 +49,7 @@ async def lifespan(app: FastAPI):
         timeout=timeout,
         limits=limits,
         headers={"Accept": "application/json"},
-        http2=False,  # keep False unless you install httpx[http2]
+        http2=False,
     )
 
     try:
@@ -66,27 +63,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="WhatNext API", lifespan=lifespan)
 
-# ✅ CORS MUST be installed on `app` (not the APIRouter)
 cors_origins = _cors_origins() or []
 
-# ✅ ALWAYS allow localhost dev servers (safe, does not affect production security)
 dev_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
 
-# Merge safely without duplicates
 cors_origins = list(set(cors_origins + dev_origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",  # allows preview deploys
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],  # includes OPTIONS (preflight)
-    allow_headers=["*"],  # includes Authorization, Content-Type, etc.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
 
 
 @app.get("/")
@@ -127,10 +120,10 @@ api.include_router(admin.router)
 api.include_router(wrapped.router)
 api.include_router(not_interested.router)
 api.include_router(watchlist.router)
+api.include_router(admin_tasks.router)
+
 app.include_router(seo.router)
 app.include_router(seo_index.router)
 app.include_router(sitemap.router)
-
-
 
 app.include_router(api)

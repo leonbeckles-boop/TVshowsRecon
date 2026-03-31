@@ -135,7 +135,7 @@ export default function PageHeader({ title, subtitle }: PageHeaderProps) {
                   className="relative overflow-hidden transition-transform duration-200 hover:scale-[1.03] wn-logo-box"
                   style={{
                     height: isMobile ? 64 : 84,
-                    width: isMobile ? 64 : 84,
+                    width: isMobile ?  74: 98,
                   }}
                 >
                   <img

@@ -138,8 +138,8 @@ const AdminDashboard: React.FC = () => {
       fav10: standard.filter((u) => u.favorites_count >= 10).length,
       fav20: standard.filter((u) => u.favorites_count >= 20).length,
       returned: standard.filter((u) => {
-        if (!u.last_login_at || !u.created_at) return false;
-        return new Date(u.last_login_at).getTime() - new Date(u.created_at).getTime() > 60000;
+        if (!u.last_seen_at || !u.created_at) return false;
+        return new Date(u.last_seen_at).getTime() - new Date(u.created_at).getTime() > 60000;
       }).length,
     };
   }, [users]);
@@ -332,7 +332,7 @@ const AdminDashboard: React.FC = () => {
                     <th className="is-center">Ratings</th>
                     <th className="is-center">Hidden</th>
                     <th>Created</th>
-                    <th>Last login</th>
+                    <th>Last seen</th>
                     <th className="is-center">Role</th>
                     <th className="is-right">Actions</th>
                   </tr>
@@ -351,7 +351,7 @@ const AdminDashboard: React.FC = () => {
                       <td className="is-center admin-table__muted">{u.not_interested_count}</td>
                       <td className="admin-table__muted">{formatDate(u.created_at)}</td>
                       <td className="admin-table__muted">
-                        {u.last_login_at ? formatDate(u.last_login_at) : <span className="admin-dash">—</span>}
+                        {u.last_seen_at ? formatDate(u.last_seen_at) : <span className="admin-dash">—</span>}
                       </td>
                       <td className="is-center">
                         {u.is_admin ? (

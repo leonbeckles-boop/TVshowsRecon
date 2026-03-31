@@ -26,6 +26,7 @@ export type User = {
 export type AdminUser = User & {
   created_at?: string;
   last_login_at?: string | null;
+  last_seen_at?: string | null;
   favorites_count: number;
   ratings_count: number;
   not_interested_count: number;
@@ -56,12 +57,10 @@ export type Favorite = {
   user_id: number;
   tmdb_id: number;
   created_at?: string;
-  // Some older endpoints returned show-like objects; keep it permissive
   title?: string;
   poster_path?: string | null;
   [k: string]: any;
 };
-
 
 export type WatchlistItem = {
   user_id?: number;
@@ -74,7 +73,7 @@ export type WatchlistItem = {
 };
 
 export type UserRating = {
-  user_id?: number; // OPTIONAL for frontend
+  user_id?: number;
   tmdb_id: number;
   rating: number;
   title?: string | null;
@@ -83,7 +82,6 @@ export type UserRating = {
   created_at?: string;
   updated_at?: string;
 };
-
 
 export type NotInterested = {
   user_id: number;
@@ -112,14 +110,8 @@ export type RecsOptions = {
 
 // ───────────────── Config & Token helpers ─────────────────
 
-// Prefer env var (set on Vercel): VITE_API_BASE=https://whatnext-api.onrender.com/api
-// Fallbacks:
-// - development: "/api" (works with local proxy/nginx)
-// - production: absolute Render URL (works on Vercel)
-const DEFAULT_PROD_API = "https://whatnext-api.onrender.com/api";
-
 const BASE =
-    import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.DEV ? "http://localhost:8000/api" : "/api");
 
 // Normalise to no trailing slash
@@ -150,21 +142,15 @@ export function clearToken() {
 
 // ───────────────── Internal helpers ─────────────────
 
-// Build full URL for API calls.
-// - Absolute URLs pass through.
-// - Paths beginning with "/api" are treated as API paths and rewritten to BASE_NORM.
 function buildUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
 
-  // allow callers to pass "/api/..." and still get the right host in prod
   if (path === "/api") return BASE_NORM;
   if (path.startsWith("/api/")) return `${BASE_NORM}${path.slice(4)}`;
 
-  // otherwise treat as relative API path (e.g. "/me", "/auth/login")
   return `${BASE_NORM}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
-// Exported helper for components/pages that still use fetch()
 export function apiUrl(path: string): string {
   return buildUrl(path);
 }
@@ -197,7 +183,6 @@ export async function http<T>(
   const res = await fetch(url, { ...init, headers });
 
   if (!res.ok) {
-    // Try to extract a helpful error message
     let detail: any = null;
     try {
       detail = await res.json();
@@ -245,9 +230,11 @@ export async function me(): Promise<User> {
   return http<User>("/auth/me", { method: "GET" });
 }
 
+export async function touchAuth(): Promise<{ ok: true }> {
+  return http<{ ok: true }>("/auth/touch", { method: "POST" });
+}
 
 // ───────────────── Search / TMDb passthrough ─────────────────
-// Some pages call searchShows(q, token) (old), others call searchShows(q, limit)
 export async function searchShows(q: string, arg2: any = 50): Promise<Show[]> {
   const limit = typeof arg2 === "number" ? arg2 : 50;
   const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
@@ -265,15 +252,11 @@ export async function listFavorites(userId?: number, ..._rest: any[]): Promise<S
   return http<Show[]>(`/users/${uid}/favorites`, { method: "GET" });
 }
 
-// Allow older code: listFavoriteShows() with no args.
-// If userId not provided, we fetch /me first.
 export async function listFavoriteShows(userId?: number): Promise<any[]> {
   const uid = userId ?? (await me()).id;
   return http<any[]>(`/users/${uid}/favorites`, { method: "GET" });
 }
 
-
-// Many components call addFavorite(userId, tmdbId, <extra>) — ignore extra args.
 export async function addFavorite(
   arg1: number,
   arg2?: number
@@ -285,8 +268,6 @@ export async function addFavorite(
   return { ok: true };
 }
 
-
-
 export async function removeFavorite(
   arg1: number,
   arg2?: number
@@ -297,9 +278,6 @@ export async function removeFavorite(
   await http(`/users/${uid}/favorites/${tmdbId}`, { method: "DELETE" });
   return { ok: true };
 }
-
-
-
 
 // Watchlist
 export async function listWatchlist(userId: number): Promise<WatchlistItem[]> {
@@ -322,7 +300,7 @@ export async function removeWatchlist(
   return { ok: true };
 }
 
-// Ratings — older pages use listRatings(userId) and sometimes listRatings(userId, token)
+// Ratings
 export async function listRatings(userId: number, ..._rest: any[]): Promise<UserRating[]> {
   const r = await http<any>(`/ratings/ratings?user_id=${userId}`, { method: "GET" });
   if (Array.isArray(r)) return r as UserRating[];
@@ -330,7 +308,6 @@ export async function listRatings(userId: number, ..._rest: any[]): Promise<User
   return [];
 }
 
-// Upsert — older pages sometimes pass (userId, payload, token)
 export async function upsertRating(
   userId: number,
   payload: UserRating,
@@ -348,8 +325,6 @@ export async function listNotInterested(userId?: number): Promise<any[]> {
   return http<any[]>(`/users/${uid}/not-interested`, { method: "GET" });
 }
 
-
-
 export async function markNotInterested(
   arg1: number,
   arg2?: number
@@ -360,8 +335,6 @@ export async function markNotInterested(
   await http(`/users/${uid}/not-interested/${tmdbId}`, { method: "POST" });
   return { ok: true };
 }
-
-
 
 export async function removeNotInterested(
   arg1: number,
@@ -374,21 +347,17 @@ export async function removeNotInterested(
   return { ok: true };
 }
 
-
-
 // Additional legacy aliases some files may import
-export const listFavoritesShows = listFavoriteShows; // common typo/variant
+export const listFavoritesShows = listFavoriteShows;
 export const listNotInterestedShows = listNotInterested;
 
 // ───────────────── Discover ─────────────────
-// Some code calls getDiscover() (no args), others call getDiscover(params)
 export async function getDiscover(
   params?: Record<string, any>
 ): Promise<DiscoverResponse> {
   const qs = params ? `?${new URLSearchParams(params as any).toString()}` : "";
   return http<DiscoverResponse>(`/discover${qs}`, { method: "GET" });
 }
-
 
 // ───────────────── Recommendations ─────────────────
 export async function getRecs(userId: number, opts: RecsOptions = {}): Promise<RecItem[]> {
@@ -405,7 +374,6 @@ export async function getRecsV2(userId: number, opts: RecsOptions = {}): Promise
   return http<RecItem[]>(`/recs/v2?${qs}`, { method: "GET" });
 }
 
-// Some pages call getRecsV3(userId, opts), others call getRecsV3(opts) or getRecsV3(userId, opts, token)
 export async function getRecsV3(
   arg1: any,
   arg2: any = {},
@@ -425,11 +393,8 @@ export async function getRecsV3(
   const qs = new URLSearchParams({ ...((opts as any) ?? {}) } as any).toString();
 
   return http<RecItem[]>(`/recs/v3/${userId}?${qs}`, { method: "GET" });
-
-
 }
 
-// Some components hit these endpoints directly:
 export async function smartSimilar(tmdbId: number, ..._rest: any[]): Promise<RecItem[]> {
   return http<RecItem[]>(`/recs/v3/smart-similar/${tmdbId}`, { method: "GET" });
 }

@@ -18,13 +18,21 @@ class AuthUser(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
-    # Keep a username field optional; doesn't break routers
+
+    # Optional username
     username = Column(String(255), nullable=True)
-    # Name is flexible; routers just need *some* hash field
+
+    # Password hash
     password_hash = Column(String(255), nullable=False)
 
+    # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ✅ NEW FIELD (THIS WAS MISSING)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Admin flag
     is_admin = Column(Boolean, nullable=False, server_default="false")
     
     __table_args__ = (

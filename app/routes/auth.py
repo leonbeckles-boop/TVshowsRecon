@@ -217,3 +217,17 @@ async def me(current: UserModel = Depends(_current_user)) -> MeOut:
         username=getattr(current, "username", None),
         is_admin=getattr(current, "is_admin", False),
     )
+
+@router.post("/touch", summary="Update last seen timestamp")
+async def touch(
+    current: UserModel = Depends(_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == current.id)
+        .values(last_seen_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+    return {"ok": True}

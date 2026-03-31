@@ -43,7 +43,7 @@ async def require_admin(user=Depends(get_current_user)):
 # ───────────────── Internal helpers ─────────────────
 def _pick_auth_user_login_field() -> Optional[str]:
     """Return the first login/seen column present on AuthUser, if any."""
-    for field_name in ("last_login_at", "last_seen_at", "last_login", "last_seen"):
+    for field_name in ("last_seen_at", "last_login_at", "last_seen", "last_login"):
         if hasattr(AuthUser, field_name):
             return field_name
     return None
@@ -171,7 +171,9 @@ async def list_users(
 
     payload = []
     for u in users:
-        last_login_value = getattr(u, login_field_name, None) if login_field_name else None
+        last_seen_value = getattr(u, "last_seen_at", None)
+        last_login_value = getattr(u, "last_login_at", None)
+
         payload.append(
             {
                 "id": u.id,
@@ -182,10 +184,11 @@ async def list_users(
                 "favorites_count": favorite_counts.get(int(u.id), 0),
                 "ratings_count": rating_counts.get(int(u.id), 0),
                 "not_interested_count": not_interested_counts.get(int(u.id), 0),
+                "last_seen_at": last_seen_value,
                 "last_login_at": last_login_value,
             }
         )
-
+        
     return payload
 
 

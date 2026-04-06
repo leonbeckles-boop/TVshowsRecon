@@ -1,14 +1,9 @@
-# app/services/reddit_pairs_build.py
-
 from __future__ import annotations
 
 from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-
-
-# --- DDL helpers -----------------------------------------------------------
 
 
 async def ensure_user_reddit_pairs_table(session: AsyncSession) -> None:
@@ -47,7 +42,6 @@ async def ensure_user_reddit_pairs_table(session: AsyncSession) -> None:
             ON user_reddit_pairs (suggested_tmdb_id);
     """
 
-    # Important: execute each statement separately so asyncpg doesn't complain
     await session.execute(text(ddl_table))
     await session.execute(text(ddl_idx_user))
     await session.execute(text(ddl_idx_weight))
@@ -55,14 +49,22 @@ async def ensure_user_reddit_pairs_table(session: AsyncSession) -> None:
     await session.commit()
 
 
-# --- Core reddit → per-user aggregation -----------------------------------
-
-
 _SQL_USER_AGG_FROM_REDDIT = text(
     """
     WITH seeds AS (
         SELECT tmdb_id
         FROM user_favorites
+        WHERE user_id = :uid
+    ),
+    blocked AS (
+        SELECT tmdb_id
+        FROM user_favorites
+        WHERE user_id = :uid
+
+        UNION
+
+        SELECT tmdb_id
+        FROM not_interested
         WHERE user_id = :uid
     ),
     both_dirs AS (
@@ -79,6 +81,7 @@ _SQL_USER_AGG_FROM_REDDIT = text(
     agg AS (
         SELECT suggested, SUM(w) AS w
         FROM both_dirs
+        WHERE suggested NOT IN (SELECT tmdb_id FROM blocked)
         GROUP BY suggested
     )
     SELECT suggested AS suggested_tmdb_id, w
@@ -94,6 +97,7 @@ async def rebuild_pairs_for_user(
     user_id: int,
     *,
     limit: int = 500,
+    ensure_table: bool = True,
 ) -> int:
     """
     Rebuild reddit-based pairs for a single user into user_reddit_pairs.
@@ -105,35 +109,31 @@ async def rebuild_pairs_for_user(
     5) Upsert into user_reddit_pairs.
     """
 
-    # make sure table exists
-    await ensure_user_reddit_pairs_table(session)
+    if ensure_table:
+        await ensure_user_reddit_pairs_table(session)
 
-    # fetch aggregated reddit suggestions for this user
-    res = await session.execute(
-        _SQL_USER_AGG_FROM_REDDIT, {"uid": user_id, "limit": limit}
-    )
+    res = await session.execute(_SQL_USER_AGG_FROM_REDDIT, {"uid": user_id, "limit": limit})
     rows = res.all()
 
+    await session.execute(
+        text("DELETE FROM user_reddit_pairs WHERE user_id = :uid"),
+        {"uid": user_id},
+    )
+
     if not rows:
-        # Nothing to store
+        await session.commit()
         return 0
 
-    # Normalise weights so the top suggestion is 1.0
     weights = [float(r.w) for r in rows]  # type: ignore[attr-defined]
     max_w = max(weights) if weights else 0.0
     if max_w <= 0:
+        await session.commit()
         return 0
 
     normalised = [
         (user_id, int(r.suggested_tmdb_id), float(r.w) / max_w)  # type: ignore[attr-defined]
         for r in rows
     ]
-
-    # Optionally clear old entries for this user to keep table tidy
-    await session.execute(
-        text("DELETE FROM user_reddit_pairs WHERE user_id = :uid"),
-        {"uid": user_id},
-    )
 
     insert_stmt = text(
         """
@@ -146,12 +146,8 @@ async def rebuild_pairs_for_user(
         """
     )
 
-    payload = [
-        {"uid": uid, "sid": sid, "w": w}
-        for (uid, sid, w) in normalised
-    ]
+    payload = [{"uid": uid, "sid": sid, "w": w} for (uid, sid, w) in normalised]
 
-    # executemany-style
     await session.execute(insert_stmt, payload)
     await session.commit()
 
@@ -164,7 +160,7 @@ async def rebuild_pairs_for_all_users(
     limit: int = 500,
 ) -> int:
     """
-    Rebuild reddit-based pairs for *all* users that have favorites.
+    Rebuild reddit-based pairs for all users that have favorites.
 
     Returns the total number of user_reddit_pairs rows written.
     """
@@ -176,7 +172,12 @@ async def rebuild_pairs_for_all_users(
 
     total = 0
     for uid in user_ids:
-        n = await rebuild_pairs_for_user(session, uid, limit=limit)
+        n = await rebuild_pairs_for_user(
+            session,
+            uid,
+            limit=limit,
+            ensure_table=False,
+        )
         total += n
 
     return total

@@ -7,7 +7,6 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation() as any;
 
-  // If we came from a protected page, go back there; otherwise default to /recs
   const from: string = location.state?.from || "/discover";
 
   const [email, setEmail] = useState("");
@@ -29,7 +28,6 @@ export default function Login() {
     }
   }
 
-  // full-screen background (poster collage + logo)
   const outerStyle: React.CSSProperties = {
     minHeight: "100vh",
     width: "100%",
@@ -45,7 +43,6 @@ export default function Login() {
     color: "#e5e7eb",
   };
 
-  // dark overlay so the form is readable
   const overlayStyle: React.CSSProperties = {
     position: "relative",
     width: "100%",
@@ -172,6 +169,11 @@ export default function Login() {
                 style={inputStyle}
                 autoComplete="current-password"
               />
+              <div style={{ marginTop: "0.5rem", textAlign: "right" }}>
+                <a href="/forgot-password" style={{ ...linkStyle, fontSize: "0.84rem" }}>
+                  Forgot password?
+                </a>
+              </div>
             </div>
 
             <button

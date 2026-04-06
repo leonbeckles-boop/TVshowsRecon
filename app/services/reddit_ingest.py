@@ -11,16 +11,23 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import httpx
+from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 logger = logging.getLogger(__name__)
 
+load_dotenv()
+
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET") or os.getenv("REDDIT_CLIENT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "tvrecs/1.0")
-REDDIT_SUBS = [s.strip() for s in os.getenv("REDDIT_SUBS", "televisionsuggestions").split(",") if s.strip()]
+REDDIT_SUBS = [
+    s.strip()
+    for s in os.getenv("REDDIT_SUBS", "televisionsuggestions").split(",")
+    if s.strip()
+]
 
 INTERNAL_BASE = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8000")
 DATABASE_URL = (
@@ -30,6 +37,7 @@ DATABASE_URL = (
     or os.getenv("SQLALCHEMY_DATABASE_URL")
 )
 
+# Aggressive stop-list for ambiguous/common titles.
 STOP_TITLES: Set[str] = {
     "you",
     "from",
@@ -48,9 +56,51 @@ STOP_TITLES: Set[str] = {
     "episode",
     "the night",
     "night",
+    "once",
+    "looking",
+    "paradise",
+    "maid",
+    "greek",
+    "life",
+    "next",
+    "found",
+    "boss",
+    "heroes",
+    "skins",
+    "glow",
+    "teachers",
+    "reason",
+    "reunion",
+    "level",
+    "chance",
+    "between",
+    "awake",
+    "crash",
+    "drive",
+    "chosen",
+    "panic",
+    "ghosts",
+    "medium",
+    "single",
+    "party",
 }
+
 TITLE_MIN_LEN = 4
+TITLE_MIN_WORDS_FOR_RELAXED_MATCH = 2
+SINGLE_WORD_MIN_LEN = 7
 SEARCH_TITLE_CAP = 20
+
+RECOMMENDATION_CONTEXT_PATTERNS = [
+    r"\bshows?\s+like\b",
+    r"\bsimilar\s+to\b",
+    r"\brecommend(?:ed|ations?)?\b",
+    r"\bwhat\s+should\s+i\s+watch\b",
+    r"\bwhat\s+to\s+watch\b",
+    r"\bif\s+i\s+liked\b",
+    r"\blooking\s+for\s+(?:a\s+)?show\b",
+    r"\bneed\s+a\s+show\b",
+    r"\bwatch\s+next\b",
+]
 
 
 def _normalize_database_url(url: Optional[str]) -> Optional[str]:
@@ -60,7 +110,7 @@ def _normalize_database_url(url: Optional[str]) -> Optional[str]:
     if raw.startswith("postgresql+asyncpg://"):
         return raw
     if raw.startswith("postgres://"):
-        raw = "postgresql://" + raw[len("postgres://"):]
+        raw = "postgresql://" + raw[len("postgres://") :]
     if raw.startswith("postgresql://"):
         parsed = make_url(raw)
         if "+" not in parsed.drivername:
@@ -74,9 +124,11 @@ def _require_env() -> None:
     if not REDDIT_CLIENT_ID:
         missing.append("REDDIT_CLIENT_ID")
     if not REDDIT_SECRET:
-        missing.append("REDDIT_SECRET")
+        missing.append("REDDIT_SECRET or REDDIT_CLIENT_SECRET")
     if missing:
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
     if not DATABASE_URL:
         raise RuntimeError(
             "Missing database URL. Set DATABASE_URL, RENDER_DATABASE_URL, POSTGRES_URL, or SQLALCHEMY_DATABASE_URL."
@@ -106,6 +158,29 @@ def _slugish(value: str) -> str:
     return value
 
 
+def _has_recommendation_context(text_value: str) -> bool:
+    norm = _norm_text(text_value)
+    return any(re.search(pattern, norm) for pattern in RECOMMENDATION_CONTEXT_PATTERNS)
+
+
+def _title_word_count(title: str) -> int:
+    return len([p for p in re.split(r"\s+", title.strip()) if p])
+
+
+def _is_allowed_title(title: str) -> bool:
+    key = _slugish(title)
+    if len(key) < TITLE_MIN_LEN:
+        return False
+    if key in STOP_TITLES:
+        return False
+
+    word_count = _title_word_count(title)
+    if word_count <= 1 and len(key) < SINGLE_WORD_MIN_LEN:
+        return False
+
+    return True
+
+
 async def _reddit_token() -> str:
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.post(
@@ -118,7 +193,9 @@ async def _reddit_token() -> str:
         return r.json()["access_token"]
 
 
-async def fetch_top_week(token: str, sub: str, limit: int = 100) -> List[Dict[str, Any]]:
+async def fetch_top_week(
+    token: str, sub: str, limit: int = 100
+) -> List[Dict[str, Any]]:
     url = f"https://oauth.reddit.com/r/{sub}/top"
     params = {"t": "week", "limit": str(limit)}
     headers = {"Authorization": f"bearer {token}", "User-Agent": REDDIT_USER_AGENT}
@@ -126,10 +203,16 @@ async def fetch_top_week(token: str, sub: str, limit: int = 100) -> List[Dict[st
         r = await client.get(url, params=params)
         r.raise_for_status()
         js = r.json()
-        return [it["data"] for it in (js.get("data", {}).get("children") or []) if isinstance(it, dict) and "data" in it]
+        return [
+            it["data"]
+            for it in (js.get("data", {}).get("children") or [])
+            if isinstance(it, dict) and "data" in it
+        ]
 
 
-async def fetch_search_for_titles(token: str, sub: str, titles: Sequence[str], per_title: int = 30) -> List[Dict[str, Any]]:
+async def fetch_search_for_titles(
+    token: str, sub: str, titles: Sequence[str], per_title: int = 30
+) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not titles:
         return out
@@ -139,15 +222,27 @@ async def fetch_search_for_titles(token: str, sub: str, titles: Sequence[str], p
         for title in titles[:SEARCH_TITLE_CAP]:
             q = f'title:"{title}"'
             url = f"https://oauth.reddit.com/r/{sub}/search"
-            params = {"q": q, "restrict_sr": "true", "sort": "top", "t": "year", "limit": str(per_title)}
+            params = {
+                "q": q,
+                "restrict_sr": "true",
+                "sort": "top",
+                "t": "year",
+                "limit": str(per_title),
+            }
             try:
                 r = await client.get(url, params=params)
                 r.raise_for_status()
                 js = r.json()
-                items = [it["data"] for it in (js.get("data", {}).get("children") or []) if isinstance(it, dict) and "data" in it]
+                items = [
+                    it["data"]
+                    for it in (js.get("data", {}).get("children") or [])
+                    if isinstance(it, dict) and "data" in it
+                ]
                 out.extend(items)
             except Exception as exc:
-                logger.warning("reddit_ingest: search failed for %r in r/%s: %s", title, sub, exc)
+                logger.warning(
+                    "reddit_ingest: search failed for %r in r/%s: %s", title, sub, exc
+                )
     return out
 
 
@@ -157,7 +252,9 @@ async def get_user_favourites_titles(user_id: int) -> List[str]:
             r = await client.get(f"{INTERNAL_BASE}/api/library/{user_id}/favorites")
             r.raise_for_status()
             js = r.json()
-            items = js if isinstance(js, list) else (js.get("items") if isinstance(js, dict) else [])
+            items = js if isinstance(js, list) else (
+                js.get("items") if isinstance(js, dict) else []
+            )
             titles: List[str] = []
             for item in items:
                 name = item.get("title") or item.get("name")
@@ -165,15 +262,21 @@ async def get_user_favourites_titles(user_id: int) -> List[str]:
                     titles.append(name.strip())
             return titles
     except Exception as exc:
-        logger.warning("reddit_ingest: unable to fetch favourites for user %s: %s", user_id, exc)
+        logger.warning(
+            "reddit_ingest: unable to fetch favourites for user %s: %s", user_id, exc
+        )
         return []
 
 
 async def _get_engine() -> AsyncEngine:
-    return create_async_engine(_normalize_database_url(DATABASE_URL), future=True, pool_pre_ping=True)
+    return create_async_engine(
+        _normalize_database_url(DATABASE_URL), future=True, pool_pre_ping=True
+    )
 
 
-async def _get_table_columns(session: AsyncSession, table_name: str) -> Dict[str, Dict[str, Any]]:
+async def _get_table_columns(
+    session: AsyncSession, table_name: str
+) -> Dict[str, Dict[str, Any]]:
     q = text(
         """
         SELECT column_name, is_nullable, data_type, column_default
@@ -185,53 +288,146 @@ async def _get_table_columns(session: AsyncSession, table_name: str) -> Dict[str
     return {row["column_name"]: dict(row) for row in rows}
 
 
+async def _ensure_reddit_post_mentions_table(session: AsyncSession) -> None:
+    await session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS reddit_post_mentions (
+                post_id BIGINT NOT NULL,
+                tmdb_id BIGINT NOT NULL,
+                PRIMARY KEY (post_id, tmdb_id)
+            )
+            """
+        )
+    )
+    await session.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_reddit_post_mentions_post_id
+            ON reddit_post_mentions (post_id)
+            """
+        )
+    )
+    await session.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_reddit_post_mentions_tmdb_id
+            ON reddit_post_mentions (tmdb_id)
+            """
+        )
+    )
+
+
 async def _load_show_catalog(session: AsyncSession) -> List[Dict[str, Any]]:
-    queries = [
-        "SELECT show_id, title FROM shows WHERE title IS NOT NULL",
-        "SELECT show_id, name AS title FROM shows WHERE name IS NOT NULL",
-    ]
-    for sql in queries:
-        try:
-            rows = (await session.execute(text(sql))).mappings().all()
-            if rows:
-                catalog = []
-                seen: Set[int] = set()
-                for row in rows:
-                    show_id = row.get("show_id")
-                    title = row.get("title")
-                    if show_id is None or not isinstance(title, str) or not title.strip():
-                        continue
-                    if int(show_id) in seen:
-                        continue
-                    seen.add(int(show_id))
-                    catalog.append({"show_id": int(show_id), "title": title.strip()})
-                return catalog
-        except Exception:
+    # Your shows table uses `title`, not `name`.
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT
+                    show_id,
+                    title,
+                    COALESCE(vote_count, 0) AS vote_count,
+                    COALESCE(vote_average, 0) AS vote_average,
+                    COALESCE(popularity, 0) AS popularity,
+                    first_air_date
+                FROM shows
+                WHERE title IS NOT NULL
+                  AND title <> ''
+                """
+            )
+        )
+    ).mappings().all()
+
+    if not rows:
+        raise RuntimeError("Unable to load show catalog from the shows table.")
+
+    catalog: List[Dict[str, Any]] = []
+    seen: Set[int] = set()
+
+    for row in rows:
+        show_id = row.get("show_id")
+        title = row.get("title")
+        if show_id is None or not isinstance(title, str) or not title.strip():
             continue
-    raise RuntimeError("Unable to load show catalog from the shows table.")
+
+        sid = int(show_id)
+        if sid in seen:
+            continue
+
+        seen.add(sid)
+        catalog.append(
+            {
+                "show_id": sid,
+                "title": title.strip(),
+                "vote_count": int(row.get("vote_count") or 0),
+                "vote_average": float(row.get("vote_average") or 0.0),
+                "popularity": float(row.get("popularity") or 0.0),
+                "first_air_date": row.get("first_air_date"),
+            }
+        )
+
+    return catalog
 
 
-def _build_match_index(catalog: Sequence[Dict[str, Any]]) -> Dict[str, List[Tuple[int, str]]]:
-    idx: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
+def _catalog_rank_key(item: Dict[str, Any]) -> Tuple[float, float, str]:
+    # Higher is better.
+    return (
+        float(item.get("vote_count") or 0),
+        float(item.get("popularity") or 0.0) + float(item.get("vote_average") or 0.0),
+        str(item.get("first_air_date") or ""),
+    )
+
+
+def _build_match_index(
+    catalog: Sequence[Dict[str, Any]]
+) -> Dict[str, Tuple[int, str]]:
+    # One normalized title -> one canonical show.
+    best_by_key: Dict[str, Dict[str, Any]] = {}
+
     for item in catalog:
         title = item["title"]
-        show_id = item["show_id"]
-        key = _slugish(title)
-        if len(key) < TITLE_MIN_LEN or key in STOP_TITLES:
+        if not _is_allowed_title(title):
             continue
-        idx[key].append((show_id, title))
-    return idx
+
+        key = _slugish(title)
+        current = best_by_key.get(key)
+        if current is None or _catalog_rank_key(item) > _catalog_rank_key(current):
+            best_by_key[key] = item
+
+    out: Dict[str, Tuple[int, str]] = {}
+    for key, item in best_by_key.items():
+        out[key] = (int(item["show_id"]), str(item["title"]))
+    return out
 
 
-def _match_titles(post: Dict[str, Any], match_index: Dict[str, List[Tuple[int, str]]]) -> List[Tuple[int, str]]:
-    hay = " ".join([str(post.get("title") or ""), str(post.get("selftext") or "")])
+def _match_titles(
+    post: Dict[str, Any], match_index: Dict[str, Tuple[int, str]]
+) -> List[Tuple[int, str]]:
+    title_text = str(post.get("title") or "")
+    body_text = str(post.get("selftext") or "")
+    hay = " ".join([title_text, body_text])
     norm = f" {_norm_text(hay)} "
+    has_context = _has_recommendation_context(hay)
+
     found: Dict[int, str] = {}
-    for norm_title, hits in match_index.items():
+
+    for norm_title, hit in match_index.items():
+        show_id, title = hit
         if f" {norm_title} " not in norm:
             continue
-        for show_id, title in hits:
-            found[show_id] = title
+
+        word_count = _title_word_count(title)
+
+        # Stricter rules for single-word titles.
+        if word_count < TITLE_MIN_WORDS_FOR_RELAXED_MATCH:
+            # For one-word titles, only accept them in recommendation-oriented posts,
+            # and only if they are not on the stop-list.
+            if not has_context:
+                continue
+
+        found[show_id] = title
+
     return sorted(found.items(), key=lambda x: x[1].lower())
 
 
@@ -247,7 +443,11 @@ def _dedupe_posts(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-async def _upsert_reddit_post(session: AsyncSession, post: Dict[str, Any], reddit_posts_columns: Dict[str, Dict[str, Any]]) -> Optional[int]:
+async def _upsert_reddit_post(
+    session: AsyncSession,
+    post: Dict[str, Any],
+    reddit_posts_columns: Dict[str, Dict[str, Any]],
+) -> Optional[int]:
     available = set(reddit_posts_columns)
     row: Dict[str, Any] = {}
     mapping = {
@@ -275,7 +475,9 @@ async def _upsert_reddit_post(session: AsyncSession, post: Dict[str, Any], reddi
 
     cols = ", ".join(row.keys())
     binds = ", ".join(f":{k}" for k in row.keys())
-    updates = ", ".join(f"{k} = EXCLUDED.{k}" for k in row.keys() if k not in {"reddit_id"})
+    updates = ", ".join(
+        f"{k} = EXCLUDED.{k}" for k in row.keys() if k not in {"reddit_id"}
+    )
     stmt = text(
         f"""
         INSERT INTO reddit_posts ({cols})
@@ -290,32 +492,49 @@ async def _upsert_reddit_post(session: AsyncSession, post: Dict[str, Any], reddi
         return int(res.scalar_one())
     except Exception:
         await session.rollback()
-        res = await session.execute(text("SELECT id FROM reddit_posts WHERE reddit_id = :reddit_id"), {"reddit_id": row["reddit_id"]})
+        res = await session.execute(
+            text("SELECT id FROM reddit_posts WHERE reddit_id = :reddit_id"),
+            {"reddit_id": row["reddit_id"]},
+        )
         existing = res.scalar_one_or_none()
         if existing is not None:
             return int(existing)
         raise
 
 
-async def _insert_post_mentions(session: AsyncSession, post_id: int, tmdb_ids: Sequence[int], reddit_post_mentions_columns: Dict[str, Dict[str, Any]]) -> int:
+async def _insert_post_mentions(
+    session: AsyncSession,
+    post_id: int,
+    tmdb_ids: Sequence[int],
+    reddit_post_mentions_columns: Dict[str, Dict[str, Any]],
+) -> List[int]:
     available = set(reddit_post_mentions_columns)
     if not {"post_id", "tmdb_id"}.issubset(available):
-        return 0
-    inserted = 0
+        return []
+
+    inserted_ids: List[int] = []
     stmt = text(
         """
         INSERT INTO reddit_post_mentions (post_id, tmdb_id)
         VALUES (:post_id, :tmdb_id)
         ON CONFLICT DO NOTHING
+        RETURNING tmdb_id
         """
     )
-    for tmdb_id in tmdb_ids:
-        await session.execute(stmt, {"post_id": post_id, "tmdb_id": tmdb_id})
-        inserted += 1
-    return inserted
+    for tmdb_id in sorted(set(int(x) for x in tmdb_ids)):
+        res = await session.execute(stmt, {"post_id": post_id, "tmdb_id": tmdb_id})
+        returned = res.scalar_one_or_none()
+        if returned is not None:
+            inserted_ids.append(int(returned))
+    return inserted_ids
 
 
-async def _upsert_pairs(session: AsyncSession, tmdb_ids: Sequence[int], subreddit: str, reddit_pairs_columns: Dict[str, Dict[str, Any]]) -> int:
+async def _upsert_pairs(
+    session: AsyncSession,
+    tmdb_ids: Sequence[int],
+    subreddit: str,
+    reddit_pairs_columns: Dict[str, Dict[str, Any]],
+) -> int:
     available = set(reddit_pairs_columns)
     if not {"tmdb_id_a", "tmdb_id_b"}.issubset(available):
         return 0
@@ -336,7 +555,11 @@ async def _upsert_pairs(session: AsyncSession, tmdb_ids: Sequence[int], subreddi
             b = unique_ids[j]
             fields = ["tmdb_id_a", "tmdb_id_b"]
             values = [":tmdb_id_a", ":tmdb_id_b"]
-            payload: Dict[str, Any] = {"tmdb_id_a": a, "tmdb_id_b": b, "subreddit": subreddit}
+            payload: Dict[str, Any] = {
+                "tmdb_id_a": a,
+                "tmdb_id_b": b,
+                "subreddit": subreddit,
+            }
 
             if supports_pair_count:
                 fields.append("pair_count")
@@ -358,9 +581,13 @@ async def _upsert_pairs(session: AsyncSession, tmdb_ids: Sequence[int], subreddi
             if supports_pair_count:
                 updates.append("pair_count = COALESCE(reddit_pairs.pair_count, 0) + 1")
             if supports_pair_weight:
-                updates.append("pair_weight = COALESCE(reddit_pairs.pair_weight, 0) + 1")
+                updates.append(
+                    "pair_weight = COALESCE(reddit_pairs.pair_weight, 0) + 1"
+                )
             if supports_subreddits:
-                updates.append("subreddits = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(reddit_pairs.subreddits, ARRAY[]::text[]) || EXCLUDED.subreddits)))")
+                updates.append(
+                    "subreddits = (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(reddit_pairs.subreddits, ARRAY[]::text[]) || EXCLUDED.subreddits)))"
+                )
             if supports_updated_at:
                 updates.append("updated_at = EXCLUDED.updated_at")
 
@@ -377,7 +604,12 @@ async def _upsert_pairs(session: AsyncSession, tmdb_ids: Sequence[int], subreddi
     return count
 
 
-async def run_ingest(user_id: Optional[int] = None, subreddits: Optional[Sequence[str]] = None, top_limit: int = 100, search_per_title: int = 15) -> Dict[str, Any]:
+async def run_ingest(
+    user_id: Optional[int] = None,
+    subreddits: Optional[Sequence[str]] = None,
+    top_limit: int = 100,
+    search_per_title: int = 15,
+) -> Dict[str, Any]:
     _require_env()
     token = await _reddit_token()
 
@@ -398,9 +630,15 @@ async def run_ingest(user_id: Optional[int] = None, subreddits: Optional[Sequenc
     if user_id is not None:
         fav_titles = await get_user_favourites_titles(user_id)
         if fav_titles:
-            logger.info("[Reddit] user %s favourites loaded: %s titles", user_id, len(fav_titles))
+            logger.info(
+                "[Reddit] user %s favourites loaded: %s titles",
+                user_id,
+                len(fav_titles),
+            )
             for sub in chosen_subs:
-                more = await fetch_search_for_titles(token, sub, fav_titles, per_title=search_per_title)
+                more = await fetch_search_for_titles(
+                    token, sub, fav_titles, per_title=search_per_title
+                )
                 logger.info("[Reddit] fetched title-search from r/%s: %s posts", sub, len(more))
                 all_items.extend(more)
 
@@ -408,23 +646,27 @@ async def run_ingest(user_id: Optional[int] = None, subreddits: Optional[Sequenc
 
     engine = await _get_engine()
     saved = 0
-    updated = 0
     failed = 0
     matched_posts = 0
     mentions_inserted = 0
     pairs_updated = 0
+    skipped_existing_mentions = 0
 
     try:
         async with engine.begin() as conn:
             session = AsyncSession(bind=conn, expire_on_commit=False)
 
+            await _ensure_reddit_post_mentions_table(session)
+
             reddit_posts_columns = await _get_table_columns(session, "reddit_posts")
-            reddit_post_mentions_columns = await _get_table_columns(session, "reddit_post_mentions")
+            reddit_post_mentions_columns = await _get_table_columns(
+                session, "reddit_post_mentions"
+            )
             reddit_pairs_columns = await _get_table_columns(session, "reddit_pairs")
 
             catalog = await _load_show_catalog(session)
             match_index = _build_match_index(catalog)
-            logger.info("[Reddit] loaded show catalog: %s titles", len(match_index))
+            logger.info("[Reddit] loaded show catalog: %s canonical titles", len(match_index))
 
             for post in all_items:
                 try:
@@ -440,11 +682,29 @@ async def run_ingest(user_id: Optional[int] = None, subreddits: Optional[Sequenc
                         continue
 
                     saved += 1
-                    mentions_inserted += await _insert_post_mentions(session, post_id, tmdb_ids, reddit_post_mentions_columns)
-                    pairs_updated += await _upsert_pairs(session, tmdb_ids, str(post.get("subreddit") or ""), reddit_pairs_columns)
+
+                    new_mentions = await _insert_post_mentions(
+                        session, post_id, tmdb_ids, reddit_post_mentions_columns
+                    )
+                    mentions_inserted += len(new_mentions)
+
+                    if len(new_mentions) >= 2:
+                        pairs_updated += await _upsert_pairs(
+                            session,
+                            new_mentions,
+                            str(post.get("subreddit") or ""),
+                            reddit_pairs_columns,
+                        )
+                    else:
+                        skipped_existing_mentions += 1
+
                 except Exception as exc:
                     failed += 1
-                    logger.exception("reddit_ingest: failed processing reddit_id=%s: %s", post.get("id"), exc)
+                    logger.exception(
+                        "reddit_ingest: failed processing reddit_id=%s: %s",
+                        post.get("id"),
+                        exc,
+                    )
 
             await session.commit()
     finally:
@@ -453,36 +713,61 @@ async def run_ingest(user_id: Optional[int] = None, subreddits: Optional[Sequenc
     result = {
         "fetched": len(all_items),
         "saved": saved,
-        "updated": updated,
         "failed": failed,
         "matched_posts": matched_posts,
         "mentions_inserted": mentions_inserted,
         "pairs_updated": pairs_updated,
+        "skipped_existing_mentions": skipped_existing_mentions,
         "user_id": user_id,
         "subreddits": chosen_subs,
         "favourite_titles_used": len(fav_titles),
     }
 
     logger.info(
-        "[Reddit] Ingest complete. user_id=%s fetched=%s saved=%s matched_posts=%s mentions_inserted=%s pairs_updated=%s failed=%s",
+        "[Reddit] Ingest complete. user_id=%s fetched=%s saved=%s matched_posts=%s mentions_inserted=%s pairs_updated=%s skipped_existing_mentions=%s failed=%s",
         user_id,
         result["fetched"],
         result["saved"],
         result["matched_posts"],
         result["mentions_inserted"],
         result["pairs_updated"],
+        result["skipped_existing_mentions"],
         result["failed"],
     )
     return result
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ingest Reddit posts into WhatNext Reddit tables.")
-    parser.add_argument("--user-id", type=int, default=None, help="Optional user id to bias search toward favourite titles.")
-    parser.add_argument("--subs", type=str, default=None, help="Comma-separated subreddit list. Defaults to REDDIT_SUBS.")
-    parser.add_argument("--top-limit", type=int, default=100, help="Top/week post limit per subreddit.")
-    parser.add_argument("--search-per-title", type=int, default=15, help="Search result limit per favourite title.")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Logging level, e.g. INFO or DEBUG.")
+    parser = argparse.ArgumentParser(
+        description="Ingest Reddit posts into WhatNext Reddit tables."
+    )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=None,
+        help="Optional user id to bias search toward favourite titles.",
+    )
+    parser.add_argument(
+        "--subs",
+        type=str,
+        default=None,
+        help="Comma-separated subreddit list. Defaults to REDDIT_SUBS.",
+    )
+    parser.add_argument(
+        "--top-limit",
+        type=int,
+        default=100,
+        help="Top/week post limit per subreddit.",
+    )
+    parser.add_argument(
+        "--search-per-title",
+        type=int,
+        default=15,
+        help="Search result limit per favourite title.",
+    )
+    parser.add_argument(
+        "--log-level", type=str, default="INFO", help="Logging level, e.g. INFO or DEBUG."
+    )
     return parser.parse_args()
 
 

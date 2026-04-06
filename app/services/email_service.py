@@ -83,35 +83,29 @@ def _email_shell(title: str, preheader: str, body_html: str) -> str:
             <td align="center">
               <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="width:640px; max-width:640px; background:#ffffff; border-radius:18px; overflow:hidden; box-shadow:0 8px 30px rgba(15,23,42,0.08);">
                 <tr>
-                    <td style="background:linear-gradient(135deg, #020617 0%, #0f172a 55%, #1d4ed8 100%); padding:24px 28px;">
-                        
-                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                        <tr>
-                            
-                            <!-- LOGO -->
-                            <td style="vertical-align:middle; width:60px;">
-                            <img 
-                                src="https://whatnexttv.org/logo1.png" 
-                                alt="WhatNext"
-                                style="height:44px; display:block;"
-                            />
-                            </td>
+                  <td style="background:linear-gradient(135deg, #020617 0%, #0f172a 55%, #1d4ed8 100%); padding:24px 28px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="vertical-align:middle; width:60px;">
+                          <img
+                            src="https://whatnexttv.org/logo1.png"
+                            alt="WhatNext"
+                            style="height:44px; display:block;"
+                          />
+                        </td>
 
-                            <!-- TEXT -->
-                            <td style="vertical-align:middle; padding-left:12px;">
-                            <div style="font-size:22px; font-weight:700; color:#ffffff; line-height:1.2;">
-                                WhatNext
-                            </div>
-                            <div style="font-size:13px; color:#cbd5e1; margin-top:2px;">
-                                Personalised TV recommendations
-                            </div>
-                            </td>
-
-                        </tr>
-                        </table>
-
-                    </td>
-                    </tr>
+                        <td style="vertical-align:middle; padding-left:12px;">
+                          <div style="font-size:22px; font-weight:700; color:#ffffff; line-height:1.2;">
+                            WhatNext
+                          </div>
+                          <div style="font-size:13px; color:#cbd5e1; margin-top:2px;">
+                            Personalised TV recommendations
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
 
                 <tr>
                   <td style="padding:36px 32px 14px 32px;">
@@ -122,7 +116,7 @@ def _email_shell(title: str, preheader: str, body_html: str) -> str:
                 <tr>
                   <td style="padding:8px 32px 32px 32px;">
                     <div style="margin-top:18px; padding-top:18px; border-top:1px solid #e2e8f0; font-size:13px; color:#64748b; line-height:1.6;">
-                      You’re receiving this because you signed up for WhatNext.<br/>
+                      You’re receiving this because you have a WhatNext account or requested account access help.<br/>
                       <a href="https://whatnexttv.org" style="color:#4f46e5; text-decoration:none;">whatnexttv.org</a>
                     </div>
                   </td>
@@ -199,6 +193,64 @@ def welcome_email_html(first_name: str | None = None) -> str:
     return _email_shell(
         "Welcome to WhatNext",
         "Welcome to WhatNext — get personalised TV recommendations faster.",
+        body,
+    )
+
+
+def reset_password_email_html(
+    reset_link: str,
+    first_name: str | None = None,
+    expiry_minutes: int = 30,
+) -> str:
+    name = _safe_name(first_name)
+
+    body = f"""
+      <h1 style="margin:0 0 14px 0; font-size:28px; line-height:1.2; color:#0f172a;">
+        Reset your password
+      </h1>
+
+      <p style="margin:0 0 18px 0; font-size:17px; line-height:1.7; color:#334155;">
+        Hi {name},
+      </p>
+
+      <p style="margin:0 0 16px 0; font-size:16px; line-height:1.7; color:#334155;">
+        We received a request to reset your WhatNext password.
+      </p>
+
+      <p style="margin:0 0 20px 0; font-size:16px; line-height:1.7; color:#334155;">
+        Click the button below to choose a new password. This link will expire in <strong>{expiry_minutes} minutes</strong>.
+      </p>
+
+      <div style="text-align:center; margin:28px 0;">
+        <a href="{reset_link}"
+           style="display:inline-block; background:linear-gradient(135deg, #2563eb 0%, #6366f1 100%); color:#ffffff; text-decoration:none; padding:15px 24px; border-radius:12px; font-size:16px; font-weight:700;">
+          Reset password
+        </a>
+      </div>
+
+      <p style="margin:0 0 14px 0; font-size:14px; line-height:1.7; color:#64748b;">
+        If the button does not work, copy and paste this link into your browser:
+      </p>
+
+      <p style="margin:0 0 20px 0; font-size:13px; line-height:1.8; color:#475569; word-break:break-all;">
+        {reset_link}
+      </p>
+
+      <div style="margin:0 0 22px 0; background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:16px;">
+        <div style="font-size:15px; line-height:1.7; color:#334155;">
+          If you did not request a password reset, you can safely ignore this email.
+        </div>
+      </div>
+
+      <p style="margin:0; font-size:15px; line-height:1.7; color:#0f172a;">
+        Leon<br/>
+        <span style="color:#64748b;">Founder, WhatNext</span>
+      </p>
+    """
+
+    return _email_shell(
+        "Reset your WhatNext password",
+        "Reset your WhatNext password.",
         body,
     )
 

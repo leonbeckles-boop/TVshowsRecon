@@ -19,6 +19,8 @@ import BestShows from "./pages/BestShows";
 import SEOIndex from "./pages/SEOIndex";
 import { Analytics } from "@vercel/analytics/react";
 import Homepage from "./pages/Homepage";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 
 
 
@@ -146,6 +148,8 @@ export default function App() {
         <Route path="/wrapped" element={<Wrapped />} />
         <Route path="/show/:tmdb_id" element={<ShowDetails />} />
         <Route path="/admin" element={<AdminDashboard />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* Shows Like pages */}
         <Route path="/shows-like" element={<ShowsLikeHub />} />

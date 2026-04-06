@@ -360,6 +360,55 @@ async def _fetch_reddit_candidates_from_pairs(
         if len(items) >= raw_limit:
             break
     return items
+
+async def _fetch_reddit_candidates_for_user(
+    session: AsyncSession,
+    user_id: int,
+    limit: int,
+    block_ids: set[int],
+) -> List[Dict[str, Any]]:
+    """
+    Prefer personalised reddit candidates from user_reddit_pairs.
+    Falls back to [] if the user has no personalised rows yet.
+    """
+    raw_limit = max(limit * 6, limit * 3, limit)
+    sql = text(
+        """
+        SELECT suggested_tmdb_id AS tmdb_id, weight
+        FROM user_reddit_pairs
+        WHERE user_id = :uid
+        ORDER BY weight DESC, suggested_tmdb_id ASC
+        LIMIT :limit
+        """
+    )
+    try:
+        res = await session.execute(sql, {"uid": user_id, "limit": raw_limit})
+    except Exception:
+        log.exception("user_reddit_pairs query failed; skipping personalised reddit candidates")
+        return []
+
+    rows = res.mappings().all()
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        tid = r.get("tmdb_id")
+        if tid is None:
+            continue
+        try:
+            tid_i = int(tid)
+        except Exception:
+            continue
+        if tid_i in block_ids:
+            continue
+        try:
+            w = float(r.get("weight") or 0.0)
+        except Exception:
+            w = 0.0
+        if w <= 0:
+            continue
+        items.append({"tmdb_id": tid_i, "score_raw": w, "source": "user_reddit_pairs"})
+        if len(items) >= raw_limit:
+            break
+    return items
 # ---------------------------------------------------------------------------
 # Scoring & MMR
 # ---------------------------------------------------------------------------
@@ -627,10 +676,12 @@ async def get_recs_v3(
                     "mmr_lambda": mmr_lambda,
                 },
             }
-        # Reddit candidates (with IDF weighting — Improvement #4)
+        # Reddit candidates: prefer personalised user_reddit_pairs, fall back to global reddit_pairs
         reddit_base: List[Dict[str, Any]] = []
         if w_reddit > 0:
-            reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
+            reddit_base = await _fetch_reddit_candidates_for_user(session, user_id, limit, block_ids)
+            if not reddit_base:
+                reddit_base = await _fetch_reddit_candidates_from_pairs(session, fav_ids, limit, block_ids)
         # Favourite details for language/genre profile
         fav_details: List[Dict[str, Any]] = await asyncio.gather(*[_tmdb_details(fid) for fid in fav_ids])
 
@@ -712,12 +763,13 @@ async def get_recs_v3(
             by_id[tid]["source"] = "tmdb_recs"
         for item in reddit_base:
             tid = item["tmdb_id"]
+            reddit_source = str(item.get("source") or "reddit_pairs")
             if tid not in by_id:
-                by_id[tid] = {"tmdb_id": tid, "scores_by_source": {}, "source": item.get("source", "reddit_pairs")}
-            by_id[tid]["scores_by_source"]["reddit_pairs"] = float(item.get("score_raw", 0.0))
+                by_id[tid] = {"tmdb_id": tid, "scores_by_source": {}, "source": reddit_source}
+            by_id[tid]["scores_by_source"][reddit_source] = float(item.get("score_raw", 0.0))
             # If reddit is the only source, keep it; otherwise multi-signal
             if len(by_id[tid]["scores_by_source"]) == 1:
-                by_id[tid]["source"] = "reddit_pairs"
+                by_id[tid]["source"] = reddit_source
             else:
                 by_id[tid]["source"] = "multi_signal"
         # Compute combined score_raw: sum of all source scores (multi-signal reinforcement)
@@ -831,7 +883,20 @@ async def get_recs_v3(
             score_reddit = r_n
             score_tmdb = t_n
             score_personal = p_n
+            sources = it.get("scores_by_source", {}) or {}
+            has_user_reddit = "user_reddit_pairs" in sources
+            has_global_reddit = "reddit_pairs" in sources
+
             score = (w_reddit_eff * score_reddit) + (w_tmdb_eff * score_tmdb) + (w_personal_eff * score_personal)
+
+            # Make Reddit drive top results when we have personalised reddit signal.
+            if has_user_reddit:
+                score += 0.18 + (0.32 * score_reddit)
+                if score_reddit >= 0.85:
+                    score += 0.18
+            elif has_global_reddit:
+                score += 0.06 + (0.12 * score_reddit)
+
             # Favourite anchor boost
             if fav_anchor_boost > 0:
                 try:
@@ -852,10 +917,10 @@ async def get_recs_v3(
                     decay = math.exp(-0.1 * age_years)  # smooth exponential falloff
                     score *= (1.0 + (0.20 * decay))
             # Improvement #9: Multi-signal reinforcement bonus
-            sources = it.get("scores_by_source", {})
             if len(sources) >= 2:
                 # Items appearing in multiple sources get a small boost
                 score *= (1.0 + 0.05 * (len(sources) - 1))
+
             enriched = dict(it)
             enriched["score_reddit"] = score_reddit
             enriched["score_tmdb"] = score_tmdb
@@ -863,12 +928,35 @@ async def get_recs_v3(
             enriched["score"] = score
             enriched["score_weights"] = {"tmdb": w_tmdb_eff, "reddit": w_reddit_eff, "personal": w_personal_eff}
             enriched["n_sources"] = len(sources)
+            enriched["reddit_driver"] = has_user_reddit or has_global_reddit
+            enriched["reddit_driver_user"] = has_user_reddit
             combined_items.append(enriched)
+
         # Diversity (MMR) + final top-N
-        if 0.0 < mmr_lambda < 1.0:
-            diversified = _mmr_diversify(combined_items, k=limit, mmr_lambda=mmr_lambda)
+        reddit_slots = 0
+        if w_reddit > 0:
+            reddit_slots = min(max(3, limit // 4), 6, limit)
+
+        user_reddit_pool = sorted(
+            [x for x in combined_items if x.get("reddit_driver_user")],
+            key=lambda x: (float(x.get("score_reddit", 0.0)), float(x.get("score", 0.0))),
+            reverse=True,
+        )
+
+        if reddit_slots > 0 and user_reddit_pool:
+            seeded = _mmr_diversify(user_reddit_pool, k=reddit_slots, mmr_lambda=max(mmr_lambda, 0.80))
+            seeded_ids = {int(x.get("tmdb_id") or 0) for x in seeded}
+            remainder_pool = [x for x in combined_items if int(x.get("tmdb_id") or 0) not in seeded_ids]
+            if 0.0 < mmr_lambda < 1.0:
+                remainder = _mmr_diversify(remainder_pool, k=max(0, limit - len(seeded)), mmr_lambda=mmr_lambda)
+            else:
+                remainder = sorted(remainder_pool, key=lambda x: float(x.get("score", 0.0)), reverse=True)[: max(0, limit - len(seeded))]
+            diversified = seeded + remainder
         else:
-            diversified = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:limit]
+            if 0.0 < mmr_lambda < 1.0:
+                diversified = _mmr_diversify(combined_items, k=limit, mmr_lambda=mmr_lambda)
+            else:
+                diversified = sorted(combined_items, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:limit]
         if recent_first and not freshness_boost:
             diversified = _recent_first_bucket(diversified, years=int(recent_years))
         
@@ -906,7 +994,9 @@ async def get_recs_v3(
                     reasons.append("Matches your taste profile")
                 elif float(item.get("score_tmdb") or 0.0) > 0:
                     reasons.append("Similar genres & tone")
-                if float(item.get("score_reddit") or 0.0) > 0:
+                if item.get("reddit_driver_user") and float(item.get("score_reddit") or 0.0) > 0:
+                    reasons.append("Strong Reddit match for your favourites")
+                elif float(item.get("score_reddit") or 0.0) > 0:
                     reasons.append("Popular with fans of your favourites")
             except Exception:
                 pass
@@ -929,6 +1019,8 @@ async def get_recs_v3(
 # Clean up internal fields before returning
         for item in diversified:
             item.pop("scores_by_source", None)
+            item.pop("reddit_driver", None)
+            item.pop("reddit_driver_user", None)
         if flat:
             return diversified
         return {

@@ -25,6 +25,12 @@ type DiscoverResponse = {
   genres?: Record<string, Show[]>;
 };
 
+type TopRatedShow = Show & {
+  avg_rating?: number;
+  ratings_count?: number;
+  weighted_score?: number;
+};
+
 function getTmdbId(x: any): number | null {
   const cand = x?.tmdb_id ?? x?.external_id ?? x?.show_id ?? x?.id;
   const n = Number(cand);
@@ -89,7 +95,9 @@ const sectionCards = [
 export default function Homepage() {
   const [trending, setTrending] = useState<Show[]>([]);
   const [featured, setFeatured] = useState<Show[]>([]);
+  const [topRated, setTopRated] = useState<TopRatedShow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [topRatedLoading, setTopRatedLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -113,6 +121,30 @@ export default function Homepage() {
     };
 
     void load();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadTopRated = async () => {
+      try {
+        const res = await fetch("/api/shows/top-rated?limit=5&min_votes=2");
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        if (!alive) return;
+        setTopRated(Array.isArray(data) ? data : []);
+      } catch {
+        if (!alive) return;
+        setTopRated([]);
+      } finally {
+        if (alive) setTopRatedLoading(false);
+      }
+    };
+
+    void loadTopRated();
     return () => {
       alive = false;
     };
@@ -182,6 +214,45 @@ export default function Homepage() {
             className="homepage-hero__logo"
           />
         </div>
+      </section>
+
+      <section className="homepage-section">
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">Top rated by WhatNext users</h2>
+          <p className="homepage-section__copy">
+            Real user ratings from the app, ranked using weighted scores so the list
+            reflects both quality and consistency.
+          </p>
+        </div>
+
+        {topRatedLoading ? (
+          <div className="glass-card admin-empty">Loading top rated shows…</div>
+        ) : topRated.length > 0 ? (
+          <>
+            <div className="tile-grid">
+              {topRated.map((show) => {
+                const tmdbId = getTmdbId(show);
+                return tmdbId ? <ShowCard key={tmdbId} show={show} /> : null;
+              })}
+            </div>
+
+            <div
+              style={{
+                marginTop: 16,
+                display: "flex",
+                justifyContent: "flex-start",
+              }}
+            >
+              <Link to="/top-rated" className="glass-button-primary">
+                View full top rated list
+              </Link>
+            </div>
+          </>
+        ) : (
+          <div className="glass-card admin-empty">
+            Top rated shows will appear here as more users rate series.
+          </div>
+        )}
       </section>
 
       <section className="homepage-section">
@@ -289,22 +360,22 @@ export default function Homepage() {
         </div>
       </section>
 
-        <div className="wn-feedback-card">
-            <div className="wn-feedback-content">
-                <h2>💬 Help Shape WhatNext</h2>
-                <p>
-                Found a bug? Got an idea? Or just enjoying the app?
-                We’re actively improving WhatNext and would love your feedback.
-                </p>
+      <div className="wn-feedback-card">
+        <div className="wn-feedback-content">
+          <h2>💬 Help Shape WhatNext</h2>
+          <p>
+            Found a bug? Got an idea? Or just enjoying the app?
+            We’re actively improving WhatNext and would love your feedback.
+          </p>
 
-                <a
-                href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback"
-                className="wn-feedback-btn"
-                >
-                Contact Us
-                </a>
-            </div>
-            </div>
+          <a
+            href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback"
+            className="wn-feedback-btn"
+          >
+            Contact Us
+          </a>
+        </div>
+      </div>
     </div>
   );
 }

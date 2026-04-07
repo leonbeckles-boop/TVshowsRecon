@@ -95,6 +95,25 @@ function getTmdbRating(show: any) {
   };
 }
 
+function getUserRating(show: any) {
+  const avg =
+    show?.avg_rating ??
+    show?.user_avg_rating ??
+    show?.community_rating ??
+    null;
+
+  const count =
+    show?.ratings_count ??
+    show?.user_ratings_count ??
+    show?.community_ratings_count ??
+    null;
+
+  return {
+    avg: typeof avg === "number" ? avg : null,
+    count: typeof count === "number" ? count : null,
+  };
+}
+
 function getTmdbId(show: any): number | null {
   const raw =
     show?.tmdb_id ??
@@ -128,6 +147,7 @@ const ShowCard: React.FC<ShowCardProps> = ({
   const genres = useMemo(() => getGenres(show), [show]);
   const posterUrl = useMemo(() => getPosterUrl(show), [show]);
   const tmdb = useMemo(() => getTmdbRating(show), [show]);
+  const userRating = useMemo(() => getUserRating(show), [show]);
   const tmdbId = useMemo(() => getTmdbId(show), [show]);
 
   const favActive = (isFav ?? isFavorite) ?? false;
@@ -144,7 +164,6 @@ const ShowCard: React.FC<ShowCardProps> = ({
 
     navigate(`/show/${tmdbId}`);
 
-    // ✅ FIX: offset scroll so header doesn't cover content
     setTimeout(() => {
       window.scrollTo({
         top: 0,
@@ -212,18 +231,37 @@ const ShowCard: React.FC<ShowCardProps> = ({
           </button>
         )}
 
-        {tmdb.score != null && tmdb.votes != null && (
-          <div className="show-card__tmdb-chip">
-            TMDB {tmdb.score.toFixed(1)}
+        {(userRating.avg != null && userRating.count != null) ||
+        (tmdb.score != null && tmdb.votes != null) ? (
+          <div className="show-card__badge-stack">
+            {userRating.avg != null && userRating.count != null && (
+              <div className="show-card__whatnext-chip">
+                <span className="show-card__whatnext-label">WN</span>
+                <span className="show-card__whatnext-score">
+                  {userRating.avg.toFixed(1)} ★
+                </span>
+                <span className="show-card__whatnext-votes">
+                  {userRating.count} user{userRating.count === 1 ? "" : "s"}
+                </span>
+              </div>
+            )}
+
+            {tmdb.score != null && tmdb.votes != null && (
+              <div className="show-card__tmdb-chip">
+                <span className="show-card__tmdb-label">TMDB</span>
+                <span className="show-card__tmdb-score">
+                  {tmdb.score.toFixed(1)}
+                </span>
+              </div>
+            )}
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="show-card__body">
         <div className="show-card__title">{title}</div>
         {year && <div className="show-card__year">{year}</div>}
 
-        {/* 🚀 NEW: Find Similar CTA */}
         <a
           href={`/shows-like/${slug}`}
           className="show-card__similar-link"

@@ -56,15 +56,24 @@
   pointer-events: none;
 }
 
-/* TMDB badge */
+/* Badge stack */
 
-.show-card__tmdb-chip {
+.show-card__badge-stack {
   position: absolute;
   left: 10px;
   bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 3;
+}
+
+/* TMDB badge */
+
+.show-card__tmdb-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 4px 8px;
   border-radius: 999px;
   font-size: 11px;
@@ -84,6 +93,36 @@
 .show-card__tmdb-votes {
   font-size: 10px;
   color: #9ca3af;
+}
+
+/* WhatNext badge */
+
+.show-card__whatnext-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(2, 132, 199, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.8);
+  color: #e0f2fe;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 20px rgba(2, 132, 199, 0.18);
+}
+
+.show-card__whatnext-label {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.show-card__whatnext-score {
+  font-weight: 700;
+}
+
+.show-card__whatnext-votes {
+  font-size: 10px;
+  color: #bae6fd;
 }
 
 /* Icon buttons on poster */
@@ -227,6 +266,7 @@
   color: #111827;
   outline: none;
 }
+
 .show-card__rating-select option {
   color: #000000;
   background: #ffffff;
@@ -341,12 +381,17 @@
     font-size: 11px;
   }
 
-  .show-card__tmdb-chip {
+  .show-card__tmdb-chip,
+  .show-card__whatnext-chip {
     padding: 3px 7px;
     font-size: 10px;
   }
 
-  /* Hide reasons text on mobile to keep tiles short */
+  .show-card__whatnext-votes,
+  .show-card__tmdb-votes {
+    font-size: 9px;
+  }
+
   .show-card__reasons-hint {
     display: none;
   }
@@ -388,7 +433,7 @@
 .show-card__icon-btn--watchlist {
   position: absolute;
   top: 10px;
-  right: 52px; /* sits to the left of the heart */
+  right: 52px;
   z-index: 5;
 }
 

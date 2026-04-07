@@ -21,6 +21,7 @@ import { Analytics } from "@vercel/analytics/react";
 import Homepage from "./pages/Homepage";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import TopRated from "./pages/TopRated";
 
 
 
@@ -30,6 +31,13 @@ function getHeaderMeta(pathname: string) {
     return {
       title: "WhatNext",
       subtitle: "Find your next TV show faster",
+    };
+  }
+
+  if (pathname === "/top-rated") {
+    return {
+      title: "Top Rated",
+      subtitle: "The highest rated shows by WhatNext users",
     };
   }
 
@@ -150,6 +158,7 @@ export default function App() {
         <Route path="/admin" element={<AdminDashboard />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/top-rated" element={<TopRated />} />
 
         {/* Shows Like pages */}
         <Route path="/shows-like" element={<ShowsLikeHub />} />
@@ -221,6 +230,10 @@ export default function App() {
           className="wn-footer-link"
         >
           Contact
+        </a>
+        <br />
+        <a href="/top-rated" className="wn-footer-link">
+          WhatNext Users Top Rated Shows
         </a>
       </footer>
     </div>

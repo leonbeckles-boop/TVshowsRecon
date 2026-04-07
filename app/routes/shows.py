@@ -345,6 +345,68 @@ async def search_shows(
         raise HTTPException(status_code=500, detail=f"Search failed: {e!r}")
 
 
+@router.get("/top-rated", summary="Top rated shows by WhatNext users")
+async def top_rated_shows(
+    limit: int = Query(10, ge=1, le=50),
+    min_votes: int = Query(3, ge=1, le=20),
+    db: AsyncSession = Depends(get_async_db),
+) -> List[Dict[str, Any]]:
+    """
+    Returns top rated shows using weighted score to avoid low-sample bias.
+    """
+
+    sql = text("""
+        WITH stats AS (
+            SELECT
+                r.tmdb_id,
+                AVG(r.rating) AS avg_rating,
+                COUNT(*) AS ratings_count
+            FROM ratings r
+            WHERE r.rating IS NOT NULL
+            GROUP BY r.tmdb_id
+        ),
+        global_stats AS (
+            SELECT COALESCE(AVG(rating), 0) AS global_avg
+            FROM ratings
+            WHERE rating IS NOT NULL
+        )
+        SELECT
+            s.tmdb_id,
+            sh.title,
+            sh.poster_path,
+            s.avg_rating,
+            s.ratings_count,
+            (
+                (s.ratings_count::float / (s.ratings_count + 5)) * s.avg_rating +
+                (5.0 / (s.ratings_count + 5)) * g.global_avg
+            ) AS weighted_score
+        FROM stats s
+        CROSS JOIN global_stats g
+        JOIN shows sh
+            ON sh.show_id = s.tmdb_id
+        WHERE s.ratings_count >= :min_votes
+        ORDER BY weighted_score DESC, s.ratings_count DESC
+        LIMIT :limit
+    """)
+
+    rows = (await db.execute(sql, {"limit": limit, "min_votes": min_votes})).mappings().all()
+
+    out: List[Dict[str, Any]] = []
+
+    for r in rows:
+        out.append({
+            "tmdb_id": int(r["tmdb_id"]),
+            "title": r["title"],
+            "poster_path": r["poster_path"],
+            "poster_url": f"{TMDB_IMG}/{r['poster_path'].lstrip('/')}" if r["poster_path"] else None,
+            "avg_rating": round(float(r["avg_rating"]), 2),
+            "ratings_count": int(r["ratings_count"]),
+            "weighted_score": round(float(r["weighted_score"]), 3),
+        })
+
+    return out
+
+
 @router.get("/{tmdb_id}/posts", summary="Recent Reddit posts for a show")
 async def show_posts(
     tmdb_id: int = Path(..., ge=1),

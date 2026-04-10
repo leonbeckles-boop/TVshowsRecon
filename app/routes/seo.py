@@ -60,6 +60,8 @@ def _extract_anchor_keywords(*parts: str | None, top_n: int = 14) -> list[str]:
         "period": 3, "historical": 3, "victorian": 3, "midwife": 5,
         "nurse": 4, "nurses": 4, "medical": 4, "hospital": 4, "doctor": 3,
         "family": 3, "community": 3, "romance": 2, "british": 2,
+        "bbc": 2, "england": 2, "london": 2, "small": 1, "town": 1,
+        "marriage": 2, "mother": 2, "women": 2, "gentle": 1, "warm": 1,
     }
     for token, boost in boosts.items():
         if token in counts:
@@ -89,6 +91,8 @@ def _semantic_text_score(anchor_keywords: list[str], *candidate_parts: str | Non
         score += 0.04
     if any(k in joined for k in ("period", "historical", "medical", "hospital", "nurse", "family", "community", "romance")):
         score += 0.05
+    if any(k in joined for k in ("british", "bbc", "england", "london", "midwife", "village", "marriage")):
+        score += 0.04
 
     return float(min(score, 1.0))
 
@@ -156,6 +160,36 @@ def _genre_name_set(details: dict) -> set[str]:
     return vals
 
 
+def _country_fit_bonus(anchor_details: dict, details: dict) -> float:
+    anchor_blob = " ".join(
+        [
+            str(anchor_details.get("title") or anchor_details.get("name") or ""),
+            str(anchor_details.get("overview") or ""),
+            " ".join(anchor_details.get("genres") or []),
+            " ".join(anchor_details.get("origin_country") or []),
+        ]
+    ).lower()
+    cand_blob = " ".join(
+        [
+            str(details.get("title") or details.get("name") or ""),
+            str(details.get("overview") or ""),
+            " ".join(details.get("genres") or []),
+            " ".join(details.get("origin_country") or []),
+        ]
+    ).lower()
+
+    bonus = 0.0
+    anchor_is_britishish = any(t in anchor_blob for t in ("british", "bbc", "england", "london", "uk", "gb"))
+    cand_is_britishish = any(t in cand_blob for t in ("british", "bbc", "england", "london", "uk", "gb")) or "gb" in [
+        str(x).lower() for x in (details.get("origin_country") or [])
+    ]
+
+    if anchor_is_britishish and cand_is_britishish:
+        bonus += 0.08
+
+    return bonus
+
+
 def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
     genre_names = _genre_name_set(anchor_details)
     text_blob = " ".join(
@@ -163,6 +197,7 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
             str(anchor_details.get("title") or anchor_details.get("name") or ""),
             str(anchor_details.get("overview") or ""),
             " ".join(anchor_details.get("genres") or []),
+            " ".join(anchor_details.get("origin_country") or []),
         ]
     ).lower()
 
@@ -179,9 +214,15 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
     is_medical_family = has("midwife", "nurse", "nurses", "hospital", "medical", "doctor", "maternity") or (
         is_grounded_drama and has("family", "community", "mother", "women", "village")
     )
-    prefers_romance_family = is_period or has("romance", "family", "community", "village", "marriage")
+    prefers_romance_family = is_period or has("romance", "family", "community", "village", "marriage", "courtship")
+    is_britishish = has("british", "bbc", "england", "london", "uk") or "gb" in [
+        str(x).lower() for x in (anchor_details.get("origin_country") or [])
+    ]
+    is_gentle_grounded = is_grounded_drama and has(
+        "community", "family", "village", "mother", "women", "marriage", "midwife", "nurse", "hospital"
+    )
     avoids_action_crime = is_grounded_drama and not has("crime", "murder", "detective", "police", "gang", "spy", "espionage")
-    avoids_speculative = is_grounded_drama and not has("supernatural", "fantasy", "alien", "future", "post-apocalyptic", "superhero")
+    avoids_speculative = is_grounded_drama and not has("supernatural", "fantasy", "alien", "future", "post-apocalyptic", "superhero", "time travel")
 
     return {
         "grounded_drama": is_grounded_drama,
@@ -190,6 +231,8 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
         "prefers_romance_family": prefers_romance_family,
         "avoids_action_crime": avoids_action_crime,
         "avoids_speculative": avoids_speculative,
+        "britishish": is_britishish,
+        "gentle_grounded": is_gentle_grounded,
     }
 
 
@@ -200,6 +243,7 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
             str(details.get("title") or details.get("name") or ""),
             str(details.get("overview") or ""),
             " ".join(details.get("genres") or []),
+            " ".join(details.get("origin_country") or []),
         ]
     ).lower()
 
@@ -210,7 +254,7 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
     is_action = "action & adventure" in genre_names
     is_crime = "crime" in genre_names
     is_speculative = bool({"sci-fi & fantasy", "animation"} & genre_names) or has(
-        "superhero", "vigilante", "marvel", "comic", "alien", "fantasy", "supernatural", "post-apocalyptic"
+        "superhero", "vigilante", "marvel", "comic", "alien", "fantasy", "supernatural", "post-apocalyptic", "time travel", "parallel universe"
     )
     is_period = "war & politics" in genre_names or has(
         "period", "historical", "victorian", "georgian", "18th", "19th", "1940", "1950", "1960"
@@ -218,6 +262,14 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
     is_medical = has("midwife", "nurse", "nurses", "hospital", "medical", "doctor", "ward", "clinic")
     is_family_community = has("family", "community", "village", "small town", "mother", "marriage") or "family" in genre_names
     is_romance = has("romance", "romantic", "love", "marriage", "courtship")
+    is_comedy_heavy = "comedy" in genre_names and "drama" not in genre_names
+    is_documentary = 99 in set(details.get("genre_ids") or [])
+    is_britishish = has("british", "bbc", "england", "london", "uk") or "gb" in [
+        str(x).lower() for x in (details.get("origin_country") or [])
+    ]
+
+    if is_documentary:
+        return False, 0.0
 
     if anchor_profile["avoids_speculative"] and is_speculative:
         return False, 0.0
@@ -226,17 +278,20 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
         if not (is_period or is_medical or is_family_community):
             return False, 0.0
 
+    if anchor_profile["gentle_grounded"] and is_comedy_heavy:
+        return False, 0.0
+
     if anchor_profile["period"]:
         if is_period:
-            bonus += 0.18
+            bonus += 0.20
         elif not (is_medical or is_family_community or is_romance):
             return False, 0.0
 
     if anchor_profile["medical_family"]:
         if is_medical:
-            bonus += 0.18
+            bonus += 0.20
         elif is_family_community:
-            bonus += 0.10
+            bonus += 0.12
         elif not (is_period or is_romance):
             return False, 0.0
 
@@ -245,6 +300,9 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
             bonus += 0.08
         if is_romance:
             bonus += 0.06
+
+    if anchor_profile["britishish"] and is_britishish:
+        bonus += 0.08
 
     if anchor_profile["grounded_drama"] and "drama" in genre_names:
         bonus += 0.05
@@ -545,38 +603,43 @@ async def shows_like(
         if not fits_anchor:
             continue
 
-        if anchor_profile["grounded_drama"]:
-            if "drama" not in genre_names and semantic_score < 0.20:
-                continue
-
-        if is_tmdb and not is_reddit:
-            if genre_score < 0.10 and semantic_score < 0.12:
-                continue
-            if genre_score == 0.0 and vote_average < 7.2:
-                continue
-
-        if not is_reddit and genre_score < 0.08 and semantic_score < 0.10:
-            continue
-
         total_score = float(merged_scores.get(rid, 0.0))
         total_score += 0.65 * semantic_score
         total_score += 0.35 * genre_score
         total_score += qual_bonus
         total_score += fit_bonus
+        total_score += _country_fit_bonus(anchor_details, details)
+
+        if anchor_profile["grounded_drama"]:
+            if "drama" not in genre_names and semantic_score < 0.22:
+                continue
+
+        if anchor_profile["period"] and genre_score == 0.0 and semantic_score < 0.22 and fit_bonus < 0.18:
+            continue
+
+        if anchor_profile["medical_family"] and semantic_score < 0.10 and fit_bonus < 0.12:
+            continue
+
+        if anchor_profile["gentle_grounded"] and (is_tmdb or is_trending):
+            if genre_score < 0.12 and semantic_score < 0.16:
+                continue
 
         if is_tmdb and not is_reddit:
-            total_score *= 0.70
+            if genre_score < 0.12 and semantic_score < 0.14:
+                continue
+            if genre_score == 0.0 and vote_average < 7.3:
+                continue
 
-        if is_trending and not is_reddit and semantic_score >= 0.16:
-            total_score += 0.05
-
-        if anchor_profile["period"] and genre_score == 0.0 and semantic_score < 0.20:
+        if not is_reddit and genre_score < 0.10 and semantic_score < 0.12:
             continue
 
-        if anchor_profile["medical_family"] and semantic_score < 0.08 and fit_bonus < 0.10:
-            continue
+        if is_tmdb and not is_reddit:
+            total_score *= 0.68
 
-        if total_score < 0.22:
+        if is_trending and not is_reddit and semantic_score >= 0.18:
+            total_score += 0.04
+
+        if total_score < 0.28:
             continue
 
         seen_ids.add(rid)
@@ -587,7 +650,7 @@ async def shows_like(
             else "reddit_pairs"
             if is_reddit
             else "semantic_fallback"
-            if semantic_score >= 0.14
+            if semantic_score >= 0.16 or fit_bonus >= 0.18
             else "tmdb_recs"
         )
 
@@ -646,7 +709,22 @@ async def shows_like(
                 continue
 
             det_genre_names = _genre_name_set(det)
+            det_genre_ids = set(det.get("genre_ids") or [])
+            det_semantic = _semantic_text_score(
+                anchor_keywords,
+                det.get("title") or det.get("name"),
+                det.get("overview"),
+                " ".join(det.get("genres") or []),
+            )
+            det_genre_score = _genre_overlap_score(anchor_genre_ids, det_genre_ids)
+
             if anchor_profile["grounded_drama"] and "drama" not in det_genre_names:
+                continue
+            if anchor_profile["period"] and fit_bonus < 0.12 and det_semantic < 0.12:
+                continue
+            if anchor_profile["medical_family"] and fit_bonus < 0.10 and det_semantic < 0.10:
+                continue
+            if det_genre_score < 0.08 and det_semantic < 0.10 and fit_bonus < 0.10:
                 continue
 
             seen_ids.add(sid)
@@ -664,7 +742,7 @@ async def shows_like(
                     "genres": det.get("genres") or [],
                     "genre_ids": det.get("genre_ids") or [],
                     "source": "fallback",
-                    "score": round(float(fit_bonus), 4),
+                    "score": round(float(max(fit_bonus, det_semantic, det_genre_score)), 4),
                 }
             )
 

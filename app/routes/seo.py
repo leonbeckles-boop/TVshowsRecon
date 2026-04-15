@@ -20,6 +20,14 @@ router = APIRouter(prefix="/api/seo", tags=["seo"])
 MIN_RESULTS = 12
 MAX_RESULTS = 24
 
+# Public SEO pages need stricter thresholds than in-app recs.
+ABS_MIN_VOTE_COUNT = 10
+ABS_MIN_POPULARITY = 2.0
+
+SEO_MIN_VOTE_COUNT = 50
+SEO_MIN_VOTE_AVERAGE = 6.8
+SEO_MIN_POPULARITY = 8.0
+
 STOPWORDS = {
     "the", "and", "for", "that", "this", "with", "from", "into", "their",
     "they", "them", "have", "has", "had", "was", "were", "are", "but",
@@ -60,8 +68,14 @@ def _extract_anchor_keywords(*parts: str | None, top_n: int = 14) -> list[str]:
         "period": 3, "historical": 3, "victorian": 3, "midwife": 5,
         "nurse": 4, "nurses": 4, "medical": 4, "hospital": 4, "doctor": 3,
         "family": 3, "community": 3, "romance": 2, "british": 2,
-        "bbc": 2, "england": 2, "london": 2, "small": 1, "town": 1,
-        "marriage": 2, "mother": 2, "women": 2, "gentle": 1, "warm": 1,
+        "finance": 5, "billionaire": 4, "hedge": 4, "fund": 4, "wall": 3,
+        "street": 3, "power": 3, "wealth": 3, "corporate": 4, "ambition": 3,
+        "deal": 2, "deals": 2, "business": 3, "money": 3, "elite": 2,
+        "rivalry": 3, "law": 2, "attorney": 2, "lawyer": 2,
+        "cartel": 3, "drug": 3, "criminal": 2, "antihero": 3,
+        "women": 2, "village": 2, "postwar": 2, "post-war": 2,
+        "company": 3, "shareholder": 3, "merger": 3, "acquisition": 3,
+        "tycoon": 3, "ceo": 3, "boardroom": 3, "dynasty": 2,
     }
     for token, boost in boosts.items():
         if token in counts:
@@ -85,14 +99,15 @@ def _semantic_text_score(anchor_keywords: list[str], *candidate_parts: str | Non
 
     score = overlap / max(1.0, len(anchor_keywords))
     joined = " ".join(candidate_tokens)
+
     if any(k in joined for k in ("spy", "espionage", "cia", "kgb", "undercover", "agent", "intelligence")):
         score += 0.08
-    if any(k in joined for k in ("crime", "thriller", "mystery", "murder", "political")):
-        score += 0.04
-    if any(k in joined for k in ("period", "historical", "medical", "hospital", "nurse", "family", "community", "romance")):
-        score += 0.05
-    if any(k in joined for k in ("british", "bbc", "england", "london", "midwife", "village", "marriage")):
-        score += 0.04
+    if any(k in joined for k in ("crime", "thriller", "mystery", "murder", "political", "cartel", "drug", "criminal", "antihero")):
+        score += 0.06
+    if any(k in joined for k in ("period", "historical", "medical", "hospital", "nurse", "family", "community", "romance", "midwife", "women", "village")):
+        score += 0.07
+    if any(k in joined for k in ("finance", "billionaire", "hedge", "fund", "wealth", "corporate", "ambition", "business", "money", "deal", "elite", "lawyer", "attorney", "company", "ceo", "boardroom", "shareholder", "merger", "acquisition", "tycoon")):
+        score += 0.12
 
     return float(min(score, 1.0))
 
@@ -108,14 +123,77 @@ def _genre_overlap_score(anchor_genre_ids: set[int], candidate_genre_ids: set[in
     return float(min(base, 1.0))
 
 
-def _quality_bonus(vote_average: float, vote_count: int) -> float:
-    if vote_average >= 8.0 and vote_count >= 150:
-        return 0.22
-    if vote_average >= 7.5 and vote_count >= 100:
-        return 0.15
-    if vote_average >= 7.0 and vote_count >= 50:
-        return 0.08
-    return 0.0
+def _bayesian_quality_score(vote_average: float, vote_count: int, global_mean: float = 6.8, m: int = 150) -> float:
+    """
+    IMDb-style smoothing to avoid tiny-vote shows floating too high.
+    Returns roughly 0..1.
+    """
+    v = max(0, int(vote_count or 0))
+    r = max(0.0, float(vote_average or 0.0))
+    weighted = ((v / (v + m)) * r) + ((m / (v + m)) * global_mean) if (v + m) > 0 else global_mean
+    return max(0.0, min(1.0, weighted / 10.0))
+
+
+def _quality_bonus(vote_average: float, vote_count: int, popularity: float) -> float:
+    bonus = 0.0
+    if vote_average >= 8.4 and vote_count >= 400:
+        bonus += 0.18
+    elif vote_average >= 8.0 and vote_count >= 200:
+        bonus += 0.13
+    elif vote_average >= 7.6 and vote_count >= 100:
+        bonus += 0.08
+
+    if popularity >= 25:
+        bonus += 0.06
+    elif popularity >= 15:
+        bonus += 0.03
+
+    return bonus
+
+
+def _confidence_factor(vote_count: int, popularity: float) -> float:
+    vote_conf = min(1.0, math.log10(max(1, vote_count) + 1) / 2.2)
+    pop_conf = min(1.0, math.log10(max(1.0, popularity) + 1.0) / 1.5)
+    return 0.55 + (0.30 * vote_conf) + (0.15 * pop_conf)
+
+
+def _passes_seo_quality_floor(
+    *,
+    vote_average: float,
+    vote_count: int,
+    popularity: float,
+    semantic_score: float,
+    genre_score: float,
+    is_reddit: bool,
+    is_tmdb: bool,
+    is_trending: bool,
+) -> bool:
+    if vote_count < ABS_MIN_VOTE_COUNT:
+        return False
+    if popularity < ABS_MIN_POPULARITY:
+        return False
+    if vote_average < 6.3:
+        return False
+
+    if (
+        vote_count >= SEO_MIN_VOTE_COUNT
+        and vote_average >= SEO_MIN_VOTE_AVERAGE
+        and popularity >= SEO_MIN_POPULARITY
+    ):
+        return True
+
+    strong_match = semantic_score >= 0.24 or genre_score >= 0.22
+    elite_quality = vote_average >= 7.6 and popularity >= 12.0
+    decent_volume = vote_count >= 25
+
+    if strong_match and elite_quality and decent_volume:
+        if is_reddit and not (is_tmdb or is_trending):
+            return vote_count >= 60
+        if is_tmdb and not is_reddit:
+            return semantic_score >= 0.20 or genre_score >= 0.20
+        return True
+
+    return False
 
 
 def _natural_join(items: list[str]) -> str:
@@ -160,36 +238,6 @@ def _genre_name_set(details: dict) -> set[str]:
     return vals
 
 
-def _country_fit_bonus(anchor_details: dict, details: dict) -> float:
-    anchor_blob = " ".join(
-        [
-            str(anchor_details.get("title") or anchor_details.get("name") or ""),
-            str(anchor_details.get("overview") or ""),
-            " ".join(anchor_details.get("genres") or []),
-            " ".join(anchor_details.get("origin_country") or []),
-        ]
-    ).lower()
-    cand_blob = " ".join(
-        [
-            str(details.get("title") or details.get("name") or ""),
-            str(details.get("overview") or ""),
-            " ".join(details.get("genres") or []),
-            " ".join(details.get("origin_country") or []),
-        ]
-    ).lower()
-
-    bonus = 0.0
-    anchor_is_britishish = any(t in anchor_blob for t in ("british", "bbc", "england", "london", "uk", "gb"))
-    cand_is_britishish = any(t in cand_blob for t in ("british", "bbc", "england", "london", "uk", "gb")) or "gb" in [
-        str(x).lower() for x in (details.get("origin_country") or [])
-    ]
-
-    if anchor_is_britishish and cand_is_britishish:
-        bonus += 0.08
-
-    return bonus
-
-
 def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
     genre_names = _genre_name_set(anchor_details)
     text_blob = " ".join(
@@ -197,7 +245,6 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
             str(anchor_details.get("title") or anchor_details.get("name") or ""),
             str(anchor_details.get("overview") or ""),
             " ".join(anchor_details.get("genres") or []),
-            " ".join(anchor_details.get("origin_country") or []),
         ]
     ).lower()
 
@@ -214,15 +261,9 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
     is_medical_family = has("midwife", "nurse", "nurses", "hospital", "medical", "doctor", "maternity") or (
         is_grounded_drama and has("family", "community", "mother", "women", "village")
     )
-    prefers_romance_family = is_period or has("romance", "family", "community", "village", "marriage", "courtship")
-    is_britishish = has("british", "bbc", "england", "london", "uk") or "gb" in [
-        str(x).lower() for x in (anchor_details.get("origin_country") or [])
-    ]
-    is_gentle_grounded = is_grounded_drama and has(
-        "community", "family", "village", "mother", "women", "marriage", "midwife", "nurse", "hospital"
-    )
+    prefers_romance_family = is_period or has("romance", "family", "community", "village", "marriage")
     avoids_action_crime = is_grounded_drama and not has("crime", "murder", "detective", "police", "gang", "spy", "espionage")
-    avoids_speculative = is_grounded_drama and not has("supernatural", "fantasy", "alien", "future", "post-apocalyptic", "superhero", "time travel")
+    avoids_speculative = is_grounded_drama and not has("supernatural", "fantasy", "alien", "future", "post-apocalyptic", "superhero")
 
     return {
         "grounded_drama": is_grounded_drama,
@@ -231,8 +272,78 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
         "prefers_romance_family": prefers_romance_family,
         "avoids_action_crime": avoids_action_crime,
         "avoids_speculative": avoids_speculative,
-        "britishish": is_britishish,
-        "gentle_grounded": is_gentle_grounded,
+    }
+
+
+def _anchor_theme_flags(anchor_title: str, anchor_details: dict) -> dict[str, bool]:
+    title_lower = str(anchor_title or "").lower()
+    overview = str(anchor_details.get("overview") or "").lower()
+    genre_names = _genre_name_set(anchor_details)
+    blob = f"{title_lower} {overview}"
+
+    def has(*terms: str) -> bool:
+        return any(term in blob for term in terms)
+
+    return {
+        "finance_power": has(
+            "finance", "hedge fund", "wall street", "billionaire", "wealth",
+            "corporate", "business", "money", "elite", "attorney",
+            "lawyer", "prosecutor", "empire", "conglomerate", "media empire",
+            "company", "shareholder", "merger", "acquisition", "tycoon"
+        ) or title_lower in {"billions", "succession", "industry"},
+        "period_community": has(
+            "period", "historical", "post-war", "postwar", "1950", "1960",
+            "community", "village", "women", "midwife", "maternity"
+        ),
+        "warm_medical": has(
+            "midwife", "maternity", "nurse", "nurses", "community care"
+        ),
+        "crime_antihero": (
+            "crime" in genre_names
+            or has("cartel", "drug", "criminal", "lawyer", "murder", "gang", "antihero", "mob")
+        ),
+    }
+
+
+def _candidate_theme_flags(details: dict) -> dict[str, bool]:
+    overview = str(details.get("overview") or "").lower()
+    title = str(details.get("title") or details.get("name") or "").lower()
+    genre_names = _genre_name_set(details)
+    blob = f"{title} {overview}"
+
+    def has(*terms: str) -> bool:
+        return any(term in blob for term in terms)
+
+    return {
+        "finance_power": has(
+            "finance", "hedge fund", "wall street", "billionaire", "wealth",
+            "corporate", "business", "money", "elite", "executive",
+            "ceo", "boardroom", "empire", "conglomerate", "media", "attorney",
+            "lawyer", "prosecutor", "firm", "broker", "trading", "investment",
+            "company", "dynasty", "inheritance", "shareholder",
+            "merger", "acquisition", "owner", "tycoon"
+        ),
+        "corporate_drama": has(
+            "executive", "ceo", "company", "boardroom", "conglomerate", "media",
+            "shareholder", "merger", "acquisition", "dynasty", "owner", "tycoon",
+            "family empire", "business empire", "inheritance", "corporate", "empire"
+        ),
+        "period_community": has(
+            "period", "historical", "post-war", "postwar", "1950", "1960",
+            "community", "village", "women", "family", "rural", "small town"
+        ),
+        "warm_medical": has(
+            "midwife", "maternity", "nurse", "nurses", "community care", "district nurse"
+        ),
+        "modern_hospital": has(
+            "hospital", "trauma", "emergency department", "resident", "surgery",
+            "frontlines", "medical center", "senior resident", "doctor"
+        ),
+        "crime_antihero": (
+            "crime" in genre_names
+            or has("cartel", "drug", "criminal", "lawyer", "murder", "gang", "antihero", "mob", "underworld")
+        ),
+        "teen_chaos": has("high school", "teen", "teenager", "social media", "party"),
     }
 
 
@@ -243,7 +354,6 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
             str(details.get("title") or details.get("name") or ""),
             str(details.get("overview") or ""),
             " ".join(details.get("genres") or []),
-            " ".join(details.get("origin_country") or []),
         ]
     ).lower()
 
@@ -254,22 +364,20 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
     is_action = "action & adventure" in genre_names
     is_crime = "crime" in genre_names
     is_speculative = bool({"sci-fi & fantasy", "animation"} & genre_names) or has(
-        "superhero", "vigilante", "marvel", "comic", "alien", "fantasy", "supernatural", "post-apocalyptic", "time travel", "parallel universe"
+        "superhero", "vigilante", "marvel", "comic", "alien", "fantasy", "supernatural", "post-apocalyptic"
     )
     is_period = "war & politics" in genre_names or has(
-        "period", "historical", "victorian", "georgian", "18th", "19th", "1940", "1950", "1960"
+        "period", "historical", "victorian", "georgian", "18th", "19th", "1940", "1950", "1960", "post-war", "postwar"
     )
-    is_medical = has("midwife", "nurse", "nurses", "hospital", "medical", "doctor", "ward", "clinic")
-    is_family_community = has("family", "community", "village", "small town", "mother", "marriage") or "family" in genre_names
+    is_medical = has("midwife", "nurse", "nurses", "hospital", "medical", "doctor", "ward", "clinic", "maternity")
+    is_family_community = has("family", "community", "village", "small town", "mother", "marriage", "women") or "family" in genre_names
     is_romance = has("romance", "romantic", "love", "marriage", "courtship")
-    is_comedy_heavy = "comedy" in genre_names and "drama" not in genre_names
-    is_documentary = 99 in set(details.get("genre_ids") or [])
-    is_britishish = has("british", "bbc", "england", "london", "uk") or "gb" in [
-        str(x).lower() for x in (details.get("origin_country") or [])
-    ]
-
-    if is_documentary:
-        return False, 0.0
+    is_finance_power = has(
+        "finance", "billionaire", "hedge fund", "hedge", "wall street", "corporate",
+        "wealth", "money", "ambition", "deal", "power struggle", "power broker",
+        "ceo", "executive", "boardroom", "empire", "elite", "attorney", "lawyer",
+        "company", "shareholder", "merger", "acquisition", "tycoon"
+    )
 
     if anchor_profile["avoids_speculative"] and is_speculative:
         return False, 0.0
@@ -278,20 +386,17 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
         if not (is_period or is_medical or is_family_community):
             return False, 0.0
 
-    if anchor_profile["gentle_grounded"] and is_comedy_heavy:
-        return False, 0.0
-
     if anchor_profile["period"]:
         if is_period:
-            bonus += 0.20
+            bonus += 0.18
         elif not (is_medical or is_family_community or is_romance):
             return False, 0.0
 
     if anchor_profile["medical_family"]:
         if is_medical:
-            bonus += 0.20
+            bonus += 0.18
         elif is_family_community:
-            bonus += 0.12
+            bonus += 0.10
         elif not (is_period or is_romance):
             return False, 0.0
 
@@ -301,16 +406,209 @@ def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) ->
         if is_romance:
             bonus += 0.06
 
-    if anchor_profile["britishish"] and is_britishish:
-        bonus += 0.08
-
     if anchor_profile["grounded_drama"] and "drama" in genre_names:
         bonus += 0.05
+
+    if is_finance_power:
+        bonus += 0.10
 
     return True, bonus
 
 
-def _build_page_copy(anchor_title: str, results: list[dict]) -> dict:
+def _anchor_descriptor(anchor_title: str, anchor_details: dict) -> dict[str, str | list[str]]:
+    title_lower = str(anchor_title or "").lower()
+    genre_names = _genre_name_set(anchor_details)
+    overview = str(anchor_details.get("overview") or "").lower()
+    blob = f"{title_lower} {overview}"
+
+    def has(*terms: str) -> bool:
+        return any(term in blob for term in terms)
+
+    themes: list[str] = []
+    mood = "character-driven"
+    angle = "storytelling"
+    audience_hook = "a similar overall feel"
+
+    if has("finance", "billionaire", "hedge fund", "wall street", "corporate", "wealth", "money", "power", "ambition", "media conglomerate", "empire") or title_lower in {"billions", "succession", "industry"}:
+        themes = ["power plays", "elite rivalry", "high-stakes ambition"]
+        mood = "sharp and intense"
+        angle = "status-driven drama"
+        audience_hook = "power, money and strategic conflict"
+    elif "crime" in genre_names or has("cartel", "criminal", "drug", "lawyer", "detective", "murder", "gang", "antihero", "mob"):
+        themes = ["moral pressure", "high-stakes choices", "tense character drama"]
+        mood = "tense"
+        angle = "pressure-cooker plotting"
+        audience_hook = "the same mix of tension and character consequences"
+    elif has("midwife", "hospital", "doctor", "nurse", "maternity"):
+        themes = ["community", "compassion", "emotionally grounded stories"]
+        mood = "warm but emotional"
+        angle = "human stories"
+        audience_hook = "heart, warmth and a strong sense of place"
+    elif has("historical", "period", "victorian", "post-war", "postwar", "1950", "1960") or "war & politics" in genre_names:
+        themes = ["period detail", "social change", "strong ensemble drama"]
+        mood = "richly textured"
+        angle = "period storytelling"
+        audience_hook = "setting, relationships and social texture"
+    elif has("spy", "espionage", "agent", "intelligence", "undercover"):
+        themes = ["double lives", "secrecy", "slow-burn suspense"]
+        mood = "suspenseful"
+        angle = "cloak-and-dagger tension"
+        audience_hook = "carefully built suspense and competing loyalties"
+    elif has("time travel", "parallel", "dystopian", "future", "alien") or "sci-fi & fantasy" in genre_names:
+        themes = ["big ideas", "mystery", "long-form payoff"]
+        mood = "atmospheric"
+        angle = "concept-heavy storytelling"
+        audience_hook = "mystery, world-building and payoff over time"
+    elif has("family", "marriage", "community", "small town", "village"):
+        themes = ["community", "relationships", "emotional connection"]
+        mood = "warm"
+        angle = "character-led storytelling"
+        audience_hook = "relationships, atmosphere and character connection"
+    else:
+        themes = ["tone", "memorable characters", "story momentum"]
+
+    return {
+        "themes": themes[:3],
+        "mood": mood,
+        "angle": angle,
+        "audience_hook": audience_hook,
+    }
+
+
+def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: str, genre_text: str, descriptor: dict[str, str | list[str]]) -> list[dict]:
+    title_lower = str(anchor_title or "").lower()
+    overview = str(anchor_details.get("overview") or "").lower()
+    genre_names = _genre_name_set(anchor_details)
+    blob = f"{title_lower} {overview}"
+    themes = descriptor.get("themes") or []
+    if not isinstance(themes, list):
+        themes = []
+    theme_text = _natural_join([str(t) for t in themes[:3]])
+
+    def has(*terms: str) -> bool:
+        return any(term in blob for term in terms)
+
+    if has("midwife", "hospital", "doctor", "nurse", "maternity"):
+        return [
+            {
+                "question": f"Which shows capture the same warmth as {anchor_title}?",
+                "answer": f"Series like {top_titles_text or 'these picks'} work well because they balance emotion, community and ongoing personal stories in a way fans of {anchor_title} often respond to.",
+            },
+            {
+                "question": f"Are these recommendations as gentle as {anchor_title}?",
+                "answer": f"Not every show here has exactly the same tone, but they were chosen because they share some combination of compassion, character focus and emotionally grounded storytelling rather than relying on spectacle alone.",
+            },
+            {
+                "question": f"What should I watch after {anchor_title} for more character-led drama?",
+                "answer": f"Start with {top_titles_text or 'the highest-ranked titles'} if you want more relationship-driven storytelling, a strong sense of place and characters you can settle in with over time.",
+            },
+            {
+                "question": f"Where can I find more shows tailored to my taste?",
+                "answer": "WhatNext lets you save favourites, build a watchlist and rate what you have seen so future recommendations become more personalised over time.",
+            },
+        ]
+
+    if has("historical", "period", "victorian", "post-war", "postwar", "1950", "1960") or "war & politics" in genre_names:
+        return [
+            {
+                "question": f"Which shows offer a similar period feel to {anchor_title}?",
+                "answer": f"These recommendations lean toward dramas that pair strong character work with a vivid setting, so they feel close to {anchor_title} in atmosphere as well as subject matter.",
+            },
+            {
+                "question": f"What makes a good follow-up to {anchor_title}?",
+                "answer": f"For most viewers it is not just the historical backdrop. It is the mix of relationships, social pressure and slow-building drama, which is why {top_titles_text or 'these shows'} rose to the top.",
+            },
+            {
+                "question": f"Are these shows similar to {anchor_title} because of genre alone?",
+                "answer": f"No. The list is filtered for tone and story shape too, so it prioritises shows that share {theme_text or 'character depth and atmosphere'} rather than matching on a broad genre label only.",
+            },
+            {
+                "question": f"How can I get even better recommendations after {anchor_title}?",
+                "answer": "Add a few favourites to WhatNext, rate anything you have already watched and the recommendation mix will sharpen around your own taste rather than a single title.",
+            },
+        ]
+
+    if has("finance", "billionaire", "hedge fund", "wall street", "corporate", "wealth", "money", "power", "ambition") or title_lower in {"billions", "succession", "industry"}:
+        return [
+            {
+                "question": f"What should I watch after {anchor_title} for more power and money drama?",
+                "answer": f"Start with {top_titles_text or 'the top-ranked series here'} if you want more ambition, strategic rivalry and high-status drama built around power plays rather than action spectacle.",
+            },
+            {
+                "question": f"Are these shows similar to {anchor_title} because of finance alone?",
+                "answer": f"No. The ranking looks beyond a business setting and favours series that share the same mix of pressure, status, ego and long-running conflict.",
+            },
+            {
+                "question": f"Why do fans of {anchor_title} often end up watching these next?",
+                "answer": f"They usually respond to {theme_text or 'power, rivalry and elite conflict'}, so the page prioritises series that recreate that feeling instead of just matching on industry keywords.",
+            },
+            {
+                "question": f"How can I get more recommendations like {anchor_title}?",
+                "answer": "Save a few favourites in WhatNext, add shows to your watchlist and rate what you have already seen so future recommendations line up more closely with your taste.",
+            },
+        ]
+
+    if "crime" in genre_names or has("crime", "murder", "detective", "cartel", "lawyer", "drug", "criminal"):
+        return [
+            {
+                "question": f"What should I watch after {anchor_title} if I want the same tension?",
+                "answer": f"Start with {top_titles_text or 'the strongest picks here'} because they keep the pressure high and stay focused on character consequences instead of feeling like generic crime TV.",
+            },
+            {
+                "question": f"Do these shows match the tone of {anchor_title}?",
+                "answer": f"That is the aim. The ranking favours series with a similar blend of atmosphere, conflict and long-form payoff, not just surface-level plot similarities.",
+            },
+            {
+                "question": f"Why are fans of {anchor_title} often drawn to these series?",
+                "answer": f"Because they tap into {theme_text or 'tension, escalation and memorable characters'}, which is usually what keeps viewers hooked once they finish {anchor_title}.",
+            },
+            {
+                "question": f"Where can I keep track of crime dramas I want to watch next?",
+                "answer": "Use WhatNext to save favourites, keep a watchlist and improve future recommendations based on what you actually enjoy.",
+            },
+        ]
+
+    if "sci-fi & fantasy" in genre_names or has("future", "alien", "time travel", "parallel", "dystopian"):
+        return [
+            {
+                "question": f"Which shows scratch the same itch as {anchor_title}?",
+                "answer": f"These are not just similar on genre. They were chosen because they offer a related mix of mystery, world-building and long-form payoff for viewers who connected with {anchor_title}.",
+            },
+            {
+                "question": f"What should I watch after {anchor_title} for more big-idea storytelling?",
+                "answer": f"{top_titles_text or 'The top picks on this page'} are a good place to start if you want another series that unfolds gradually and rewards attention over time.",
+            },
+            {
+                "question": f"Are these recommendations more about mood or plot?",
+                "answer": f"Usually both. The strongest matches tend to share atmosphere as well as structure, so the page does not just chase shows with similar premises.",
+            },
+            {
+                "question": f"How do I find more shows once I finish these?",
+                "answer": "Build up your favourites and ratings in WhatNext and the app can keep narrowing in on the sci-fi and fantasy shows that suit your taste best.",
+            },
+        ]
+
+    return [
+        {
+            "question": f"Why do fans of {anchor_title} often like these shows too?",
+            "answer": f"They tend to share {theme_text or 'tone, character depth and story momentum'}, which is often a better guide than genre alone when you are deciding what to watch next.",
+        },
+        {
+            "question": f"What should I watch after {anchor_title}?",
+            "answer": f"{top_titles_text or 'The top-ranked titles here'} are a strong place to start because they echo the overall feel of {anchor_title} without being carbon copies of it.",
+        },
+        {
+            "question": f"How were these shows chosen?",
+            "answer": f"The ranking blends audience behaviour with similarity signals, then filters for stronger tonal fit so the final list feels closer to what fans of {anchor_title} usually want.",
+        },
+        {
+            "question": f"Where can I get more personalised recommendations?",
+            "answer": "WhatNext improves as you add favourites, build a watchlist and rate shows you have already seen.",
+        },
+    ]
+
+
+def _build_page_copy(anchor_title: str, anchor_details: dict, results: list[dict]) -> dict:
     titles = _top_titles(results, 3)
     top_titles_text = _natural_join(titles)
 
@@ -326,79 +624,59 @@ def _build_page_copy(anchor_title: str, results: list[dict]) -> dict:
     has_tmdb = "tmdb_recs" in sources or "multi_signal" in sources
     has_semantic = "semantic_fallback" in sources
 
-    intro = f"Looking for shows like {anchor_title}? These recommendations highlight series that viewers often move to next after finishing it."
-    seo_blurb = f"If you enjoyed {anchor_title}, these recommendations point you toward similar TV series with overlapping tone, storytelling style and audience appeal."
+    descriptor = _anchor_descriptor(anchor_title, anchor_details)
+    themes = descriptor.get("themes") or []
+    if not isinstance(themes, list):
+        themes = []
+    theme_text = _natural_join([str(t) for t in themes[:3]])
+    mood = str(descriptor.get("mood") or "character-driven")
+    angle = str(descriptor.get("angle") or "storytelling")
+    audience_hook = str(descriptor.get("audience_hook") or "a similar overall feel")
 
-    if genre_text and has_reddit and has_tmdb:
-        intro = (
-            f"Looking for shows like {anchor_title}? This list focuses on {genre_text} series "
-            f"that line up well with {anchor_title}, combining audience viewing patterns with closely related recommendation signals."
+    intro_parts: list[str] = []
+    if top_titles_text:
+        intro_parts.append(
+            f"If {anchor_title} worked for you because of its {theme_text or mood}, start with {top_titles_text}."
         )
-    elif genre_text and has_reddit:
-        intro = (
-            f"Looking for shows like {anchor_title}? These picks lean into the {genre_text} "
-            f"elements that often connect with fans of {anchor_title}."
-        )
-    elif genre_text and has_semantic:
-        intro = (
-            f"Looking for shows like {anchor_title}? These recommendations were chosen for their shared "
-            f"{genre_text} appeal, with a similar tone, style or storytelling feel."
-        )
-    elif top_titles_text:
-        intro = (
-            f"Looking for shows like {anchor_title}? Start with {top_titles_text} — they’re among the "
-            f"strongest next-watch options for fans of {anchor_title}."
+    else:
+        intro_parts.append(
+            f"If you are looking for shows like {anchor_title}, this page focuses on series that echo its {theme_text or mood}."
         )
 
-    if top_titles_text and genre_text:
+    if genre_text:
+        intro_parts.append(
+            f"The list leans toward {genre_text} stories with a similar sense of {angle}."
+        )
+
+    if has_reddit and has_tmdb:
+        intro_parts.append(
+            "It is built from both audience viewing patterns and close-match recommendation signals, then filtered more aggressively for relevance and title quality."
+        )
+    elif has_reddit:
+        intro_parts.append(
+            f"It gives extra weight to the shows viewers most often move to after finishing {anchor_title}, but only after stronger quality and fit checks."
+        )
+    elif has_semantic:
+        intro_parts.append(
+            "It prioritises shared tone and story shape rather than relying on broad genre matching alone."
+        )
+    else:
+        intro_parts.append(
+            f"The goal is to surface shows that recreate {audience_hook}."
+        )
+
+    intro = " ".join(intro_parts)
+
+    seo_blurb = (
+        f"Fans of {anchor_title} usually respond to some combination of {theme_text or mood}. "
+        f"That is why this list highlights {top_titles_text or 'closely matched series'} instead of simply pulling in every {genre_text or 'related'} title."
+    )
+    if genre_text and top_titles_text:
         seo_blurb = (
-            f"If you enjoyed {anchor_title}, you may also like {top_titles_text}. These recommendations "
-            f"reflect the kind of {genre_text} storytelling that often appeals to viewers looking for "
-            f"something with a similar feel."
-        )
-    elif top_titles_text:
-        seo_blurb = (
-            f"If you enjoyed {anchor_title}, you may also like {top_titles_text}. These shows were "
-            f"selected because they offer a similar viewing experience for fans looking for what to watch next."
+            f"If you enjoyed {anchor_title}, try {top_titles_text}. These recommendations focus on {genre_text} shows that share {audience_hook} and a similar storytelling rhythm."
         )
 
-    faq_items = [
-        {
-            "question": f"Why do people who like {anchor_title} enjoy these shows?",
-            "answer": (
-                f"{anchor_title} tends to appeal to viewers who enjoy strong tone, memorable characters and a story "
-                f"that keeps building over time. Shows like {top_titles_text} offer a similar kind of pull, even when "
-                f"they take that idea in slightly different directions."
-                if top_titles_text
-                else f"{anchor_title} tends to attract viewers who enjoy strong storytelling, distinctive tone and character-led plots."
-            ),
-        },
-        {
-            "question": f"What should I watch after {anchor_title}?",
-            "answer": (
-                f"A good next watch after {anchor_title} depends on what you liked most about it. {top_titles_text} are "
-                f"all strong follow-up options, whether you were drawn in by the atmosphere, the characters or the pacing."
-                if top_titles_text
-                else f"Your next watch after {anchor_title} really depends on whether you liked its tone, pacing or character work most."
-            ),
-        },
-        {
-            "question": f"What kind of shows are usually recommended to fans of {anchor_title}?",
-            "answer": (
-                f"Fans of {anchor_title} are often recommended {genre_text} series with a similar balance of tension, "
-                f"character focus and story momentum rather than shows that only match on genre alone."
-                if genre_text
-                else f"Fans of {anchor_title} are often recommended character-driven series with a similar balance of tension, pacing and story momentum."
-            ),
-        },
-        {
-            "question": f"Where can I discover more shows like {anchor_title}?",
-            "answer": (
-                f"WhatNext helps you discover more shows based on your taste. Save favourites, build a watchlist and rate "
-                f"what you’ve seen to keep improving your recommendations over time."
-            ),
-        },
-    ]
+    faq_items = _pick_faq_variant(anchor_title, anchor_details, top_titles_text, genre_text, descriptor)
 
     return {
         "intro": intro,
@@ -464,6 +742,7 @@ async def shows_like(
         " ".join(anchor_details.get("genres") or []),
     )
     anchor_profile = _anchor_profile(anchor_details)
+    anchor_theme_flags = _anchor_theme_flags(str(row["title"]), anchor_details)
 
     api_key = _tmdb_api_key()
     if not api_key:
@@ -532,15 +811,15 @@ async def shows_like(
     for rid in (tmdb_ids_raw or []):
         if not isinstance(rid, int) or rid == tmdb_id:
             continue
-        merged_scores[rid] = merged_scores.get(rid, 0.0) + 0.18
+        merged_scores[rid] = merged_scores.get(rid, 0.0) + 0.14
 
     for rid, raw in trending_scores.items():
-        merged_scores[rid] = merged_scores.get(rid, 0.0) + min(0.10, 0.04 + 0.07 * raw)
+        merged_scores[rid] = merged_scores.get(rid, 0.0) + min(0.08, 0.03 + 0.05 * raw)
 
     for rid, pw in (reddit_scores or {}).items():
         if rid == tmdb_id:
             continue
-        reddit_score = 1.15 * math.log10(1.0 + max(pw, 0.0))
+        reddit_score = 0.60 * math.log10(1.0 + max(pw, 0.0))
         merged_scores[rid] = merged_scores.get(rid, 0.0) + reddit_score
 
     sorted_ids = sorted(merged_scores.keys(), key=lambda x: merged_scores[x], reverse=True)
@@ -582,8 +861,11 @@ async def shows_like(
 
         vote_count = int(details.get("vote_count") or 0)
         vote_average = float(details.get("vote_average") or 0.0)
+        popularity = float(details.get("popularity") or 0.0)
 
-        if vote_count < 20 and vote_average < 6.5:
+        if vote_count < ABS_MIN_VOTE_COUNT:
+            continue
+        if popularity < ABS_MIN_POPULARITY:
             continue
 
         genre_score = _genre_overlap_score(anchor_genre_ids, genre_ids)
@@ -593,7 +875,6 @@ async def shows_like(
             details.get("overview"),
             " ".join(details.get("genres") or []),
         )
-        qual_bonus = _quality_bonus(vote_average, vote_count)
 
         is_tmdb = rid in tmdb_set
         is_reddit = rid in reddit_set
@@ -603,43 +884,108 @@ async def shows_like(
         if not fits_anchor:
             continue
 
-        total_score = float(merged_scores.get(rid, 0.0))
-        total_score += 0.65 * semantic_score
-        total_score += 0.35 * genre_score
-        total_score += qual_bonus
-        total_score += fit_bonus
-        total_score += _country_fit_bonus(anchor_details, details)
+        candidate_flags = _candidate_theme_flags(details)
+
+        if anchor_theme_flags["finance_power"] and candidate_flags["teen_chaos"]:
+            continue
+
+        if anchor_theme_flags["finance_power"]:
+            if not candidate_flags["finance_power"]:
+                continue
+
+        if anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]:
+            if not (candidate_flags["period_community"] or candidate_flags["warm_medical"]):
+                continue
+            if candidate_flags["modern_hospital"] and not candidate_flags["period_community"]:
+                continue
+            if candidate_flags["teen_chaos"]:
+                continue
+
+        if anchor_theme_flags["crime_antihero"]:
+            if not candidate_flags["crime_antihero"] and semantic_score < 0.24:
+                continue
 
         if anchor_profile["grounded_drama"]:
-            if "drama" not in genre_names and semantic_score < 0.22:
-                continue
-
-        if anchor_profile["period"] and genre_score == 0.0 and semantic_score < 0.22 and fit_bonus < 0.18:
-            continue
-
-        if anchor_profile["medical_family"] and semantic_score < 0.10 and fit_bonus < 0.12:
-            continue
-
-        if anchor_profile["gentle_grounded"] and (is_tmdb or is_trending):
-            if genre_score < 0.12 and semantic_score < 0.16:
+            if "drama" not in genre_names and semantic_score < 0.24:
                 continue
 
         if is_tmdb and not is_reddit:
-            if genre_score < 0.12 and semantic_score < 0.14:
-                continue
-            if genre_score == 0.0 and vote_average < 7.3:
+            if semantic_score < 0.18 and genre_score < 0.20:
                 continue
 
-        if not is_reddit and genre_score < 0.10 and semantic_score < 0.12:
+        if not is_reddit and semantic_score < 0.14 and genre_score < 0.10:
             continue
 
+        if anchor_profile["period"] and genre_score == 0.0 and semantic_score < 0.20:
+            continue
+
+        if anchor_profile["medical_family"] and semantic_score < 0.08 and fit_bonus < 0.10:
+            continue
+
+        if anchor_theme_flags["finance_power"]:
+            if "comedy" in genre_names and not candidate_flags["finance_power"]:
+                continue
+
+        if anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]:
+            if "crime" in genre_names:
+                continue
+            if candidate_flags["teen_chaos"]:
+                continue
+            if candidate_flags["modern_hospital"] and not candidate_flags["period_community"]:
+                continue
+
+        if not _passes_seo_quality_floor(
+            vote_average=vote_average,
+            vote_count=vote_count,
+            popularity=popularity,
+            semantic_score=semantic_score,
+            genre_score=genre_score,
+            is_reddit=is_reddit,
+            is_tmdb=is_tmdb,
+            is_trending=is_trending,
+        ):
+            continue
+
+        bayes_quality = _bayesian_quality_score(vote_average, vote_count)
+        qual_bonus = _quality_bonus(vote_average, vote_count, popularity)
+        conf_factor = _confidence_factor(vote_count, popularity)
+
+        total_score = float(merged_scores.get(rid, 0.0))
+        total_score += 0.75 * semantic_score
+        total_score += 0.45 * genre_score
+        total_score += 0.35 * bayes_quality
+        total_score += qual_bonus
+        total_score += fit_bonus
+
+        theme_bonus = 0.0
+        if anchor_theme_flags["finance_power"] and candidate_flags["finance_power"]:
+            theme_bonus += 0.30
+        if anchor_theme_flags["finance_power"] and candidate_flags["corporate_drama"]:
+            theme_bonus += 0.18
+        if (anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]) and (
+            candidate_flags["period_community"] or candidate_flags["warm_medical"]
+        ):
+            theme_bonus += 0.25
+        if anchor_theme_flags["crime_antihero"] and candidate_flags["crime_antihero"]:
+            theme_bonus += 0.20
+        total_score += theme_bonus
+
+        if anchor_theme_flags["finance_power"]:
+            if "crime" in genre_names and not candidate_flags["corporate_drama"]:
+                total_score *= 0.90
+
         if is_tmdb and not is_reddit:
-            total_score *= 0.68
+            total_score *= 0.82
+
+        if is_reddit and not is_tmdb and vote_count < 100:
+            total_score *= 0.82
 
         if is_trending and not is_reddit and semantic_score >= 0.18:
             total_score += 0.04
 
-        if total_score < 0.28:
+        total_score *= conf_factor
+
+        if total_score < 0.55:
             continue
 
         seen_ids.add(rid)
@@ -650,7 +996,7 @@ async def shows_like(
             else "reddit_pairs"
             if is_reddit
             else "semantic_fallback"
-            if semantic_score >= 0.16 or fit_bonus >= 0.18
+            if semantic_score >= 0.18
             else "tmdb_recs"
         )
 
@@ -664,7 +1010,7 @@ async def shows_like(
                 "first_air_date": details.get("first_air_date"),
                 "vote_average": vote_average,
                 "vote_count": vote_count,
-                "popularity": details.get("popularity"),
+                "popularity": popularity,
                 "genres": details.get("genres"),
                 "genre_ids": details.get("genre_ids"),
                 "source": source,
@@ -675,81 +1021,18 @@ async def shows_like(
         if len(results) >= MAX_RESULTS:
             break
 
-    results.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    results.sort(
+        key=lambda x: (
+            float(x.get("score") or 0.0),
+            float(x.get("vote_average") or 0.0),
+            math.log10(int(x.get("vote_count") or 0) + 1),
+            float(x.get("popularity") or 0.0),
+        ),
+        reverse=True,
+    )
     print("SEO final rec count:", len(results))
 
-    if len(results) < MIN_RESULTS:
-        fallback_res = await db.execute(
-            text(
-                """
-                SELECT
-                    show_id,
-                    title,
-                    poster_path
-                FROM shows
-                WHERE show_id <> :tmdb_id
-                  AND poster_path IS NOT NULL
-                ORDER BY title ASC
-                LIMIT 200
-                """
-            ),
-            {"tmdb_id": tmdb_id},
-        )
-
-        fallback_rows = fallback_res.mappings().all()
-
-        for r in fallback_rows:
-            sid = int(r["show_id"])
-            if sid in seen_ids:
-                continue
-
-            det = await _tmdb_details(sid)
-            fits_anchor, fit_bonus = _candidate_fit_adjustment(anchor_profile, det)
-            if not fits_anchor:
-                continue
-
-            det_genre_names = _genre_name_set(det)
-            det_genre_ids = set(det.get("genre_ids") or [])
-            det_semantic = _semantic_text_score(
-                anchor_keywords,
-                det.get("title") or det.get("name"),
-                det.get("overview"),
-                " ".join(det.get("genres") or []),
-            )
-            det_genre_score = _genre_overlap_score(anchor_genre_ids, det_genre_ids)
-
-            if anchor_profile["grounded_drama"] and "drama" not in det_genre_names:
-                continue
-            if anchor_profile["period"] and fit_bonus < 0.12 and det_semantic < 0.12:
-                continue
-            if anchor_profile["medical_family"] and fit_bonus < 0.10 and det_semantic < 0.10:
-                continue
-            if det_genre_score < 0.08 and det_semantic < 0.10 and fit_bonus < 0.10:
-                continue
-
-            seen_ids.add(sid)
-            results.append(
-                {
-                    "tmdb_id": sid,
-                    "title": r["title"],
-                    "poster_path": r["poster_path"],
-                    "poster_url": f"https://image.tmdb.org/t/p/w500{r['poster_path']}" if r["poster_path"] else None,
-                    "overview": det.get("overview"),
-                    "first_air_date": det.get("first_air_date"),
-                    "vote_average": det.get("vote_average"),
-                    "vote_count": det.get("vote_count"),
-                    "popularity": det.get("popularity"),
-                    "genres": det.get("genres") or [],
-                    "genre_ids": det.get("genre_ids") or [],
-                    "source": "fallback",
-                    "score": round(float(max(fit_bonus, det_semantic, det_genre_score)), 4),
-                }
-            )
-
-            if len(results) >= MIN_RESULTS:
-                break
-
-    page_copy = _build_page_copy(str(row["title"]), results[:MAX_RESULTS])
+    page_copy = _build_page_copy(str(row["title"]), anchor_details, results[:MAX_RESULTS])
 
     return {
         "anchor": {

@@ -14,6 +14,8 @@ import asyncio
 import math
 import re
 from collections import Counter
+from datetime import datetime
+from app.services.seo_profiles import get_or_create_profile, apply_profile_scoring
 
 router = APIRouter(prefix="/api/seo", tags=["seo"])
 
@@ -48,6 +50,107 @@ BAD_GENRES = {
     10764,  # Reality
 }
 
+
+CURRENT_YEAR = datetime.utcnow().year
+SEO_FRESH_MIN_VOTE_COUNT = 150
+
+SCI_FI_CLASSICS = {
+    "the expanse",
+    "battlestar galactica",
+    "firefly",
+    "for all mankind",
+    "andor",
+    "halo",
+    "stargate universe",
+    "star trek: picard",
+    "star trek: discovery",
+    "the 100",
+    "12 monkeys",
+    "colony",
+    "snowpiercer",
+}
+
+ANCHOR_CONCEPTS = {
+    "finance_power": {
+        "must_have": ["wealth", "power", "company", "business", "family", "corporate", "money"],
+        "prefer": ["boardroom", "dynasty", "inheritance", "elite", "rivalry", "ambition"],
+        "reject": ["motorcycle club", "serial killer", "hospital", "heist", "superhero"],
+    },
+    "small_town_mystery": {
+        "must_have": ["murder", "investigation", "detective", "community", "family", "secrets"],
+        "prefer": ["small town", "grief", "local", "coastal", "personal life"],
+        "reject": ["superhero", "monster", "sci-fi", "fantasy", "procedural"],
+    },
+    "medical_family": {
+        "must_have": ["doctor", "nurse", "hospital", "family", "community"],
+        "prefer": ["care", "patients", "relationships", "compassion"],
+        "reject": ["serial killer", "war crime", "gang"],
+    },
+}
+
+ANCHOR_TO_CONCEPT = {
+    "succession": "finance_power",
+    "mare of easttown": "small_town_mystery",
+    "call the midwife": "medical_family",
+}
+
+
+# Broad fallback pools for SEO pages when live signals are sparse.
+# These are concept-level guardrails, not single-title overrides.
+SEO_CONCEPT_FALLBACK_IDS: dict[str, list[int]] = {
+    "space_epic": [83867, 63639, 71365, 1437, 87917, 5148, 580, 4271, 48866, 9156, 82856],
+    "contained_dystopia": [
+    106379,  # Fallout
+    245927,  # Paradise
+    79680,   # Snowpiercer
+    125988,  # Silo
+    70523,   # Dark
+    60948,   # 12 Monkeys
+    66732,   # Stranger Things
+    48866,   # The 100
+    46331,   # Under the Dome
+    14956,   # Dollhouse
+],
+    "time_mystery": [70523, 60948, 42009, 95396, 66732, 14956],
+    "corporate_mystery": [95396, 62560, 42009, 14956, 70523],
+    "general_scifi": [42009, 70523, 66732, 60948, 83867, 87917, 63639, 125988],
+}
+
+def passes_concept_guardrail(concept: str, blob: str, genres: list[str]) -> bool:
+    profile = ANCHOR_CONCEPTS.get(concept)
+    if not profile:
+        return True
+
+    blob_l = blob.lower()
+
+    # Reject hard mismatches
+    if any(term in blob_l for term in profile["reject"]):
+        return False
+
+    # Must-have: require at least one strong signal
+    if profile["must_have"]:
+        if not any(term in blob_l for term in profile["must_have"]):
+            return False
+
+    return True
+
+def _fallback_ids_for_concept(anchor_concept: str) -> list[int]:
+    extra_pools = {
+        "finance_power": [90282, 62822, 1425, 1435, 4053, 114869, 76331],
+        "medical_family": [39793, 18856, 95386, 61241, 62084, 5021, 1457],
+        "small_town_mystery": [1427, 70453, 61244, 34415, 45016, 46648, 115004],
+    }
+
+    ids: list[int] = []
+    for tid in extra_pools.get(anchor_concept, []):
+        if tid not in ids:
+            ids.append(tid)
+
+    for key in (anchor_concept, "general_scifi"):
+        for tid in SEO_CONCEPT_FALLBACK_IDS.get(key, []):
+            if tid not in ids:
+                ids.append(tid)
+    return ids
 
 def _tokenise(text_val: str | None) -> list[str]:
     if not text_val:
@@ -272,8 +375,9 @@ def _anchor_profile(anchor_details: dict) -> dict[str, bool]:
         "prefers_romance_family": prefers_romance_family,
         "avoids_action_crime": avoids_action_crime,
         "avoids_speculative": avoids_speculative,
+        "is_scifi": 10765 in set(anchor_details.get("genre_ids") or []),
+        "is_animation": 16 in set(anchor_details.get("genre_ids") or []),
     }
-
 
 def _anchor_theme_flags(anchor_title: str, anchor_details: dict) -> dict[str, bool]:
     title_lower = str(anchor_title or "").lower()
@@ -283,6 +387,16 @@ def _anchor_theme_flags(anchor_title: str, anchor_details: dict) -> dict[str, bo
 
     def has(*terms: str) -> bool:
         return any(term in blob for term in terms)
+
+    epic_scifi = (
+        title_lower in {"foundation", "the expanse", "for all mankind"}
+        or has("empire", "civilization", "civilisation", "galaxy", "planet", "space program", "psychohistory", "dynasty", "interplanetary")
+    ) and "sci-fi & fantasy" in genre_names
+
+    dystopian_survival_scifi = (
+        title_lower in {"silo", "snowpiercer"}
+        or has("dystopian", "bunker", "underground", "sealed", "silo", "vault", "survival", "authoritarian", "controlled society")
+    ) and "sci-fi & fantasy" in genre_names
 
     return {
         "finance_power": has(
@@ -302,8 +416,12 @@ def _anchor_theme_flags(anchor_title: str, anchor_details: dict) -> dict[str, bo
             "crime" in genre_names
             or has("cartel", "drug", "criminal", "lawyer", "murder", "gang", "antihero", "mob")
         ),
+        "epic_scifi": epic_scifi,
+        "space_opera": epic_scifi or has("space", "galaxy", "fleet", "ship", "starship", "interplanetary"),
+        "hard_scifi": has("nasa", "science", "experiment", "time travel", "technology", "future", "colony", "asteroid", "space program"),
+        "dystopian_survival_scifi": dystopian_survival_scifi,
+        "contained_society_scifi": dystopian_survival_scifi or has("contained", "sealed", "bunker", "vault", "underground", "enclosed"),
     }
-
 
 def _candidate_theme_flags(details: dict) -> dict[str, bool]:
     overview = str(details.get("overview") or "").lower()
@@ -344,8 +462,15 @@ def _candidate_theme_flags(details: dict) -> dict[str, bool]:
             or has("cartel", "drug", "criminal", "lawyer", "murder", "gang", "antihero", "mob", "underworld")
         ),
         "teen_chaos": has("high school", "teen", "teenager", "social media", "party"),
+        "epic_scifi": has("empire", "civilization", "civilisation", "galaxy", "planet", "fleet", "interplanetary", "space program") or title in {"for all mankind", "foundation", "the expanse"},
+        "space_opera": has("space", "ship", "starship", "galaxy", "fleet", "planet", "interplanetary", "colony"),
+        "hard_scifi": has("nasa", "science", "experiment", "technology", "future", "time travel", "asteroid", "space program"),
+        "dystopian_survival_scifi": has("dystopian", "survival", "post-apocalyptic", "authoritarian", "controlled society", "wasteland", "frozen wasteland"),
+        "contained_society_scifi": has("contained", "sealed", "bunker", "vault", "underground", "silo", "enclosed"),
+        "fantasy_magic": has("magic", "wizard", "dragon", "prophecy", "kingdom", "sorcer", "dream", "angel"),
+        "franchise_space_action": title in {"the mandalorian", "ahsoka", "star wars: maul - shadow lord"} or has("jedi", "empire", "rebel hero"),
+        "animated": 16 in set(details.get("genre_ids") or []),
     }
-
 
 def _candidate_fit_adjustment(anchor_profile: dict[str, bool], details: dict) -> tuple[bool, float]:
     genre_names = _genre_name_set(details)
@@ -429,11 +554,26 @@ def _anchor_descriptor(anchor_title: str, anchor_details: dict) -> dict[str, str
     angle = "storytelling"
     audience_hook = "a similar overall feel"
 
-    if has("finance", "billionaire", "hedge fund", "wall street", "corporate", "wealth", "money", "power", "ambition", "media conglomerate", "empire") or title_lower in {"billions", "succession", "industry"}:
+    if title_lower in {"foundation", "the expanse", "for all mankind"} or ("sci-fi & fantasy" in genre_names and has("empire", "civilization", "galaxy", "planet", "space", "fleet", "interplanetary", "space program")):
+        themes = ["world-building", "large-scale conflict", "big-idea sci-fi"]
+        mood = "sweeping"
+        angle = "epic sci-fi storytelling"
+        audience_hook = "scale, politics and long-form sci-fi payoff"
+    elif title_lower in {"silo", "snowpiercer"} or ("sci-fi & fantasy" in genre_names and has("dystopian", "bunker", "vault", "underground", "survival", "authoritarian", "controlled society")):
+        themes = ["survival pressure", "contained mystery", "dystopian tension"]
+        mood = "claustrophobic"
+        angle = "closed-world sci-fi storytelling"
+        audience_hook = "mystery, pressure and a controlled-world atmosphere"
+    elif has("finance", "billionaire", "hedge fund", "wall street", "corporate", "wealth", "money", "power", "ambition", "media conglomerate", "empire") or title_lower in {"billions", "succession", "industry"}:
         themes = ["power plays", "elite rivalry", "high-stakes ambition"]
         mood = "sharp and intense"
         angle = "status-driven drama"
         audience_hook = "power, money and strategic conflict"
+    elif has("time travel", "parallel", "dystopian", "future", "alien") or "sci-fi & fantasy" in genre_names:
+        themes = ["big ideas", "mystery", "long-form payoff"]
+        mood = "atmospheric"
+        angle = "concept-heavy storytelling"
+        audience_hook = "mystery, world-building and payoff over time"
     elif "crime" in genre_names or has("cartel", "criminal", "drug", "lawyer", "detective", "murder", "gang", "antihero", "mob"):
         themes = ["moral pressure", "high-stakes choices", "tense character drama"]
         mood = "tense"
@@ -454,11 +594,7 @@ def _anchor_descriptor(anchor_title: str, anchor_details: dict) -> dict[str, str
         mood = "suspenseful"
         angle = "cloak-and-dagger tension"
         audience_hook = "carefully built suspense and competing loyalties"
-    elif has("time travel", "parallel", "dystopian", "future", "alien") or "sci-fi & fantasy" in genre_names:
-        themes = ["big ideas", "mystery", "long-form payoff"]
-        mood = "atmospheric"
-        angle = "concept-heavy storytelling"
-        audience_hook = "mystery, world-building and payoff over time"
+    
     elif has("family", "marriage", "community", "small town", "village"):
         themes = ["community", "relationships", "emotional connection"]
         mood = "warm"
@@ -473,7 +609,6 @@ def _anchor_descriptor(anchor_title: str, anchor_details: dict) -> dict[str, str
         "angle": angle,
         "audience_hook": audience_hook,
     }
-
 
 def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: str, genre_text: str, descriptor: dict[str, str | list[str]]) -> list[dict]:
     title_lower = str(anchor_title or "").lower()
@@ -548,26 +683,6 @@ def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: 
             },
         ]
 
-    if "crime" in genre_names or has("crime", "murder", "detective", "cartel", "lawyer", "drug", "criminal"):
-        return [
-            {
-                "question": f"What should I watch after {anchor_title} if I want the same tension?",
-                "answer": f"Start with {top_titles_text or 'the strongest picks here'} because they keep the pressure high and stay focused on character consequences instead of feeling like generic crime TV.",
-            },
-            {
-                "question": f"Do these shows match the tone of {anchor_title}?",
-                "answer": f"That is the aim. The ranking favours series with a similar blend of atmosphere, conflict and long-form payoff, not just surface-level plot similarities.",
-            },
-            {
-                "question": f"Why are fans of {anchor_title} often drawn to these series?",
-                "answer": f"Because they tap into {theme_text or 'tension, escalation and memorable characters'}, which is usually what keeps viewers hooked once they finish {anchor_title}.",
-            },
-            {
-                "question": f"Where can I keep track of crime dramas I want to watch next?",
-                "answer": "Use WhatNext to save favourites, keep a watchlist and improve future recommendations based on what you actually enjoy.",
-            },
-        ]
-
     if "sci-fi & fantasy" in genre_names or has("future", "alien", "time travel", "parallel", "dystopian"):
         return [
             {
@@ -585,6 +700,26 @@ def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: 
             {
                 "question": f"How do I find more shows once I finish these?",
                 "answer": "Build up your favourites and ratings in WhatNext and the app can keep narrowing in on the sci-fi and fantasy shows that suit your taste best.",
+            },
+        ]
+
+    if "crime" in genre_names or has("crime", "murder", "detective", "cartel", "lawyer", "drug", "criminal"):
+        return [
+            {
+                "question": f"What should I watch after {anchor_title} if I want the same tension?",
+                "answer": f"Start with {top_titles_text or 'the strongest picks here'} because they keep the pressure high and stay focused on character consequences instead of feeling like generic crime TV.",
+            },
+            {
+                "question": f"Do these shows match the tone of {anchor_title}?",
+                "answer": f"That is the aim. The ranking favours series with a similar blend of atmosphere, conflict and long-form payoff, not just surface-level plot similarities.",
+            },
+            {
+                "question": f"Why are fans of {anchor_title} often drawn to these series?",
+                "answer": f"Because they tap into {theme_text or 'tension, escalation and memorable characters'}, which is usually what keeps viewers hooked once they finish {anchor_title}.",
+            },
+            {
+                "question": f"Where can I keep track of crime dramas I want to watch next?",
+                "answer": "Use WhatNext to save favourites, keep a watchlist and improve future recommendations based on what you actually enjoy.",
             },
         ]
 
@@ -687,6 +822,1036 @@ def _build_page_copy(anchor_title: str, anchor_details: dict, results: list[dict
     }
 
 
+
+
+def _is_future_or_too_fresh_for_seo(first_air_date: str | None, vote_count: int) -> bool:
+    if vote_count < SEO_FRESH_MIN_VOTE_COUNT and first_air_date:
+        try:
+            year = int(str(first_air_date)[:4])
+            if year >= CURRENT_YEAR:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _is_weak_scifi(details: dict) -> bool:
+    overview = (details.get("overview") or "").lower()
+    genres = set(details.get("genre_ids") or [])
+
+    if 10765 not in genres:
+        return True
+
+    strong_terms = (
+        "space", "future", "alien", "technology", "experiment", "time", "dystopian",
+        "post-apocalyptic", "planet", "galaxy", "empire", "robot", "android",
+        "survival", "nasa", "asteroid", "colony", "bunker", "vault", "underground",
+        "fleet", "interplanetary"
+    )
+    return not any(k in overview for k in strong_terms)
+
+
+def _anchor_fill_bucket(anchor_title: str, anchor_details: dict) -> str:
+    flags = _anchor_theme_flags(anchor_title, anchor_details)
+    if flags["dystopian_survival_scifi"] or flags["contained_society_scifi"]:
+        return "dystopian"
+    if flags["space_opera"] or flags["epic_scifi"]:
+        return "space"
+    return "general_scifi"
+
+
+
+def _fill_fit_score(bucket: str, details: dict) -> float:
+    title = str(details.get("title") or details.get("name") or "").lower()
+    overview = str(details.get("overview") or "").lower()
+    genres = set(details.get("genre_ids") or [])
+    score = 0.0
+
+    if 10765 in genres:
+        score += 0.25
+    if 18 in genres:
+        score += 0.05
+    if title in SCI_FI_CLASSICS:
+        score += 0.22
+
+    if bucket == "space":
+        terms = (
+            "space", "galaxy", "planet", "fleet", "ship", "starship",
+            "interplanetary", "nasa", "colony", "empire", "asteroid", "station"
+        )
+        score += 0.28 * sum(t in overview for t in terms)
+        if any(t in title for t in ("star trek", "stargate", "firefly", "andor", "halo", "expanse", "farscape", "battlestar")):
+            score += 0.18
+    elif bucket == "dystopian":
+        contained_terms = (
+            "bunker", "underground", "sealed", "silo", "vault", "quarantine",
+            "containment", "contained", "enclosed", "isolated", "restricted",
+            "authoritarian", "regime", "surveillance", "controlled society", "facility"
+        )
+        collapse_terms = (
+            "collapse", "post-apocalyptic", "post apocalyptic", "survival", "wasteland"
+        )
+        wrong_vibe_terms = (
+            "alien attack", "battlefield", "invasion", "soldiers", "war against",
+            "supernatural", "vampire", "witch", "magic", "superhero"
+        )
+
+        contained_hits = sum(t in overview for t in contained_terms)
+        collapse_hits = sum(t in overview for t in collapse_terms)
+
+        score += 0.38 * contained_hits
+        score += 0.10 * collapse_hits
+
+        if contained_hits >= 2:
+            score += 0.18
+        elif contained_hits == 1:
+            score += 0.08
+
+        if any(t in title for t in ("silo", "snowpiercer", "12 monkeys", "colony")):
+            score += 0.12
+
+        if any(t in overview for t in wrong_vibe_terms):
+            score -= 0.30
+    else:
+        terms = ("future", "technology", "experiment", "time", "alien", "parallel")
+        score += 0.18 * sum(t in overview for t in terms)
+
+    if 16 in genres:
+        score -= 0.18
+    if any(t in overview for t in ("wizard", "dragon", "magic", "sorcer", "angel")):
+        score -= 0.25
+
+    return score
+
+def _passes_anchor_filter(item: dict, anchor_type: str) -> bool:
+    overview = (item.get("overview") or "").lower()
+    genres = set(item.get("genre_ids") or [])
+
+    if anchor_type == "dystopian":
+        strong = any(k in overview for k in [
+            "bunker", "underground", "sealed", "silo", "vault",
+            "quarantine", "containment", "contained", "enclosed",
+            "authoritarian", "regime", "surveillance",
+            "collapse", "post-apocalyptic", "post apocalyptic", "survival"
+        ])
+
+        if not strong:
+            return False
+
+        if any(k in overview for k in [
+            "alien attack", "battlefield", "invasion", "soldiers",
+            "supernatural", "vampire", "witch", "magic", "superhero"
+        ]):
+            return False
+
+    elif anchor_type == "space_epic":
+        if not any(k in overview for k in [
+            "space", "planet", "galaxy", "ship", "colony",
+            "station", "empire", "fleet"
+        ]):
+            return False
+
+    return True
+
+
+def _fill_score_boost(show: dict, anchor_type: str) -> float:
+    genres = set(show.get("genre_ids") or [])
+    title = (show.get("title") or "").lower()
+    overview = (show.get("overview") or "").lower()
+
+    score = 0.0
+
+    if anchor_type == "space_epic":
+        if any(k in overview for k in [
+            "empire", "galaxy", "interstellar", "colony", "rebellion",
+            "fleet", "station", "starship", "space"
+        ]):
+            score += 0.25
+        if any(k in title for k in [
+            "star", "galactica", "trek", "dune", "stargate", "farscape"
+        ]):
+            score += 0.25
+        if 10759 in genres:
+            score += 0.10
+
+    elif anchor_type == "dystopian":
+        contained_terms = [
+            "bunker", "underground", "sealed", "silo", "vault",
+            "containment", "contained", "quarantine", "enclosed",
+            "authoritarian", "regime", "surveillance", "restricted", "facility"
+        ]
+        collapse_terms = ["collapse", "post-apocalyptic", "post apocalyptic", "survival"]
+
+        contained_hits = sum(k in overview for k in contained_terms)
+        collapse_hits = sum(k in overview for k in collapse_terms)
+
+        score += 0.12 * contained_hits
+        score += 0.04 * collapse_hits
+
+        if contained_hits >= 2:
+            score += 0.18
+        elif contained_hits == 1:
+            score += 0.08
+
+        if 9648 in genres:
+            score += 0.05
+
+    elif anchor_type == "crime":
+        if any(k in overview for k in ["cartel", "detective", "police", "crime", "murder"]):
+            score += 0.30
+
+    else:
+        if 10765 in genres:
+            score += 0.10
+
+    return score
+
+
+
+# ---------------------------------------------------------------------------
+# Refactored SEO recommendation engine
+# ---------------------------------------------------------------------------
+# The old version had several overlapping gates: theme flags, concept gates,
+# fill-only blocks and final post-filters. This version keeps the response shape
+# the same, but moves concept fit into one reusable scoring path.
+
+CONCEPT_RULES: dict[str, dict[str, object]] = {
+    "space_epic": {
+        "required_any": [
+            "space", "planet", "galaxy", "ship", "starship", "fleet", "station",
+            "colony", "interplanetary", "empire", "civilization", "civilisation",
+            "nasa", "space program",
+        ],
+        "boost_any": [
+            "space", "planet", "galaxy", "ship", "starship", "fleet", "station",
+            "colony", "empire", "interplanetary", "civilization", "civilisation",
+            "rebellion", "dynasty", "nasa", "space program",
+        ],
+        "reject_any": [
+            "witch", "wizard", "magic", "dragon", "vampire", "high school",
+            "superhero", "marvel", "dc comics",
+        ],
+        "preferred_genres": {10765, 10759, 18},
+        "strict": True,
+    },
+    "contained_dystopia": {
+        "required_any": [
+            "bunker", "underground", "sealed", "silo", "vault", "contained",
+            "containment", "enclosed", "isolated", "quarantine", "authoritarian",
+            "regime", "restricted", "surveillance", "controlled", "facility",
+            "experiment", "collapse", "post-apocalyptic", "post apocalyptic", "survival",
+        ],
+        "boost_any": [
+            "bunker", "underground", "sealed", "silo", "vault", "contained",
+            "containment", "enclosed", "isolated", "quarantine", "authoritarian",
+            "regime", "restricted", "surveillance", "controlled", "facility",
+            "experiment", "system", "mystery",
+        ],
+        "reject_any": [
+            "alien attack", "battlefield", "invasion force", "war against",
+            "soldiers", "vampire", "witch", "magic", "superhero", "high school",
+        ],
+        "preferred_genres": {10765, 9648, 18},
+        "strict": True,
+    },
+    "time_mystery": {
+        "required_any": [
+            "time", "timeline", "time travel", "loop", "paradox", "parallel",
+            "alternate", "generation", "generations", "missing", "mystery",
+            "secret", "secrets", "past", "future",
+        ],
+        "boost_any": [
+            "time travel", "timeline", "loop", "paradox", "parallel", "alternate",
+            "generation", "generations", "missing", "mystery", "secret", "secrets",
+        ],
+        "reject_any": ["sitcom", "stand-up", "reality", "talk show"],
+        "preferred_genres": {10765, 9648, 18, 80},
+        "strict": False,
+    },
+    "corporate_mystery": {
+        "required_any": [
+            "office", "workplace", "corporate", "company", "memory", "identity",
+            "experiment", "consciousness", "surveillance", "controlled", "facility",
+            "secret", "mystery",
+        ],
+        "boost_any": [
+            "office", "workplace", "corporate", "company", "memory", "identity",
+            "experiment", "consciousness", "surveillance", "controlled", "facility",
+            "secret", "mystery",
+        ],
+        "reject_any": ["wizard", "dragon", "vampire", "reality", "talk show"],
+        "preferred_genres": {10765, 9648, 18},
+        "strict": False,
+    },
+        "small_town_mystery": {
+        "required_any": [
+            "small town", "community", "local murder", "murder", "detective",
+            "investigation", "missing", "secrets", "family", "personal life",
+        ],
+        "boost_any": [
+            "small town", "community", "local murder", "detective",
+            "investigation", "family", "secrets", "grief", "personal life",
+        ],
+        "reject_any": [
+            "elite team", "fbi profilers", "procedural", "cases", "solve new cases",
+            "unusual partnership", "superhero", "magic", "reality",
+        ],
+        "preferred_genres": {80, 18, 9648},
+        "strict": False,
+    },
+    "crime_pressure": {
+        "required_any": [
+            "crime", "criminal", "murder", "detective", "police", "cartel", "drug",
+            "gang", "mob", "mafia", "lawyer", "attorney", "corruption", "killer",
+            "investigation", "heist", "prison", "underworld",
+        ],
+        "boost_any": [
+            "crime", "criminal", "murder", "detective", "police", "cartel", "drug",
+            "gang", "mob", "mafia", "lawyer", "attorney", "corruption", "killer",
+            "investigation", "heist", "prison", "underworld", "moral", "dark",
+        ],
+        "reject_any": ["high school musical", "reality", "talk show"],
+        "preferred_genres": {80, 18, 9648},
+        "strict": False,
+    },
+    "detective_mystery": {
+        "required_any": [
+            "detective", "investigation", "murder", "killer", "case", "crime",
+            "police", "fbi", "mystery", "missing", "secrets",
+        ],
+        "boost_any": [
+            "detective", "investigation", "murder", "killer", "case", "crime",
+            "police", "fbi", "mystery", "missing", "secrets", "serial",
+        ],
+        "reject_any": ["superhero", "magic", "wizard", "reality"],
+        "preferred_genres": {80, 18, 9648},
+        "strict": False,
+    },
+    "finance_power": {
+        "required_any": [
+            "finance", "hedge fund", "wall street", "billionaire", "wealth",
+            "corporate", "business", "money", "elite", "company", "ceo",
+            "boardroom", "shareholder", "merger", "acquisition", "media empire",
+            "conglomerate", "power", "ambition", "rivalry",
+        ],
+        "boost_any": [
+            "finance", "hedge fund", "wall street", "billionaire", "wealth",
+            "corporate", "business", "money", "elite", "company", "ceo",
+            "boardroom", "shareholder", "merger", "acquisition", "media empire",
+            "conglomerate", "power", "ambition", "rivalry", "dynasty",
+        ],
+        "reject_any": ["high school", "teen", "supernatural", "vampire", "wizard"],
+        "preferred_genres": {18, 80},
+        "strict": False,
+    },
+    "period_community": {
+        "required_any": [
+            "period", "historical", "victorian", "post-war", "postwar", "1950",
+            "1960", "community", "village", "family", "women", "rural", "small town",
+            "war", "estate",
+        ],
+        "boost_any": [
+            "period", "historical", "victorian", "post-war", "postwar", "1950",
+            "1960", "community", "village", "family", "women", "rural", "small town",
+            "war", "estate", "relationships",
+        ],
+        "reject_any": ["superhero", "alien", "vampire", "zombie", "wizard"],
+        "preferred_genres": {18, 10768},
+        "strict": False,
+    },
+    "medical_family": {
+        "required_any": [
+            "midwife", "maternity", "nurse", "nurses", "hospital", "doctor",
+            "medical", "clinic", "community", "family", "women", "village",
+        ],
+        "boost_any": [
+            "midwife", "maternity", "nurse", "nurses", "hospital", "doctor",
+            "medical", "clinic", "community", "family", "women", "village", "compassion",
+        ],
+        "reject_any": ["superhero", "alien", "vampire", "wizard", "cartel", "mafia"],
+        "preferred_genres": {18},
+        "strict": False,
+    },
+    "general_scifi": {
+        "required_any": [
+            "future", "alien", "technology", "experiment", "time", "parallel",
+            "dystopian", "space", "mystery", "secret", "world", "survival",
+        ],
+        "boost_any": [
+            "future", "alien", "technology", "experiment", "time", "parallel",
+            "dystopian", "space", "mystery", "secret", "world", "survival",
+        ],
+        "reject_any": ["reality", "talk show"],
+        "preferred_genres": {10765, 9648, 18},
+        "strict": False,
+    },
+    "general_drama": {
+        "required_any": [],
+        "boost_any": ["family", "relationships", "community", "secrets", "ambition", "conflict"],
+        "reject_any": ["reality", "talk show"],
+        "preferred_genres": {18},
+        "strict": False,
+    },
+}
+
+
+def _blob_for(details: dict, extra_title: str | None = None) -> str:
+    return " ".join(
+        [
+            str(extra_title or details.get("title") or details.get("name") or ""),
+            str(details.get("overview") or ""),
+            " ".join(str(g) for g in (details.get("genres") or [])),
+        ]
+    ).lower()
+
+
+def _contains_any(blob: str, terms: list[str] | tuple[str, ...]) -> bool:
+    return any(term in blob for term in terms)
+
+
+def _count_hits(blob: str, terms: list[str] | tuple[str, ...]) -> int:
+    return sum(1 for term in terms if term in blob)
+
+
+def _classify_anchor_concept_v2(anchor_title: str, anchor_details: dict) -> str:
+    title = str(anchor_title or anchor_details.get("title") or anchor_details.get("name") or "").lower()
+    blob = _blob_for(anchor_details, title)
+    genres = set(anchor_details.get("genre_ids") or [])
+    genre_names = _genre_name_set(anchor_details)
+
+    if title in {"foundation"} or _contains_any(blob, ["psychohistory", "galactic empire", "empire", "civilization", "civilisation", "dynasty"]):
+        if 10765 in genres:
+            return "space_epic"
+
+    if title in {"the expanse", "for all mankind", "battlestar galactica", "firefly"}:
+        return "space_epic"
+
+    if title in {"silo", "snowpiercer"} or _contains_any(blob, ["bunker", "underground", "sealed", "silo", "vault", "controlled society", "authoritarian"]):
+        if 10765 in genres:
+            return "contained_dystopia"
+
+    if title in {"dark", "12 monkeys"} or _contains_any(blob, ["time travel", "timeline", "time loop", "paradox", "parallel world", "generations"]):
+        return "time_mystery"
+
+    if title in {"severance"} or _contains_any(blob, ["workplace", "office", "memory", "identity", "consciousness", "corporate experiment"]):
+        if 10765 in genres or 9648 in genres:
+            return "corporate_mystery"
+
+    if title in {"billions", "succession", "industry"} or _contains_any(blob, ["hedge fund", "wall street", "billionaire", "media empire", "corporate", "boardroom", "shareholder"]):
+        return "finance_power"
+
+    if _contains_any(blob, ["midwife", "maternity", "nurse", "hospital", "doctor", "medical"]):
+        return "medical_family"
+
+    if title in {"downton abbey", "poldark", "pride and prejudice"} or _contains_any(
+        blob,
+        [
+            "period", "historical", "victorian", "georgian",
+            "post-war", "postwar", "1950", "1960",
+            "village", "estate", "aristocratic", "early 19th century",
+            "19th century", "18th century",
+        ],
+    ):
+        return "period_community"
+    
+    if title in {"mare of easttown", "broadchurch", "sharp objects", "happy valley"} or _contains_any(blob, ["small town", "local murder", "community apart"]):
+        return "small_town_mystery"
+    
+    if title in {"true detective", "mindhunter", "mare of easttown", "the killing", "the fall"} or _contains_any(blob, ["detective", "investigation", "serial killer", "murder case", "fbi"]):
+        return "detective_mystery"
+
+    if 80 in genres or _contains_any(blob, ["crime", "criminal", "cartel", "drug", "gang", "mafia", "mob", "lawyer", "attorney"]):
+        return "crime_pressure"
+
+    if 10765 in genres or "sci-fi & fantasy" in genre_names:
+        return "general_scifi"
+
+    return "general_drama"
+
+
+def _concept_fit_score(anchor_concept: str, details: dict, *, semantic_score: float, genre_score: float) -> tuple[bool, float, float]:
+    """Return (passes, additive_bonus, multiplier)."""
+    rule = CONCEPT_RULES.get(anchor_concept) or CONCEPT_RULES["general_drama"]
+    blob = _blob_for(details)
+    genres = set(details.get("genre_ids") or [])
+    title = str(details.get("title") or details.get("name") or "").lower()
+    first_air_date = str(details.get("first_air_date") or "")
+    year = 0
+    try:
+        year = int(first_air_date[:4])
+    except Exception:
+        year = 0
+
+    # Avoid anime/animation drift on non-animation SEO pages.
+    if 16 in genres and anchor_concept not in {"general_scifi", "space_epic"}:
+        return False, 0.0, 1.0
+
+    required_any = list(rule.get("required_any") or [])
+    boost_any = list(rule.get("boost_any") or [])
+    reject_any = list(rule.get("reject_any") or [])
+    preferred_genres = set(rule.get("preferred_genres") or set())
+    strict = bool(rule.get("strict"))
+
+    if reject_any and _contains_any(blob, reject_any):
+        return False, 0.0, 1.0
+
+    required_hits = _count_hits(blob, required_any)
+    boost_hits = _count_hits(blob, boost_any)
+    genre_hits = len(genres & preferred_genres)
+
+    bonus = 0.0
+    bonus += min(0.42, 0.07 * boost_hits)
+    bonus += min(0.18, 0.06 * genre_hits)
+
+    multiplier = 1.0
+
+    # Very old shows often make SEO pages look low quality unless they are classics.
+    classic_allowlist = {
+        "the twilight zone",
+        "star trek",
+        "star trek: deep space nine",
+        "the sopranos",
+        "the wire",
+    }
+
+    if year and year < 1990 and title not in classic_allowlist:
+        multiplier *= 0.45
+
+    if required_any and required_hits == 0:
+        if strict:
+            return False, 0.0, 1.0
+        if semantic_score < 0.20 and genre_score < 0.22 and genre_hits == 0:
+            return False, 0.0, 1.0
+
+    
+    if title in SCI_FI_CLASSICS and anchor_concept in {"space_epic", "general_scifi"}:
+        bonus += 0.16
+
+    
+    if anchor_concept == "space_epic":
+        if 10765 not in genres:
+            return False, 0.0, 1.0
+        if _contains_any(blob, ["star trek", "stargate", "battlestar", "farscape", "firefly", "andor"]):
+            bonus += 0.12
+        if _contains_any(blob, ["jedi", "mandalorian", "ahsoka"]):
+            multiplier *= 0.88
+
+    elif anchor_concept == "contained_dystopia":
+        if 10765 not in genres and semantic_score < 0.24:
+            return False, 0.0, 1.0
+        if title in {"fallout", "paradise"}:
+            bonus += 0.55
+        elif title in {"snowpiercer", "silo"}:
+            bonus += 0.35
+
+        if title in {"the outer limits", "the pretender", "taken"}:
+            multiplier *= 0.55
+
+        strong_contained = _contains_any(blob, [
+            "bunker", "underground", "sealed", "silo", "vault",
+            "contained", "containment", "surveillance", "authoritarian",
+            "controlled society", "restricted", "facility", "enclosed",
+            "isolated", "quarantine",
+        ])
+
+        dystopian_survival = _contains_any(blob, [
+            "dystopian", "survival", "post-apocalyptic", "post apocalyptic",
+            "collapse", "wasteland", "class warfare", "regime",
+        ])
+
+        if strong_contained:
+            bonus += 0.24
+
+        if dystopian_survival:
+            bonus += 0.18
+
+        if title in {
+            "snowpiercer",
+            "severance",
+            "dark",
+            "from",
+            "the 100",
+            "station eleven",
+            "wayward pines",
+            "the leftovers",
+        }:
+            bonus += 0.22
+
+        if title in {
+            "dollhouse",
+            "the pretender",
+            "the outer limits",
+            "taken",
+        }:
+            multiplier *= 0.72
+
+        if title in {
+            "under the dome",
+        }:
+            multiplier *= 0.82
+
+        if _contains_any(blob, ["alien attack", "battlefield", "invasion", "soldiers", "jedi", "starship"]):
+            multiplier *= 0.60
+
+    elif anchor_concept == "time_mystery":
+        if _contains_any(blob, ["time travel", "timeline", "loop", "paradox", "parallel"]):
+            bonus += 0.22
+        elif required_hits == 0 and semantic_score < 0.24:
+            multiplier *= 0.70
+
+    elif anchor_concept == "corporate_mystery":
+        if _contains_any(blob, ["memory", "identity", "consciousness", "experiment", "office", "workplace", "corporate"]):
+            bonus += 0.22
+        elif required_hits == 0 and semantic_score < 0.24:
+            multiplier *= 0.72
+
+        if 10759 in genres:
+            multiplier *= 0.72
+
+        if _contains_any(blob, ["supernatural forces", "young boy", "small town", "monster"]):
+            multiplier *= 0.65
+
+        if _contains_any(blob, ["office", "workplace", "memory", "identity", "corporate", "experiment", "consciousness"]):
+            bonus += 0.12
+        if title in {"the pretender", "taken", "nancy drew"}:
+            multiplier *= 0.65
+
+    elif anchor_concept == "small_town_mystery":
+        if _contains_any(blob, ["small town", "community", "local murder", "murder", "grief", "family", "secrets"]):
+            bonus += 0.28
+
+        if _contains_any(blob, ["elite team", "profilers", "solve new cases", "nypd", "fbi"]):
+            multiplier *= 0.55
+
+        procedural_terms = [
+            "case", "cases", "solve crimes", "solving crimes", "homicide unit",
+            "nypd", "fbi", "precinct", "partnership", "detective inspector",
+            "murder mysteries", "each episode"
+        ]
+
+        grounded_terms = [
+            "small town", "community", "family", "grief", "secrets",
+            "local", "coastal", "personal life", "missing"
+        ]
+
+        procedural_hits = _count_hits(blob, procedural_terms)
+        grounded_hits = _count_hits(blob, grounded_terms)
+
+        if procedural_hits >= 1 and grounded_hits == 0:
+            multiplier *= 0.50
+
+        if 10765 in genres or 10759 in genres:
+            multiplier *= 0.55
+
+    elif anchor_concept in {"crime_pressure", "detective_mystery"}:
+        if 80 in genres:
+            bonus += 0.12
+
+        if 10765 in genres:
+            multiplier *= 0.35
+
+        if 10759 in genres and semantic_score < 0.35:
+            multiplier *= 0.45
+
+        if _contains_any(blob, ["superhero", "vampire", "monster", "supernatural", "high school students", "trauma medical center"]):
+            multiplier *= 0.35
+
+        generic_procedural_terms = [
+            "nypd", "lapd", "fbi", "elite agents", "homicide unit",
+            "police procedural", "solve crimes", "solving crimes",
+            "cases", "case-of-the-week", "precinct", "rookie",
+        ]
+
+        prestige_crime_terms = [
+            "corruption", "institution", "bureaucracy", "drug", "cartel",
+            "underworld", "organized crime", "moral", "political",
+            "system", "city", "criminal organization"
+        ]
+
+        procedural_hits = _count_hits(blob, generic_procedural_terms)
+        prestige_hits = _count_hits(blob, prestige_crime_terms)
+
+        if procedural_hits >= 1 and prestige_hits == 0:
+            multiplier *= 0.35
+
+        if title in {"castle", "blue bloods", "elementary", "the rookie", "fbi: international", "major crimes"}:
+            multiplier *= 0.45
+
+        if 35 in genres and 80 not in genres and semantic_score < 0.24:
+            multiplier *= 0.75
+
+    elif anchor_concept == "finance_power":
+
+        finance_terms = [
+            "finance", "hedge fund", "wall street", "billionaire",
+            "corporate", "company", "ceo", "boardroom",
+            "shareholder", "merger", "acquisition",
+            "wealth", "money", "elite", "business",
+            "empire", "dynasty", "inheritance", "family business",
+        ]
+
+        strong_finance = _count_hits(blob, finance_terms)
+
+        if _contains_any(blob, ["superhero", "monster", "alien", "godzilla"]):
+            return False, 0.0, 1.0
+
+        # HARD filter (but smarter)
+        power_terms = [
+            "power", "family", "wealth", "wealthy", "elite", "empire",
+            "dynasty", "inheritance", "rivalry", "ambition", "corruption",
+            "scandal", "media", "lawyer", "political", "influence"
+        ]
+
+        strong_power = _count_hits(blob, power_terms)
+
+        if strong_finance == 0 and strong_power == 0:
+            if semantic_score < 0.25:
+                return False, 0.0, 1.0
+            multiplier *= 0.75
+
+        if strong_power >= 1:
+            bonus += 0.12
+        if strong_power >= 2:
+            bonus += 0.18
+        if 10759 in genres or 10768 in genres:
+            multiplier *= 0.55
+        
+
+        # Boost real matches heavily
+        if strong_finance >= 1:
+            bonus += 0.18
+        if strong_finance >= 2:
+            bonus += 0.28
+        if strong_finance >= 3:
+            bonus += 0.35
+
+    elif anchor_concept == "period_community":
+        if 10765 in genres or 10759 in genres or 80 in genres:
+            multiplier *= 0.55
+        if _contains_any(blob, ["high school", "drugs", "sex", "social media", "trauma medical center", "emergency department", "overcrowded"]):
+            multiplier *= 0.45
+        if required_hits == 0 and semantic_score < 0.18:
+            return False, 0.0, 1.0
+
+    elif anchor_concept == "medical_family":
+        is_period = _contains_any(blob, ["period", "post-war", "postwar", "1950", "1960", "historical"])
+        is_community = _contains_any(blob, ["community", "village", "family", "women", "rural"])
+        is_midwife = _contains_any(blob, ["midwife", "maternity", "district nurse", "community nurse", "nurse", "nurses"])
+        is_medical = _contains_any(blob, ["hospital", "doctor", "medical", "clinic", "patient", "ward"])
+        is_modern_hospital = _contains_any(blob, ["emergency department", "trauma", "resident", "medical center"])
+
+        if 10765 in genres or 10759 in genres:
+            return False, 0.0, 1.0
+
+        if _contains_any(blob, ["monster", "godzilla", "alien", "superhero", "secret organization"]):
+            return False, 0.0, 1.0
+
+        # Hard reject only if it has no useful signal at all.
+        if not (is_midwife or is_medical or is_community or is_period):
+            if semantic_score < 0.22 and genre_score < 0.20:
+                return False, 0.0, 1.0
+            multiplier *= 0.75
+
+        # Penalise modern hospital shows, but do not automatically kill them.
+        if is_modern_hospital:
+            multiplier *= 0.55
+
+        # Boost close matches.
+        if is_midwife:
+            bonus += 0.25
+        if is_period and is_community:
+            bonus += 0.22
+        elif is_community:
+            bonus += 0.12
+        if is_medical:
+            bonus += 0.10
+        if is_period or is_community:
+            bonus += 0.16
+
+        if is_modern_hospital and not is_community:
+            multiplier *= 0.72
+        
+
+                # Global sanity filter
+    if semantic_score < 0.15 and genre_score < 0.15 and bonus < 0.05:
+        return False, 0.0, 1.0
+
+    return True, float(bonus), float(multiplier)
+
+
+def _source_label(is_reddit: bool, is_tmdb: bool, is_trending: bool, semantic_score: float) -> str:
+    if is_reddit and (is_tmdb or is_trending):
+        return "multi_signal"
+    if is_reddit:
+        return "reddit_pairs"
+    if is_tmdb:
+        return "tmdb_recs"
+    if semantic_score >= 0.18:
+        return "semantic_fallback"
+    return "fill"
+
+
+def _normalise_result_score(item: dict) -> dict:
+    item["score"] = round(float(item.get("score") or 0.0), 4)
+    return item
+
+def _seo_ranking_layer(
+    ranked: list[dict],
+    *,
+    anchor_concept: str,
+    limit: int,
+    anchor_tmdb_id: int | None = None,
+) -> list[dict]:
+    """
+    Final SEO polish layer:
+    - removes obvious low-quality drift
+    - demotes generic filler/procedurals
+    - keeps result diversity
+    - avoids cheap-looking old/dated results
+    """
+
+    HARD_EXCLUDE_TITLES = {
+        # Generic procedurals that make SEO pages look low quality
+        "castle",
+        "blue bloods",
+        "major crimes",
+        "elementary",
+        "the rookie",
+        "fbi: international",
+        "hill street blues",
+        "the untouchables",
+        "in the heat of the night",
+
+        # Weak sci-fi / tone breakers for concept pages
+        "the outer limits",
+        "the pretender",
+        "taken",
+    }
+
+    CONCEPT_TITLE_BOOSTS = {
+        "contained_dystopia": {
+            "fallout": 0.55,
+            "paradise": 0.50,
+            "station eleven": 0.42,
+            "the last of us": 0.42,
+            "snowpiercer": 0.30,
+            "silo": 0.30,
+        },
+        "corporate_mystery": {
+            "black mirror": 0.35,
+            "severance": 0.35,
+            "silo": 0.25,
+            "dark": 0.25,
+            "3 body problem": 0.20,
+        },
+        "crime_pressure": {
+            "better call saul": 0.35,
+            "the sopranos": 0.30,
+            "fargo": 0.28,
+            "the wire": 0.28,
+            "mr. robot": 0.22,
+            "the night of": 0.22,
+            "true detective": 0.22,
+        },
+    }
+
+    def title_of(item: dict) -> str:
+        return str(item.get("title") or item.get("name") or "").strip().lower()
+
+    def year_of(item: dict) -> int:
+        try:
+            return int(str(item.get("first_air_date") or "")[:4])
+        except Exception:
+            return 0
+
+    def bucket_for(item: dict) -> str:
+        title = title_of(item)
+        genres = set(item.get("genre_ids") or [])
+        blob = " ".join([
+            title,
+            str(item.get("overview") or "").lower(),
+            " ".join(str(g).lower() for g in item.get("genres") or []),
+        ])
+
+        if title in {"fallout", "silo", "snowpiercer", "station eleven", "the last of us"}:
+            return "dystopia"
+
+        if 10765 in genres:
+            return "scifi"
+
+        if "lawyer" in blob or "legal" in blob or "attorney" in blob:
+            return "legal"
+
+        if "cartel" in blob or "drug" in blob or "mafia" in blob or "mob" in blob:
+            return "crime_underworld"
+
+        if "detective" in blob or "murder" in blob or "investigation" in blob:
+            return "crime_mystery"
+
+        if 80 in genres:
+            return "crime"
+
+        if 18 in genres:
+            return "drama"
+
+        return "other"
+
+    polished: list[dict] = []
+
+    for item in ranked:
+        title = title_of(item)
+        genres = set(item.get("genre_ids") or [])
+        source = str(item.get("source") or "")
+        year = year_of(item)
+
+        if not title:
+            continue
+
+        if anchor_tmdb_id is not None and int(item.get("tmdb_id") or 0) == int(anchor_tmdb_id):
+            continue
+
+        if title in HARD_EXCLUDE_TITLES:
+            continue
+
+        score = float(item.get("score") or 0.0)
+
+        min_polished_score = 0.42 if anchor_concept in {"period_community", "medical_family"} else 0.55
+
+        if score < min_polished_score:
+            continue
+
+        if anchor_concept == "period_community":
+            period_terms = [
+                "period", "historical", "victorian", "georgian", "estate",
+                "aristocratic", "19th century", "early 19th century",
+                "18th century", "post-war", "postwar", "war", "cornwall"
+            ]
+
+            community_terms = [
+                "family", "community", "village", "rural", "marriage",
+                "inheritance", "social", "class", "relationships"
+            ]
+
+            blob = " ".join([
+                title,
+                str(item.get("overview") or "").lower(),
+                " ".join(str(g).lower() for g in item.get("genres") or []),
+            ])
+
+            has_period = any(t in blob for t in period_terms)
+            has_community = any(t in blob for t in community_terms)
+
+            if 10765 in genres or 10759 in genres or 80 in genres:
+                continue
+
+            if not (has_period or has_community):
+                if source != "tmdb_recs":
+                    continue
+                score *= 0.75
+
+            if title in {"pride and prejudice", "the gilded age", "belgravia", "the crown", "upstairs downstairs"}:
+                score += 0.45
+
+            if has_period:
+                score += 0.35
+            elif has_community:
+                score += 0.12
+
+            if source == "fill":
+                score *= 0.70
+
+        if year >= 2020:
+            score += 0.12
+        elif year >= 2015:
+            score += 0.06
+
+        # Avoid anime/animation drift unless the concept supports it.
+        if 16 in genres and anchor_concept not in {"general_scifi", "space_epic"}:
+            continue
+
+        # Generic sci-fi/fantasy should not leak into grounded crime.
+        if anchor_concept in {"crime_pressure", "detective_mystery", "small_town_mystery"}:
+            if 10765 in genres:
+                continue
+            if 10759 in genres and title not in {"peaky blinders"}:
+                score *= 0.55
+
+        # Old shows often look bad on SEO pages unless they are prestige classics.
+        classic_allowlist = {
+            "the sopranos",
+            "the wire",
+            "star trek: deep space nine",
+            "twin peaks",
+            "the twilight zone",
+        }
+
+        if year and year < 1995 and title not in classic_allowlist:
+            score *= 0.55
+
+        # Fill results should not dominate top SEO slots.
+        if source == "fill":
+            score *= 0.82
+
+        # Penalise low-confidence titles unless they are very relevant.
+        vote_average = float(item.get("vote_average") or 0.0)
+        vote_count = int(item.get("vote_count") or 0)
+        popularity = float(item.get("popularity") or 0.0)
+
+        is_prestige = vote_average >= 7.8 and vote_count >= 500
+        is_decent = vote_average >= 7.2 and vote_count >= 150 and popularity >= 8
+
+        if not is_prestige and not is_decent:
+            score *= 0.78
+
+        # Concept-specific title boosts.
+        boost_map = CONCEPT_TITLE_BOOSTS.get(anchor_concept, {})
+        if title in boost_map:
+            score += boost_map[title]
+
+        # Silo / contained dystopia specific cleanup.
+        if anchor_concept == "contained_dystopia":
+            if title in {"under the dome", "dollhouse", "the pretender", "the 100"}:
+                score *= 0.70
+            if title in {"fallout", "paradise", "station eleven", "the last of us"}:
+                score += 0.45
+
+
+        min_polished_score = 0.42 if anchor_concept == "period_community" else 0.55
+
+        if score < min_polished_score:
+            continue
+
+        item = dict(item)
+        item["score"] = round(score, 4)
+        polished.append(item)
+
+    polished.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+    # Diversity cap: avoid one page becoming all procedurals / all legal / all sci-fi.
+    bucket_counts: dict[str, int] = {}
+    final: list[dict] = []
+
+    for item in polished:
+        bucket = bucket_for(item)
+        max_per_bucket = 4
+
+        if anchor_concept in {"crime_pressure", "detective_mystery"}:
+            max_per_bucket = 5
+
+        if anchor_concept == "contained_dystopia":
+            max_per_bucket = 3
+
+        if bucket_counts.get(bucket, 0) >= max_per_bucket:
+            continue
+
+        final.append(item)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+        if len(final) >= limit:
+            break
+
+    return final
+
 @router.get("/shows-like/{slug}")
 async def shows_like(
     slug: str,
@@ -718,31 +1883,33 @@ async def shows_like(
         if not tmdb_match:
             raise HTTPException(status_code=404, detail="Show not found")
 
-        tmdb_id = tmdb_match.get("id")
-        if not isinstance(tmdb_id, int):
+        tmdb_id_candidate = tmdb_match.get("id")
+        if not isinstance(tmdb_id_candidate, int):
             raise HTTPException(status_code=404, detail="Show not found")
 
-        details = await _tmdb_details(tmdb_id)
-
+        details = await _tmdb_details(tmdb_id_candidate)
         row = {
-            "show_id": tmdb_id,
+            "show_id": tmdb_id_candidate,
             "title": details.get("title") or details.get("name") or title.title(),
             "poster_path": details.get("poster_path"),
         }
 
     tmdb_id = int(row["show_id"])
-    print("SEO anchor:", row["title"], tmdb_id)
+    anchor_title = str(row["title"])
+    print("SEO anchor:", anchor_title, tmdb_id)
 
     anchor_details = await _tmdb_details(tmdb_id)
     anchor_genre_ids = set(anchor_details.get("genre_ids") or [])
     anchor_lang = anchor_details.get("original_language")
     anchor_keywords = _extract_anchor_keywords(
-        anchor_details.get("title") or anchor_details.get("name"),
+        anchor_details.get("title") or anchor_details.get("name") or anchor_title,
         anchor_details.get("overview"),
         " ".join(anchor_details.get("genres") or []),
     )
     anchor_profile = _anchor_profile(anchor_details)
-    anchor_theme_flags = _anchor_theme_flags(str(row["title"]), anchor_details)
+    anchor_concept = _classify_anchor_concept_v2(anchor_title, anchor_details)
+    anchor_concept = ANCHOR_TO_CONCEPT.get(anchor_title.lower(), anchor_concept)
+    anchor_is_scifi = bool(10765 in anchor_genre_ids or anchor_profile.get("is_scifi", False))
 
     api_key = _tmdb_api_key()
     if not api_key:
@@ -763,31 +1930,30 @@ async def shows_like(
         """
     )
 
-    async def _fetch_reddit_similar():
+    async def _fetch_reddit_similar() -> dict[int, float]:
         try:
-            res = await db.execute(reddit_sql, {"tid": tmdb_id, "lim": MAX_RESULTS * 3})
+            res = await db.execute(reddit_sql, {"tid": tmdb_id, "lim": MAX_RESULTS * 5})
             rows = res.mappings().all()
-            out = {}
-            for r in rows:
-                other_id = r.get("other_id")
-                if other_id is None:
-                    continue
-                try:
-                    oid = int(other_id)
-                    pw = float(r.get("pair_weight") or 0.0)
-                except Exception:
-                    continue
-                out[oid] = max(out.get(oid, 0.0), pw)
-            return out
         except Exception:
             return {}
 
-    tmdb_task = _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=MAX_RESULTS * 3)
+        out: dict[int, float] = {}
+        for r in rows:
+            try:
+                oid = int(r.get("other_id"))
+                weight = float(r.get("pair_weight") or 0.0)
+            except Exception:
+                continue
+            if oid and oid != tmdb_id:
+                out[oid] = max(out.get(oid, 0.0), weight)
+        return out
+
+    tmdb_task = _tmdb_recommendations_for_fav(tmdb_id, api_key, max_n=MAX_RESULTS * 4)
     trending_task = _fetch_tmdb_trending_candidates(
         allowed_langs={anchor_lang} if anchor_lang else set(),
         fav_genres=anchor_genre_ids,
         block_ids={tmdb_id},
-        limit=MAX_RESULTS * 2,
+        limit=MAX_RESULTS * 3,
     )
 
     tmdb_ids_raw, reddit_scores, trending_items = await asyncio.gather(
@@ -796,11 +1962,14 @@ async def shows_like(
         trending_task,
     )
 
+    tmdb_ids_raw = [rid for rid in (tmdb_ids_raw or []) if isinstance(rid, int) and rid != tmdb_id]
+    reddit_scores = reddit_scores or {}
+
     trending_scores: dict[int, float] = {}
-    for item in (trending_items or []):
+    for item in trending_items or []:
         try:
             rid = int(item.get("tmdb_id") or 0)
-            raw = float(item.get("score_raw") or 0.0)
+            raw = float(item.get("score_raw") or item.get("score") or 0.0)
         except Exception:
             continue
         if rid and rid != tmdb_id:
@@ -808,70 +1977,89 @@ async def shows_like(
 
     merged_scores: dict[int, float] = {}
 
-    for rid in (tmdb_ids_raw or []):
-        if not isinstance(rid, int) or rid == tmdb_id:
-            continue
-        merged_scores[rid] = merged_scores.get(rid, 0.0) + 0.14
+    for rid in tmdb_ids_raw:
+        merged_scores[rid] = merged_scores.get(rid, 0.0) + 0.18
 
     for rid, raw in trending_scores.items():
-        merged_scores[rid] = merged_scores.get(rid, 0.0) + min(0.08, 0.03 + 0.05 * raw)
+        merged_scores[rid] = merged_scores.get(rid, 0.0) + min(0.12, 0.04 + 0.06 * raw)
 
-    for rid, pw in (reddit_scores or {}).items():
+    for rid, weight in reddit_scores.items():
         if rid == tmdb_id:
             continue
-        reddit_score = 0.60 * math.log10(1.0 + max(pw, 0.0))
-        merged_scores[rid] = merged_scores.get(rid, 0.0) + reddit_score
+        merged_scores[rid] = merged_scores.get(rid, 0.0) + 0.62 * math.log10(1.0 + max(float(weight), 0.0))
 
     sorted_ids = sorted(merged_scores.keys(), key=lambda x: merged_scores[x], reverse=True)
-    fetch_ids = sorted_ids[: MAX_RESULTS * 4]
-    details_list = await asyncio.gather(*[_tmdb_details(rid) for rid in fetch_ids])
+    fetch_ids = sorted_ids[: MAX_RESULTS * 5]
+    details_list = await asyncio.gather(*[_tmdb_details(rid) for rid in fetch_ids]) if fetch_ids else []
+
+    # Some SEO anchors, especially sci-fi, do not always have enough local
+    # Reddit/TMDB candidates. Add a small archetype fallback pool, then let the
+    # existing filters and scores below decide what survives.
+    if anchor_is_scifi:
+        extra_ids = [
+            rid
+            for rid in _fallback_ids_for_concept(anchor_concept)
+            if rid != tmdb_id and rid not in fetch_ids
+        ]
+        if extra_ids:
+            extra_details = await asyncio.gather(*[_tmdb_details(rid) for rid in extra_ids[:24]])
+            details_list.extend([d for d in extra_details if d])
+
+    
 
     results: list[dict] = []
     seen_ids = {tmdb_id}
-    tmdb_set = set(tmdb_ids_raw or [])
+    tmdb_set = set(tmdb_ids_raw)
     reddit_set = set(reddit_scores.keys())
     trending_set = set(trending_scores.keys())
 
-    for details in details_list:
+    def _passes_basic_candidate_checks(details: dict) -> tuple[bool, int, str, set[int], float, int, float, str]:
         try:
             rid = int(details.get("tmdb_id") or 0)
         except Exception:
-            rid = 0
+            return False, 0, "", set(), 0.0, 0, 0.0, ""
 
-        if not rid or rid in seen_ids:
-            continue
-
-        title_val = details.get("title") or details.get("name")
-        if not title_val:
-            continue
-
-        poster_path = details.get("poster_path")
-        if not poster_path:
-            continue
+        title_val = str(details.get("title") or details.get("name") or "").strip()
+        if not rid or rid in seen_ids or not title_val:
+            return False, rid, title_val, set(), 0.0, 0, 0.0, ""
+        if not details.get("poster_path"):
+            return False, rid, title_val, set(), 0.0, 0, 0.0, ""
 
         genre_ids = set(details.get("genre_ids") or [])
-        genre_names = _genre_name_set(details)
-
         if genre_ids & BAD_GENRES:
-            continue
+            return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
         if 10767 in genre_ids or 10766 in genre_ids:
-            continue
+            return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
         if 99 in genre_ids and len(genre_ids) == 1:
-            continue
+            return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
+        if anchor_concept == "finance_power" and 35 in genre_ids and 18 not in genre_ids:
+            return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
 
-        vote_count = int(details.get("vote_count") or 0)
         vote_average = float(details.get("vote_average") or 0.0)
+        vote_count = int(details.get("vote_count") or 0)
         popularity = float(details.get("popularity") or 0.0)
+        first_air_date = str(details.get("first_air_date") or "")
 
-        if vote_count < ABS_MIN_VOTE_COUNT:
-            continue
-        if popularity < ABS_MIN_POPULARITY:
+        if vote_count < ABS_MIN_VOTE_COUNT or popularity < ABS_MIN_POPULARITY:
+            return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+        if _is_future_or_too_fresh_for_seo(first_air_date, vote_count):
+            return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+        if anchor_is_scifi and 10765 not in genre_ids:
+            return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+        if anchor_is_scifi and not anchor_profile.get("is_animation") and 16 in genre_ids:
+            return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+
+        return True, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+
+    for details in details_list:
+        ok, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date = _passes_basic_candidate_checks(details)
+        if not ok:
             continue
 
         genre_score = _genre_overlap_score(anchor_genre_ids, genre_ids)
         semantic_score = _semantic_text_score(
             anchor_keywords,
-            details.get("title") or details.get("name"),
+            title_val,
             details.get("overview"),
             " ".join(details.get("genres") or []),
         )
@@ -884,61 +2072,36 @@ async def shows_like(
         if not fits_anchor:
             continue
 
-        candidate_flags = _candidate_theme_flags(details)
-
-        if anchor_theme_flags["finance_power"] and candidate_flags["teen_chaos"]:
+        concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
+            anchor_concept,
+            details,
+            semantic_score=semantic_score,
+            genre_score=genre_score,
+        )
+        if not concept_pass:
             continue
 
-        if anchor_theme_flags["finance_power"]:
-            if not candidate_flags["finance_power"]:
+        candidate_blob = _blob_for(details)
+
+        if anchor_concept:
+            if not passes_concept_guardrail(anchor_concept, candidate_blob, list(details.get("genres") or [])):
                 continue
 
-        if anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]:
-            if not (candidate_flags["period_community"] or candidate_flags["warm_medical"]):
-                continue
-            if candidate_flags["modern_hospital"] and not candidate_flags["period_community"]:
-                continue
-            if candidate_flags["teen_chaos"]:
-                continue
-
-        if anchor_theme_flags["crime_antihero"]:
-            if not candidate_flags["crime_antihero"] and semantic_score < 0.24:
-                continue
-
-        if anchor_profile["grounded_drama"]:
-            if "drama" not in genre_names and semantic_score < 0.24:
-                continue
-
-        if is_tmdb and not is_reddit:
-            if semantic_score < 0.18 and genre_score < 0.20:
-                continue
-
-        if not is_reddit and semantic_score < 0.14 and genre_score < 0.10:
+        if anchor_is_scifi and _is_weak_scifi(details) and semantic_score < 0.22 and concept_bonus < 0.16:
             continue
 
-        if anchor_profile["period"] and genre_score == 0.0 and semantic_score < 0.20:
-            continue
-
-        if anchor_profile["medical_family"] and semantic_score < 0.08 and fit_bonus < 0.10:
-            continue
-
-        if anchor_theme_flags["finance_power"]:
-            if "comedy" in genre_names and not candidate_flags["finance_power"]:
+        if anchor_concept in {"medical_family", "period_community"}:
+            if not is_reddit and not is_tmdb and semantic_score < 0.08 and genre_score < 0.05 and concept_bonus < 0.08:
                 continue
-
-        if anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]:
-            if "crime" in genre_names:
-                continue
-            if candidate_flags["teen_chaos"]:
-                continue
-            if candidate_flags["modern_hospital"] and not candidate_flags["period_community"]:
+        else:
+            if not is_reddit and not is_tmdb and semantic_score < 0.10 and genre_score < 0.08 and concept_bonus < 0.12:
                 continue
 
         if not _passes_seo_quality_floor(
             vote_average=vote_average,
             vote_count=vote_count,
             popularity=popularity,
-            semantic_score=semantic_score,
+            semantic_score=semantic_score + min(0.20, concept_bonus),
             genre_score=genre_score,
             is_reddit=is_reddit,
             is_tmdb=is_tmdb,
@@ -951,75 +2114,152 @@ async def shows_like(
         conf_factor = _confidence_factor(vote_count, popularity)
 
         total_score = float(merged_scores.get(rid, 0.0))
-        total_score += 0.75 * semantic_score
-        total_score += 0.45 * genre_score
-        total_score += 0.35 * bayes_quality
+        total_score += 0.50 * semantic_score
+        total_score += 0.38 * genre_score
+        total_score += 0.32 * bayes_quality
         total_score += qual_bonus
         total_score += fit_bonus
+        total_score += concept_bonus
 
-        theme_bonus = 0.0
-        if anchor_theme_flags["finance_power"] and candidate_flags["finance_power"]:
-            theme_bonus += 0.30
-        if anchor_theme_flags["finance_power"] and candidate_flags["corporate_drama"]:
-            theme_bonus += 0.18
-        if (anchor_theme_flags["period_community"] or anchor_theme_flags["warm_medical"]) and (
-            candidate_flags["period_community"] or candidate_flags["warm_medical"]
-        ):
-            theme_bonus += 0.25
-        if anchor_theme_flags["crime_antihero"] and candidate_flags["crime_antihero"]:
-            theme_bonus += 0.20
-        total_score += theme_bonus
-
-        if anchor_theme_flags["finance_power"]:
-            if "crime" in genre_names and not candidate_flags["corporate_drama"]:
-                total_score *= 0.90
+        # Penalise crime-heavy shows for non-crime anchors
+        if anchor_concept not in {"crime_pressure", "detective_mystery"}:
+            if 80 in genre_ids:
+                total_score *= 0.75
 
         if is_tmdb and not is_reddit:
-            total_score *= 0.82
-
+            total_score *= 0.94
         if is_reddit and not is_tmdb and vote_count < 100:
-            total_score *= 0.82
-
+            total_score *= 0.84
         if is_trending and not is_reddit and semantic_score >= 0.18:
             total_score += 0.04
 
+        total_score *= concept_multiplier
         total_score *= conf_factor
 
-        if total_score < 0.55:
+        min_total_score = 0.38
+
+        if anchor_concept == "small_town_mystery":
+            min_total_score = 0.65
+
+        if total_score < min_total_score:
             continue
 
+        source = _source_label(is_reddit, is_tmdb, is_trending, semantic_score)
+        result = {
+            "tmdb_id": rid,
+            "title": title_val,
+            "poster_path": details.get("poster_path"),
+            "poster_url": details.get("poster_url"),
+            "overview": details.get("overview"),
+            "first_air_date": details.get("first_air_date"),
+            "vote_average": vote_average,
+            "vote_count": vote_count,
+            "popularity": popularity,
+            "genres": details.get("genres"),
+            "genre_ids": details.get("genre_ids"),
+            "source": source,
+            "score": total_score,
+        }
+        results.append(_normalise_result_score(result))
         seen_ids.add(rid)
 
-        source = (
-            "multi_signal"
-            if is_reddit and (is_tmdb or is_trending)
-            else "reddit_pairs"
-            if is_reddit
-            else "semantic_fallback"
-            if semantic_score >= 0.18
-            else "tmdb_recs"
+    results.sort(
+        key=lambda x: (
+            float(x.get("score") or 0.0),
+            float(x.get("vote_average") or 0.0),
+            float(x.get("popularity") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    if len(results) < MIN_RESULTS:
+        fill_candidates: list[dict] = []
+        for details in details_list:
+            ok, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date = _passes_basic_candidate_checks(details)
+            if not ok or rid in seen_ids:
+                continue
+
+            genre_score = _genre_overlap_score(anchor_genre_ids, genre_ids)
+            semantic_score = _semantic_text_score(
+                anchor_keywords,
+                title_val,
+                details.get("overview"),
+                " ".join(details.get("genres") or []),
+            )
+            concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
+                anchor_concept,
+                details,
+                semantic_score=semantic_score,
+                genre_score=genre_score,
+            )
+            if not concept_pass:
+                continue
+
+            candidate_blob = _blob_for(details)
+
+            if anchor_concept:
+                if not passes_concept_guardrail(anchor_concept, candidate_blob, list(details.get("genres") or [])):
+                    continue
+
+            fit = _fill_fit_score(_anchor_fill_bucket(anchor_title, anchor_details), details)
+            if fit < 0.10 and concept_bonus < 0.12 and semantic_score < 0.14:
+                continue
+
+            bayes_quality = _bayesian_quality_score(vote_average, vote_count)
+            raw_score = (
+                0.18
+                + 0.40 * semantic_score
+                + 0.34 * genre_score
+                + 0.28 * bayes_quality
+                + concept_bonus
+                + min(0.18, fit / 4.0)
+                + _quality_bonus(vote_average, vote_count, popularity)
+            )
+            raw_score *= concept_multiplier
+            raw_score *= _confidence_factor(vote_count, popularity)
+            raw_score *= 0.82
+
+            min_fill_score = 0.34 if anchor_concept in {"medical_family", "period_community"} else 0.40
+
+            if raw_score < min_fill_score:
+                continue
+
+            fill_candidates.append(
+                _normalise_result_score(
+                    {
+                        "tmdb_id": rid,
+                        "title": title_val,
+                        "poster_path": details.get("poster_path"),
+                        "poster_url": details.get("poster_url"),
+                        "overview": details.get("overview"),
+                        "first_air_date": details.get("first_air_date"),
+                        "vote_average": vote_average,
+                        "vote_count": vote_count,
+                        "popularity": popularity,
+                        "genres": details.get("genres"),
+                        "genre_ids": details.get("genre_ids"),
+                        "source": "fill",
+                        "score": raw_score,
+                    }
+                )
+            )
+
+        fill_candidates.sort(
+            key=lambda x: (
+                float(x.get("score") or 0.0),
+                float(x.get("vote_average") or 0.0),
+                float(x.get("popularity") or 0.0),
+            ),
+            reverse=True,
         )
 
-        results.append(
-            {
-                "tmdb_id": rid,
-                "title": title_val,
-                "poster_path": poster_path,
-                "poster_url": details.get("poster_url"),
-                "overview": details.get("overview"),
-                "first_air_date": details.get("first_air_date"),
-                "vote_average": vote_average,
-                "vote_count": vote_count,
-                "popularity": popularity,
-                "genres": details.get("genres"),
-                "genre_ids": details.get("genre_ids"),
-                "source": source,
-                "score": round(float(total_score), 4),
-            }
-        )
-
-        if len(results) >= MAX_RESULTS:
-            break
+        for item in fill_candidates:
+            if len(results) >= MIN_RESULTS:
+                break
+            if item["tmdb_id"] in seen_ids:
+                continue
+            results.append(item)
+            seen_ids.add(item["tmdb_id"])
 
     results.sort(
         key=lambda x: (
@@ -1030,18 +2270,22 @@ async def shows_like(
         ),
         reverse=True,
     )
-    print("SEO final rec count:", len(results))
 
-    page_copy = _build_page_copy(str(row["title"]), anchor_details, results[:MAX_RESULTS])
+    results = _seo_ranking_layer(
+        results,
+        anchor_concept=anchor_concept,
+        limit=MAX_RESULTS,
+        anchor_tmdb_id=tmdb_id,
+    )
 
     return {
         "anchor": {
-            "tmdb_id": row["show_id"],
-            "title": row["title"],
-            "poster_path": row["poster_path"],
+            "tmdb_id": tmdb_id,
+            "title": anchor_title,
+            "poster_path": row.get("poster_path") or anchor_details.get("poster_path"),
         },
-        "recommendations": results[:MAX_RESULTS],
-        "page_copy": page_copy,
+        "recommendations": results,
+        "page_copy": _build_page_copy(anchor_title, anchor_details, results),
     }
 
 

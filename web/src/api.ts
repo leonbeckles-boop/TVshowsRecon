@@ -395,6 +395,27 @@ export async function getRecsV3(
   return http<RecItem[]>(`/recs/v3/${userId}?${qs}`, { method: "GET" });
 }
 
+export async function getRecsV4(
+  arg1: any,
+  arg2: any = {},
+  ..._rest: any[]
+): Promise<RecItem[]> {
+  let userId: number;
+  let opts: RecsOptions;
+
+  if (typeof arg1 === "number") {
+    userId = arg1;
+    opts = (arg2 ?? {}) as RecsOptions;
+  } else {
+    opts = (arg1 ?? {}) as RecsOptions;
+    userId = (await me()).id;
+  }
+
+  const qs = new URLSearchParams({ ...((opts as any) ?? {}) } as any).toString();
+
+  return http<RecItem[]>(`/recs/v4/${userId}?${qs}`, { method: "GET" });
+}
+
 export async function smartSimilar(tmdbId: number, ..._rest: any[]): Promise<RecItem[]> {
   return http<RecItem[]>(`/recs/v3/smart-similar/${tmdbId}`, { method: "GET" });
 }

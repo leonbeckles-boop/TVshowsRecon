@@ -5,6 +5,7 @@ import ShowCard from "../components/ShowCard";
 import PageHeader from "../components/PageHeader";
 import {
   getRecsV3,
+  getRecsV4,
   listRatings,
   listFavoriteShows,
   addFavorite,
@@ -20,16 +21,11 @@ import "./tileGrid.css";
 // Require at least this many favourites before showing any recommendations
 const MIN_FAVORITES = 3;
 
-
-
-// Shared glass UI styles (keeps UI consistent across pages)
-const GLASS_CARD_CLASS = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-xl shadow-black/40";
-const GLASS_PILL_CLASS = "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 backdrop-blur-md px-3 py-1 text-xs text-slate-200";
 // Shared background with faint grid lines + radial glow at top
 const BG_STYLE = {
   minHeight: "100vh",
   width: "100%",
-  paddingTop: "128px", // space under fixed PageHeader + big logo
+  paddingTop: "162px", // space under fixed PageHeader + big logo
   backgroundColor: "#020617",
   backgroundImage: [
     "radial-gradient(circle at top center, rgba(30,58,138,0.45) 0%, rgba(2,6,23,0.9) 55%, #020617 100%)",
@@ -60,7 +56,7 @@ function getAuthHeaders(): Record<string, string> {
 /* --------------------------- component ------------------------- */
 
 const RecsPage: React.FC = () => {
-  const [tileVariant, setTileVariant] = useState<"poster" | "glass">("poster");
+  const [recEngine, setRecEngine] = useState<"v4" | "v3">("v4");
   const { user } = useAuth();
   const navigate = useNavigate();
   const userId = user?.id ?? null;
@@ -119,14 +115,22 @@ const RecsPage: React.FC = () => {
     setLoading(true);
     setErr(null);
     try {
-      const data = await getRecsV3(userId, {
-        limit: 60,
-        flat: 1,
-        w_reddit: 0,
-        w_semantic: 0.30,
-        freshness_boost: 1,
-        recent_years: 3,
-      });
+      const data =
+        recEngine === "v4"
+          ? await getRecsV4(userId, {
+              limit: 60,
+              flat: 1,
+              recent_first: 1,
+              recent_years: 3,
+            })
+          : await getRecsV3(userId, {
+              limit: 60,
+              flat: 1,
+              w_reddit: 0,
+              w_semantic: 0.30,
+              freshness_boost: 1,
+              recent_years: 3,
+            });
 
       const list = Array.isArray(data) ? data : (data as any).items ?? [];
 
@@ -148,7 +152,7 @@ const RecsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [userId, hasEnoughFavorites]);
+  }, [userId, hasEnoughFavorites, recEngine]);
 
   const loadFavorites = useCallback(async () => {
     if (!userId) return;
@@ -332,61 +336,104 @@ const RecsPage: React.FC = () => {
         subtitle="Generated from your favourites – tuned to your taste profile."
       />
 
-      <div className="max-w-screen-2xl mx-auto px-4 md:px-8 mt-3 flex justify-end">
-        <div className="inline-flex items-center gap-2 rounded-full border border-slate-600/70 bg-slate-900/70 px-3 py-1 text-xs text-slate-200">
-          <span className="uppercase tracking-[0.18em] text-[10px] text-slate-400">
-            Tile style
-          </span>
-
-          <span className="mx-1 h-4 w-px bg-slate-600/70" aria-hidden="true" />
-
-          <button
-            type="button"
-            onClick={() => setTileVariant("poster")}
-            className={
-              "px-2 py-0.5 rounded-full border text-[11px] " +
-              (tileVariant === "poster"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "border-slate-600 text-slate-200")
-            }
-          >
-            Poster only
-          </button>
-          <button
-            type="button"
-            onClick={() => setTileVariant("glass")}
-            className={
-              "px-2 py-0.5 rounded-full border text-[11px] " +
-              (tileVariant === "glass"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "border-slate-600 text-slate-200")
-            }
-          >
-            Poster + title
-          </button>
-        </div>
-      </div>
-
       <div style={BG_STYLE}>
         <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 pb-10 pt-6">
-          <div className="flex items-center justify-between gap-4">
-            <div className="text-sm text-slate-300">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto auto",
+              gap: "14px",
+              alignItems: "center",
+              border: "1px solid rgba(148, 163, 184, 0.28)",
+              background: "rgba(15, 23, 42, 0.72)",
+              borderRadius: "18px",
+              padding: "12px 16px",
+              boxShadow: "0 18px 45px rgba(15, 23, 42, 0.35)",
+            }}
+          >
+            <div style={{ color: "#cbd5e1", fontSize: "14px" }}>
               Use favourites + ratings to improve these recommendations.
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleRefresh}
-                className="inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium text-white"
+
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                justifySelf: "end",
+              }}
+            >
+              <span
                 style={{
-                  background:
-                    "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))",
-                  boxShadow: "0 15px 35px rgba(8, 47, 73, 0.9)",
+                  color: "#94a3b8",
+                  fontSize: "14px",
+                  letterSpacing: "0.10em",
+                  textTransform: "uppercase",
+                  marginRight: "2px",
                 }}
               >
-                Refresh
+                Recommedation Engine
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setRecEngine("v4")}
+                style={{
+                  borderRadius: "999px",
+                  border: recEngine === "v4" ? "1px solid rgba(56, 189, 248, 0.75)" : "1px solid rgba(148, 163, 184, 0.35)",
+                  background: recEngine === "v4"
+                    ? "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))"
+                    : "rgba(2, 6, 23, 0.45)",
+                  color: "#ffffff",
+                  padding: "8px 15px",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  boxShadow: recEngine === "v4" ? "0 15px 35px rgba(8, 47, 73, 0.55)" : "none",
+                }}
+              >
+                Smart
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRecEngine("v3")}
+                style={{
+                  borderRadius: "999px",
+                  border: recEngine === "v3" ? "1px solid rgba(56, 189, 248, 0.75)" : "1px solid rgba(148, 163, 184, 0.35)",
+                  background: recEngine === "v3"
+                    ? "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))"
+                    : "rgba(2, 6, 23, 0.45)",
+                  color: "#ffffff",
+                  padding: "8px 15px",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  boxShadow: recEngine === "v3" ? "0 15px 35px rgba(8, 47, 73, 0.55)" : "none",
+                }}
+              >
+                Explore
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={handleRefresh}
+              style={{
+                borderRadius: "999px",
+                border: "1px solid rgba(56, 189, 248, 0.55)",
+                background: "linear-gradient(to right, rgb(56, 189, 248), rgb(129, 140, 248))",
+                color: "#ffffff",
+                padding: "8px 16px",
+                fontSize: "13px",
+                fontWeight: 800,
+                cursor: "pointer",
+                boxShadow: "0 15px 35px rgba(8, 47, 73, 0.55)",
+                justifySelf: "end",
+              }}
+            >
+              Refresh
+            </button>
           </div>
 
           {err && (
@@ -396,13 +443,82 @@ const RecsPage: React.FC = () => {
           )}
 
           {loading ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-6 text-sm text-slate-300 shadow-lg shadow-slate-950/70">
-              <div className="mb-1 text-slate-100">Loading recommendations…</div>
-              <div className="text-xs text-slate-400">
-                We&apos;re matching your favourites with fresh shows you&apos;re
-                likely to enjoy.
+            <section
+              style={{
+                border: "1px solid rgba(148, 163, 184, 0.22)",
+                background: "rgba(15, 23, 42, 0.68)",
+                borderRadius: "22px",
+                padding: "18px",
+                boxShadow: "0 22px 55px rgba(2, 6, 23, 0.5)",
+              }}
+            >
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-base font-semibold text-slate-100">
+                    Finding better matches…
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    Matching your favourites against tone, quality and audience signals.
+                  </div>
+                </div>
+                <div
+                  style={{
+                    borderRadius: "999px",
+                    border: "1px solid rgba(56, 189, 248, 0.45)",
+                    padding: "6px 12px",
+                    color: "#bae6fd",
+                    fontSize: "12px",
+                    background: "rgba(8, 47, 73, 0.35)",
+                  }}
+                >
+                  {recEngine === "v4" ? "Smart v4" : "Explore v3"}
+                </div>
               </div>
-            </div>
+
+              <div className="tile-grid">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      minHeight: "330px",
+                      borderRadius: "18px",
+                      border: "1px solid rgba(148, 163, 184, 0.18)",
+                      background:
+                        "linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.72))",
+                      overflow: "hidden",
+                      position: "relative",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "78%",
+                        background:
+                          "linear-gradient(110deg, rgba(51, 65, 85, 0.55), rgba(100, 116, 139, 0.18), rgba(51, 65, 85, 0.55))",
+                      }}
+                    />
+                    <div style={{ padding: "12px" }}>
+                      <div
+                        style={{
+                          height: "12px",
+                          width: "68%",
+                          borderRadius: "999px",
+                          background: "rgba(148, 163, 184, 0.28)",
+                          marginBottom: "8px",
+                        }}
+                      />
+                      <div
+                        style={{
+                          height: "9px",
+                          width: "42%",
+                          borderRadius: "999px",
+                          background: "rgba(148, 163, 184, 0.18)",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           ) : notEnoughFavorites ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4 text-sm text-slate-300 shadow-lg shadow-slate-950/70">
               <div className="text-slate-100 text-base md:text-lg mb-1">
@@ -427,7 +543,9 @@ const RecsPage: React.FC = () => {
                   Recommended for you
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Based on your favourites, quality and taste profile.
+                  {recEngine === "v4"
+                    ? "Smart v4: tighter recommendations based on tone, fit and quality."
+                    : "Explore v3: broader recommendations for a different perspective."}
                 </p>
               </div>
 
@@ -449,7 +567,7 @@ const RecsPage: React.FC = () => {
                       onToggleWatchlist={() => handleToggleWatchlist(s)}
                       onRate={(r) => handleRate(s, r)}
                       onHide={() => handleHide(s)}
-                      variant={tileVariant}
+                      variant="glass"
                       reasons={(s as any).reasons ?? undefined}
                     />
                   );

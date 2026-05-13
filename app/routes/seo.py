@@ -111,6 +111,34 @@ SEO_CONCEPT_FALLBACK_IDS: dict[str, list[int]] = {
     46331,   # Under the Dome
     14956,   # Dollhouse
 ],
+    "mystery_box_survival": [
+        124364,  # FROM
+        1705,    # Fringe
+        70523,   # Dark
+        60948,   # 12 Monkeys
+        79696,   # Manifest
+        117488,  # Yellowjackets
+        66732,   # Stranger Things
+        125988,  # Silo
+        48866,   # The 100
+        46331,   # Under the Dome
+        53425,   # Wayward Pines
+        54344,   # The Leftovers
+    ],
+    "prestige_existential_mystery": [
+        54344,   # The Leftovers
+        1575,    # Lost
+        124364,  # FROM
+        70523,   # Dark
+        1705,    # Fringe
+        79696,   # Manifest
+        117488,  # Yellowjackets
+        66732,   # Stranger Things
+        60948,   # 12 Monkeys
+        125988,  # Silo
+        42009,   # Black Mirror
+        53425,   # Wayward Pines
+    ],
     "time_mystery": [70523, 60948, 42009, 95396, 66732, 14956],
     "corporate_mystery": [95396, 62560, 42009, 14956, 70523],
     "general_scifi": [42009, 70523, 66732, 60948, 83867, 87917, 63639, 125988],
@@ -1054,6 +1082,51 @@ CONCEPT_RULES: dict[str, dict[str, object]] = {
         "preferred_genres": {10765, 9648, 18},
         "strict": True,
     },
+    "mystery_box_survival": {
+        "required_any": [
+            "mystery", "missing", "disappearance", "survival", "survivors",
+            "island", "stranded", "supernatural", "unexplained", "secret",
+            "secrets", "time", "timeline", "alternate", "plane crash",
+            "community", "experiment", "paranormal", "conspiracy", "unknown",
+        ],
+        "boost_any": [
+            "mystery", "survival", "survivors", "island", "stranded",
+            "supernatural", "unexplained", "secrets", "time travel",
+            "timeline", "alternate reality", "ensemble", "community",
+            "disappearance", "paranormal", "conspiracy", "plane crash",
+            "unknown", "experiment",
+        ],
+        "reject_any": [
+            "sitcom", "stand-up", "reality", "talk show", "sketch comedy",
+            "cooking competition", "talent competition",
+        ],
+        "preferred_genres": {10765, 9648, 18},
+        "strict": False,
+    },
+    "prestige_existential_mystery": {
+        "required_any": [
+            "disappear", "disappears", "disappearance", "vanish", "vanished",
+            "missing", "unexplained", "mystery", "grief", "loss", "trauma",
+            "faith", "spiritual", "cult", "apocalypse", "apocalyptic",
+            "survivors", "community", "strange", "supernatural", "paranormal",
+            "alternate", "reality", "identity", "consciousness",
+        ],
+        "boost_any": [
+            "grief", "loss", "trauma", "faith", "spiritual", "cult",
+            "disappearance", "vanished", "unexplained", "mystery",
+            "supernatural", "paranormal", "apocalypse", "apocalyptic",
+            "survivors", "community", "identity", "consciousness",
+            "psychological", "existential",
+        ],
+        "reject_any": [
+            "sitcom", "stand-up", "reality", "talk show", "talent competition",
+            "medical center", "emergency department", "trauma center",
+            "assassin", "procedural", "solve crimes", "case of the week",
+            "superhero", "high school superhero",
+        ],
+        "preferred_genres": {18, 9648, 10765},
+        "strict": False,
+    },
     "time_mystery": {
         "required_any": [
             "time", "timeline", "time travel", "loop", "paradox", "parallel",
@@ -1219,6 +1292,22 @@ def _classify_anchor_concept_v2(anchor_title: str, anchor_details: dict) -> str:
     genres = set(anchor_details.get("genre_ids") or [])
     genre_names = _genre_name_set(anchor_details)
 
+    existential_terms = [
+        "disappear", "disappears", "disappearance", "vanish", "vanished",
+        "missing", "unexplained", "grief", "loss", "faith", "spiritual",
+        "cult", "apocalypse", "apocalyptic", "supernatural", "strange event",
+        "paranormal", "identity", "consciousness",
+    ]
+    existential_hits = _count_hits(blob, existential_terms)
+    is_prestige_mystery_shape = (
+        18 in genres
+        and (9648 in genres or 10765 in genres or "mystery" in genre_names or "sci-fi & fantasy" in genre_names)
+        and existential_hits >= 2
+    )
+
+    if is_prestige_mystery_shape:
+        return "prestige_existential_mystery"
+
     if title in {"foundation"} or _contains_any(blob, ["psychohistory", "galactic empire", "empire", "civilization", "civilisation", "dynasty"]):
         if 10765 in genres:
             return "space_epic"
@@ -1229,6 +1318,17 @@ def _classify_anchor_concept_v2(anchor_title: str, anchor_details: dict) -> str:
     if title in {"silo", "snowpiercer"} or _contains_any(blob, ["bunker", "underground", "sealed", "silo", "vault", "controlled society", "authoritarian"]):
         if 10765 in genres:
             return "contained_dystopia"
+
+    if title in {"lost", "from", "manifest", "yellowjackets", "wayward pines"} or _contains_any(
+        blob,
+        [
+            "plane crash", "stranded", "island", "survivors",
+            "supernatural mystery", "unexplained", "disappearance",
+            "alternate reality", "mystery box", "paranormal",
+            "people vanish", "vanish without a trace",
+        ],
+    ):
+        return "mystery_box_survival"
 
     if title in {"dark", "12 monkeys"} or _contains_any(blob, ["time travel", "timeline", "time loop", "paradox", "parallel world", "generations"]):
         return "time_mystery"
@@ -1392,6 +1492,104 @@ def _concept_fit_score(anchor_concept: str, details: dict, *, semantic_score: fl
 
         if _contains_any(blob, ["alien attack", "battlefield", "invasion", "soldiers", "jedi", "starship"]):
             multiplier *= 0.60
+
+    elif anchor_concept == "mystery_box_survival":
+        close_titles = {
+            "from",
+            "fringe",
+            "dark",
+            "12 monkeys",
+            "manifest",
+            "yellowjackets",
+            "wayward pines",
+            "the leftovers",
+            "silo",
+            "stranger things",
+            "the 100",
+            "under the dome",
+        }
+        core_terms = [
+            "mystery", "missing", "disappearance", "survival", "survivors",
+            "stranded", "island", "supernatural", "unexplained", "secret",
+            "secrets", "time travel", "timeline", "alternate", "paranormal",
+            "experiment", "conspiracy", "community",
+        ]
+        core_hits = _count_hits(blob, core_terms)
+
+        if title in close_titles:
+            bonus += 0.42
+
+        if 9648 in genres:
+            bonus += 0.12
+        if 10765 in genres:
+            bonus += 0.10
+        if 18 in genres:
+            bonus += 0.06
+
+        if core_hits >= 3:
+            bonus += 0.26
+        elif core_hits >= 2:
+            bonus += 0.18
+        elif core_hits == 1:
+            bonus += 0.08
+
+        if _contains_any(blob, ["procedural", "solve crimes", "case of the week", "talent competition", "sitcom"]):
+            multiplier *= 0.55
+
+        # Do not kill shows that are strongly genre-aligned but sparse in overview text;
+        # Lost-style pages need enough mystery-box candidates to avoid empty SEO pages.
+        if required_hits == 0 and semantic_score < 0.16 and genre_score < 0.20 and title not in close_titles:
+            multiplier *= 0.72
+
+    elif anchor_concept == "prestige_existential_mystery":
+        existential_terms = [
+            "disappear", "disappears", "disappearance", "vanish", "vanished",
+            "missing", "unexplained", "grief", "loss", "faith", "spiritual",
+            "cult", "apocalypse", "apocalyptic", "supernatural", "paranormal",
+            "identity", "consciousness", "psychological", "community",
+        ]
+        procedural_terms = [
+            "procedural", "solve crimes", "case of the week", "nypd", "lapd",
+            "homicide unit", "detective partnership", "elite team",
+        ]
+        generic_family_terms = [
+            "family drama", "family", "relationships", "marriage", "home town",
+            "returns home", "personal and professional life",
+        ]
+        core_hits = _count_hits(blob, existential_terms)
+
+        if 18 not in genres and 9648 not in genres and 10765 not in genres:
+            return False, 0.0, 1.0
+
+        if 80 in genres and core_hits < 2 and semantic_score < 0.26:
+            multiplier *= 0.45
+
+        if 10759 in genres and core_hits < 2:
+            multiplier *= 0.55
+
+        if _contains_any(blob, procedural_terms):
+            multiplier *= 0.35
+
+        if _contains_any(blob, generic_family_terms) and core_hits == 0 and semantic_score < 0.24:
+            return False, 0.0, 1.0
+
+        if core_hits >= 4:
+            bonus += 0.38
+        elif core_hits >= 2:
+            bonus += 0.26
+        elif core_hits == 1:
+            bonus += 0.12
+
+        if 9648 in genres:
+            bonus += 0.14
+        if 10765 in genres:
+            bonus += 0.10
+        if 18 in genres:
+            bonus += 0.08
+
+        # Keep this bucket broad: it rewards tone/shape rather than one exact title.
+        if required_hits == 0 and semantic_score < 0.20 and genre_score < 0.22:
+            return False, 0.0, 1.0
 
     elif anchor_concept == "time_mystery":
         if _contains_any(blob, ["time travel", "timeline", "loop", "paradox", "parallel"]):
@@ -1595,6 +1793,115 @@ def _normalise_result_score(item: dict) -> dict:
     item["score"] = round(float(item.get("score") or 0.0), 4)
     return item
 
+
+
+def _weak_future_for_seo(details: dict) -> bool:
+    """Avoid unreleased/current-year filler unless it is an unmistakable concept match."""
+    first_air_date = str(details.get("first_air_date") or "")
+    try:
+        year = int(first_air_date[:4])
+    except Exception:
+        return False
+    if not year or year < CURRENT_YEAR:
+        return False
+    vote_count = int(details.get("vote_count") or 0)
+    # Current/future titles can be useful, but only with enough audience signal.
+    return vote_count < 300
+
+
+def _concept_required_blob_terms(anchor_concept: str) -> tuple[list[str], list[str]]:
+    """Return (positive_terms, hard_reject_terms) for the final/fill sanity layer."""
+    if anchor_concept == "finance_power":
+        return [
+            "finance", "hedge fund", "wall street", "billionaire", "wealth",
+            "corporate", "business empire", "media empire", "conglomerate",
+            "company", "ceo", "executive", "boardroom", "shareholder",
+            "merger", "acquisition", "dynasty", "inheritance", "elite",
+            "power", "ambition", "rivalry", "political", "corruption",
+            "law firm", "attorney", "lawyer", "investment", "trading",
+        ], [
+            "marshals", "navy seal", "range justice", "cowboy", "superhero",
+            "high school", "teen", "restaurant", "sandwich shop", "chef",
+            "hospital", "nurse", "doctor",
+        ]
+
+    if anchor_concept == "medical_family":
+        return [
+            "midwife", "maternity", "nurse", "nurses", "hospital", "doctor",
+            "medical", "clinic", "patients", "community care", "district nurse",
+            "period", "historical", "post-war", "postwar", "1950", "1960",
+            "village", "rural", "women", "family home", "cornwall", "estate",
+        ], [
+            "marshals", "navy seal", "range justice", "murder", "killer",
+            "assassin", "cartel", "mafia", "gang", "superhero", "sci-fi",
+            "science fiction", "alien", "restaurant", "sandwich shop", "chef",
+        ]
+
+    if anchor_concept == "period_community":
+        return [
+            "period", "historical", "victorian", "georgian", "post-war",
+            "postwar", "1950", "1960", "18th century", "19th century",
+            "estate", "village", "rural", "community", "family", "marriage",
+            "cornwall", "aristocratic", "women", "social class",
+        ], [
+            "marshals", "navy seal", "range justice", "superhero", "alien",
+            "sci-fi", "science fiction", "cartel", "mafia", "serial killer",
+        ]
+
+    return [], []
+
+
+def _passes_grounded_concept_sanity(anchor_concept: str, details: dict, *, source: str, score: float) -> bool:
+    """Final guardrail for grounded SEO pages so high-popularity generic dramas do not leak in."""
+    positive_terms, reject_terms = _concept_required_blob_terms(anchor_concept)
+    if not positive_terms and not reject_terms:
+        return True
+
+    blob = _blob_for(details)
+    title = str(details.get("title") or details.get("name") or "").strip().lower()
+    genres = set(details.get("genre_ids") or [])
+
+    if reject_terms and _contains_any(blob, reject_terms):
+        return False
+
+    hits = _count_hits(blob, positive_terms)
+
+    # Hard genre drift blocks for grounded pages.
+    if anchor_concept in {"medical_family", "period_community", "finance_power"}:
+        if 10765 in genres or 10759 in genres or 16 in genres or 10764 in genres or 10762 in genres:
+            return False
+
+    if anchor_concept == "finance_power":
+        # Allow a few prestige power/crime dramas even if the overview wording is sparse.
+        allow_titles = {"the good wife", "the good fight", "billions", "industry", "mad men", "the sopranos"}
+        if title in allow_titles:
+            return True
+        if hits == 0:
+            return False
+        if source == "fill" and hits < 2:
+            return False
+        return True
+
+    if anchor_concept == "medical_family":
+        allow_titles = {"poldark", "all creatures great and small", "downton abbey", "the durrells", "nurses"}
+        if title in allow_titles:
+            return True
+        if hits == 0:
+            return False
+        # For filler, require more than a generic family mention.
+        if source == "fill" and hits < 2 and not _contains_any(blob, ["midwife", "nurse", "hospital", "doctor", "medical", "period", "village", "community care"]):
+            return False
+        return True
+
+    if anchor_concept == "period_community":
+        if hits == 0:
+            return False
+        if source == "fill" and hits < 2:
+            return False
+        return True
+
+    return True
+
 def _seo_ranking_layer(
     ranked: list[dict],
     *,
@@ -1636,6 +1943,31 @@ def _seo_ranking_layer(
             "the last of us": 0.42,
             "snowpiercer": 0.30,
             "silo": 0.30,
+        },
+        "mystery_box_survival": {
+            "from": 0.60,
+            "fringe": 0.46,
+            "dark": 0.42,
+            "12 monkeys": 0.40,
+            "manifest": 0.38,
+            "yellowjackets": 0.36,
+            "the leftovers": 0.34,
+            "wayward pines": 0.32,
+            "silo": 0.28,
+            "stranger things": 0.24,
+            "the 100": 0.20,
+            "under the dome": 0.18,
+        },
+        "prestige_existential_mystery": {
+            "the leftovers": 0.55,
+            "lost": 0.38,
+            "from": 0.34,
+            "dark": 0.32,
+            "fringe": 0.26,
+            "manifest": 0.24,
+            "yellowjackets": 0.24,
+            "black mirror": 0.20,
+            "silo": 0.18,
         },
         "corporate_mystery": {
             "black mirror": 0.35,
@@ -1715,6 +2047,12 @@ def _seo_ranking_layer(
 
         score = float(item.get("score") or 0.0)
 
+        if source == "fill" and _weak_future_for_seo(item):
+            continue
+
+        if not _passes_grounded_concept_sanity(anchor_concept, item, source=source, score=score):
+            continue
+
         min_polished_score = 0.42 if anchor_concept in {"period_community", "medical_family"} else 0.55
 
         if score < min_polished_score:
@@ -1759,6 +2097,94 @@ def _seo_ranking_layer(
 
             if source == "fill":
                 score *= 0.70
+
+        if anchor_concept == "prestige_existential_mystery":
+            blob = " ".join([
+                title,
+                str(item.get("overview") or "").lower(),
+                " ".join(str(g).lower() for g in item.get("genres") or []),
+            ])
+            existential_terms = [
+                "disappear", "disappears", "disappearance", "vanish", "vanished",
+                "missing", "unexplained", "grief", "loss", "faith", "spiritual",
+                "cult", "apocalypse", "apocalyptic", "supernatural", "paranormal",
+                "identity", "consciousness", "psychological", "community",
+            ]
+            core_hits = _count_hits(blob, existential_terms)
+
+            if 16 in genres:
+                continue
+
+            if 35 in genres or 10751 in genres or 10762 in genres or 10764 in genres:
+                continue
+
+            if "assassin" in blob or "medical center" in blob or "emergency department" in blob:
+                continue
+
+            if 80 in genres and core_hits < 2:
+                score *= 0.48
+
+            if 10759 in genres and core_hits < 2:
+                score *= 0.60
+
+            if core_hits >= 3:
+                score += 0.32
+            elif core_hits >= 1:
+                score += 0.14
+            else:
+                score *= 0.70
+
+            if 9648 in genres:
+                score += 0.14
+            if 10765 in genres:
+                score += 0.10
+
+            if source == "fill":
+                score *= 0.90
+
+        if anchor_concept == "prestige_existential_mystery":
+            blob = " ".join([
+                title,
+                str(item.get("overview") or "").lower(),
+                " ".join(str(g).lower() for g in item.get("genres") or []),
+            ])
+            existential_terms = [
+                "disappear", "disappears", "disappearance", "vanish", "vanished",
+                "missing", "unexplained", "grief", "loss", "faith", "spiritual",
+                "cult", "apocalypse", "apocalyptic", "supernatural", "paranormal",
+                "identity", "consciousness", "psychological", "community",
+            ]
+            core_hits = _count_hits(blob, existential_terms)
+
+            if 16 in genres:
+                continue
+
+            if 35 in genres or 10751 in genres or 10762 in genres or 10764 in genres:
+                continue
+
+            if "assassin" in blob or "medical center" in blob or "emergency department" in blob:
+                continue
+
+            if 80 in genres and core_hits < 2:
+                score *= 0.48
+
+            if 10759 in genres and core_hits < 2:
+                score *= 0.60
+
+            if core_hits >= 3:
+                score += 0.32
+            elif core_hits >= 1:
+                score += 0.14
+            else:
+                score *= 0.70
+
+            if 9648 in genres:
+                score += 0.14
+            if 10765 in genres:
+                score += 0.10
+
+            if source == "fill":
+                score *= 0.90
 
         if year >= 2020:
             score += 0.12
@@ -1816,7 +2242,7 @@ def _seo_ranking_layer(
                 score += 0.45
 
 
-        min_polished_score = 0.42 if anchor_concept == "period_community" else 0.55
+        min_polished_score = 0.42 if anchor_concept in {"period_community", "medical_family"} else 0.55
 
         if score < min_polished_score:
             continue
@@ -1841,6 +2267,9 @@ def _seo_ranking_layer(
         if anchor_concept == "contained_dystopia":
             max_per_bucket = 3
 
+        if anchor_concept in {"mystery_box_survival", "prestige_existential_mystery"}:
+            max_per_bucket = 5
+
         if bucket_counts.get(bucket, 0) >= max_per_bucket:
             continue
 
@@ -1859,6 +2288,12 @@ async def shows_like(
 ):
     title = slug.replace("-", " ")
 
+    # Resolve the anchor deterministically.
+    #
+    # Some titles exist more than once in the local shows table. Previously this
+    # query used LIMIT 1 without ordering, so a weak duplicate could win. That is
+    # exactly what happened for /shows-like/the-leftovers: the page anchored on a
+    # posterless duplicate instead of the real populated TMDB record.
     show_res = await db.execute(
         text(
             """
@@ -1868,6 +2303,9 @@ async def shows_like(
                 poster_path
             FROM shows
             WHERE lower(title) = lower(:title)
+            ORDER BY
+                CASE WHEN poster_path IS NULL OR poster_path = '' THEN 1 ELSE 0 END ASC,
+                show_id ASC
             LIMIT 1
             """
         ),
@@ -1876,29 +2314,59 @@ async def shows_like(
 
     row = show_res.mappings().first()
 
-    if not row:
-        from app.routes.recs_v3 import _tmdb_search_tv
+    from app.routes.recs_v3 import _tmdb_search_tv
 
+    async def _tmdb_search_anchor() -> dict | None:
         tmdb_match = await _tmdb_search_tv(title)
         if not tmdb_match:
-            raise HTTPException(status_code=404, detail="Show not found")
+            return None
 
         tmdb_id_candidate = tmdb_match.get("id")
         if not isinstance(tmdb_id_candidate, int):
-            raise HTTPException(status_code=404, detail="Show not found")
+            return None
 
         details = await _tmdb_details(tmdb_id_candidate)
-        row = {
+        return {
             "show_id": tmdb_id_candidate,
             "title": details.get("title") or details.get("name") or title.title(),
             "poster_path": details.get("poster_path"),
+            "details": details,
         }
+
+    tmdb_anchor_details: dict | None = None
+
+    if not row:
+        tmdb_row = await _tmdb_search_anchor()
+        if not tmdb_row:
+            raise HTTPException(status_code=404, detail="Show not found")
+        tmdb_anchor_details = dict(tmdb_row.pop("details") or {})
+        row = tmdb_row
 
     tmdb_id = int(row["show_id"])
     anchor_title = str(row["title"])
     print("SEO anchor:", anchor_title, tmdb_id)
 
-    anchor_details = await _tmdb_details(tmdb_id)
+    anchor_details = tmdb_anchor_details or await _tmdb_details(tmdb_id)
+
+    # If the DB row is present but weak/stale, compare it with TMDB search. This
+    # prevents duplicate or imported rows with the same title from poisoning the
+    # SEO page. Only switch when the TMDB result has the same title and better
+    # core metadata, so remakes / unrelated same-name shows are not blindly
+    # overwritten.
+    if not row.get("poster_path") or not anchor_details.get("poster_path"):
+        tmdb_row = await _tmdb_search_anchor()
+        if tmdb_row:
+            candidate_details = dict(tmdb_row.get("details") or {})
+            candidate_title = str(tmdb_row.get("title") or "").strip().lower()
+            current_title = str(anchor_title or "").strip().lower()
+            if candidate_title == current_title and candidate_details.get("poster_path"):
+                tmdb_anchor_details = candidate_details
+                tmdb_row.pop("details", None)
+                row = tmdb_row
+                tmdb_id = int(row["show_id"])
+                anchor_title = str(row["title"])
+                anchor_details = tmdb_anchor_details
+                print("SEO anchor corrected from TMDB search:", anchor_title, tmdb_id)
     anchor_genre_ids = set(anchor_details.get("genre_ids") or [])
     anchor_lang = anchor_details.get("original_language")
     anchor_keywords = _extract_anchor_keywords(
@@ -2201,6 +2669,12 @@ async def shows_like(
                 if not passes_concept_guardrail(anchor_concept, candidate_blob, list(details.get("genres") or [])):
                     continue
 
+            if _weak_future_for_seo(details):
+                continue
+
+            if not _passes_grounded_concept_sanity(anchor_concept, details, source="fill", score=0.0):
+                continue
+
             fit = _fill_fit_score(_anchor_fill_bucket(anchor_title, anchor_details), details)
             if fit < 0.10 and concept_bonus < 0.12 and semantic_score < 0.14:
                 continue
@@ -2277,6 +2751,76 @@ async def shows_like(
         limit=MAX_RESULTS,
         anchor_tmdb_id=tmdb_id,
     )
+
+    # SEO safety net: never leave a valid sci-fi / mystery-box anchor with an empty page
+    # just because the live TMDB/Reddit signals were sparse or a strict filter removed too much.
+    if anchor_concept == "mystery_box_survival" and len(results) < 6:
+        existing_ids = {int(x.get("tmdb_id") or 0) for x in results}
+        rescue_ids = [
+            rid
+            for rid in SEO_CONCEPT_FALLBACK_IDS.get("mystery_box_survival", [])
+            if rid != tmdb_id and rid not in existing_ids
+        ]
+        rescue_details = await asyncio.gather(*[_tmdb_details(rid) for rid in rescue_ids[:18]]) if rescue_ids else []
+        rescue_items: list[dict] = []
+        for details in rescue_details:
+            ok, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date = _passes_basic_candidate_checks(details)
+            if not ok or rid in existing_ids:
+                continue
+
+            if not ({10765, 9648, 18} & genre_ids):
+                continue
+
+            semantic_score = _semantic_text_score(
+                anchor_keywords,
+                title_val,
+                details.get("overview"),
+                " ".join(details.get("genres") or []),
+            )
+            genre_score = _genre_overlap_score(anchor_genre_ids, genre_ids)
+            concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
+                anchor_concept,
+                details,
+                semantic_score=semantic_score,
+                genre_score=genre_score,
+            )
+            if not concept_pass:
+                continue
+
+            raw_score = (
+                0.72
+                + 0.42 * semantic_score
+                + 0.32 * genre_score
+                + 0.24 * _bayesian_quality_score(vote_average, vote_count)
+                + concept_bonus
+                + _quality_bonus(vote_average, vote_count, popularity)
+            )
+            raw_score *= concept_multiplier
+            raw_score *= _confidence_factor(vote_count, popularity)
+
+            rescue_items.append(
+                _normalise_result_score(
+                    {
+                        "tmdb_id": rid,
+                        "title": title_val,
+                        "poster_path": details.get("poster_path"),
+                        "poster_url": details.get("poster_url"),
+                        "overview": details.get("overview"),
+                        "first_air_date": details.get("first_air_date"),
+                        "vote_average": vote_average,
+                        "vote_count": vote_count,
+                        "popularity": popularity,
+                        "genres": details.get("genres"),
+                        "genre_ids": details.get("genre_ids"),
+                        "source": "fill",
+                        "score": raw_score,
+                    }
+                )
+            )
+            existing_ids.add(rid)
+
+        rescue_items.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+        results = (results + rescue_items)[:MAX_RESULTS]
 
     return {
         "anchor": {

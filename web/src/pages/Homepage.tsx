@@ -38,6 +38,15 @@ type ShowsLikeLink = {
   hook: string;
 };
 
+
+function slugifyTitle(title: string): string {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function getTmdbId(x: any): number | null {
   const cand = x?.tmdb_id ?? x?.external_id ?? x?.show_id ?? x?.id;
   const n = Number(cand);
@@ -202,7 +211,7 @@ export default function Homepage() {
       navigate("/search");
       return;
     }
-    navigate(`/search?q=${encodeURIComponent(q)}`);
+    navigate(`/shows-like/${slugifyTitle(q)}`);
   };
 
   return (
@@ -247,7 +256,7 @@ export default function Homepage() {
                 key={name}
                 type="button"
                 className="homepage-chip"
-                onClick={() => navigate(`/search?q=${encodeURIComponent(name)}`)}
+                onClick={() => navigate(`/shows-like/${slugifyTitle(name)}`)}
                 style={{ cursor: "pointer" }}
               >
                 {name}

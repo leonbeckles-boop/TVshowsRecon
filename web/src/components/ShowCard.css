@@ -405,3 +405,21 @@
 .show-card__icon-btn--watchlist-active {
   outline: 2px solid rgba(251, 191, 36, 0.8);
 }
+
+.show-card__rating-select {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: #ffffff;
+  color: #111827;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.show-card__rating-select:focus {
+  outline: 2px solid rgba(96, 165, 250, 0.85);
+  outline-offset: 2px;
+}

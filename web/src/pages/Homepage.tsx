@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import ShowCard from "../components/ShowCard";
 
 type Show = {
   tmdb_id?: number;
   show_id?: number;
   external_id?: number;
+  id?: number;
   title?: string;
   name?: string;
   poster_path?: string | null;
@@ -31,68 +32,63 @@ type TopRatedShow = Show & {
   weighted_score?: number;
 };
 
+type ShowsLikeLink = {
+  slug: string;
+  title: string;
+  hook: string;
+};
+
 function getTmdbId(x: any): number | null {
   const cand = x?.tmdb_id ?? x?.external_id ?? x?.show_id ?? x?.id;
   const n = Number(cand);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function prettySlug(slug: string): string {
-  return slug
-    .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
-
-const featuredShowsLike = [
-  "breaking-bad",
-  "dark",
-  "the-wire",
-  "severance",
-  "the-boys",
-  "succession",
+const popularShowsLike: ShowsLikeLink[] = [
+  { slug: "breaking-bad", title: "Breaking Bad", hook: "crime, antiheroes and pressure-cooker drama" },
+  { slug: "dark", title: "Dark", hook: "time loops, mystery and big sci-fi payoff" },
+  { slug: "silo", title: "Silo", hook: "contained dystopia and slow-burn secrets" },
+  { slug: "severance", title: "Severance", hook: "corporate mystery and psychological sci-fi" },
+  { slug: "the-wire", title: "The Wire", hook: "prestige crime drama and social realism" },
+  { slug: "succession", title: "Succession", hook: "power, money and family rivalry" },
+  { slug: "true-detective", title: "True Detective", hook: "dark investigations and atmospheric mystery" },
+  { slug: "the-expanse", title: "The Expanse", hook: "space politics and epic sci-fi world-building" },
 ];
 
-const sectionCards = [
+const recommendationSignals = [
+  "Story themes",
+  "Character types",
+  "Tone and mood",
+  "Pacing",
+  "Audience ratings",
+  "Reddit recommendations",
+  "Viewing patterns",
+  "Hidden-gem potential",
+];
+
+const quickSearches = ["Breaking Bad", "Dark", "Silo", "Severance", "The Bear", "The Wire"];
+
+const featureCards = [
   {
-    title: "Search",
-    emoji: "🔎",
-    to: "/search",
-    desc: "Search any TV show and jump straight into recommendations, details and similar series.",
+    title: "Find shows like your favourites",
+    desc: "Search a series you already love and jump into similar TV shows, ranked by fit rather than genre alone.",
+    to: "/shows-like",
   },
   {
-    title: "Discover",
-    emoji: "🔥",
-    to: "/discover",
-    desc: "Browse trending and popular shows when you want something new but don’t know where to start.",
-  },
-  {
-    title: "Favourites",
-    emoji: "⭐",
-    to: "/favorites",
-    desc: "Save the shows you love so WhatNext can learn your taste and improve recommendations.",
-  },
-  {
-    title: "Watchlist",
-    emoji: "📺",
+    title: "Build a smarter watchlist",
+    desc: "Save shows you want to watch next, keep track of what you have seen and avoid losing good recommendations.",
     to: "/watchlist",
-    desc: "Keep track of the series you want to watch next so nothing gets forgotten.",
   },
   {
-    title: "Recommendations",
-    emoji: "🤖",
+    title: "Personalise your recommendations",
+    desc: "Add favourites and ratings so WhatNext can learn your taste and improve the suggestions you see.",
     to: "/recs",
-    desc: "Get personalised recommendations based on your favourites, watch history and preferences.",
-  },
-  {
-    title: "Profile",
-    emoji: "📊",
-    to: "/wrapped",
-    desc: "See your viewing habits, saved shows and your evolving TV taste profile.",
   },
 ];
 
 export default function Homepage() {
+  const navigate = useNavigate();
+  const [searchTerm, setSearchTerm] = useState("");
   const [trending, setTrending] = useState<Show[]>([]);
   const [featured, setFeatured] = useState<Show[]>([]);
   const [topRated, setTopRated] = useState<TopRatedShow[]>([]);
@@ -108,7 +104,6 @@ export default function Homepage() {
         if (!res.ok) throw new Error(String(res.status));
         const data: DiscoverResponse = await res.json();
         if (!alive) return;
-
         setTrending(Array.isArray(data.trending) ? data.trending.slice(0, 8) : []);
         setFeatured(Array.isArray(data.featured) ? data.featured.slice(0, 6) : []);
       } catch {
@@ -151,7 +146,8 @@ export default function Homepage() {
   }, []);
 
   useEffect(() => {
-    document.title = "WhatNextTV | Find Your Next TV Show";
+    document.title = "WhatNextTV | Find TV Shows Like Your Favourites";
+
     let meta = document.querySelector('meta[name="description"]');
     if (!meta) {
       meta = document.createElement("meta");
@@ -160,8 +156,35 @@ export default function Homepage() {
     }
     meta.setAttribute(
       "content",
-      "Discover what to watch next with personalised TV recommendations, trending shows, favourites, watchlists and shows-like pages."
+      "Find what to watch next with personalised TV recommendations, shows-like pages, Reddit community signals, ratings, watchlists and similarity matching."
     );
+
+    const jsonLdId = "whatnext-homepage-jsonld";
+    const existing = document.getElementById(jsonLdId);
+    if (existing) existing.remove();
+
+    const script = document.createElement("script");
+    script.id = jsonLdId;
+    script.type = "application/ld+json";
+    script.text = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: "WhatNextTV",
+      url: "https://whatnexttv.org/",
+      description:
+        "A TV recommendation website for finding shows similar to the series you already love.",
+      potentialAction: {
+        "@type": "SearchAction",
+        target: "https://whatnexttv.org/search?q={search_term_string}",
+        "query-input": "required name=search_term_string",
+      },
+    });
+    document.head.appendChild(script);
+
+    return () => {
+      const current = document.getElementById(jsonLdId);
+      if (current) current.remove();
+    };
   }, []);
 
   const heroTrendingText = useMemo(() => {
@@ -172,31 +195,73 @@ export default function Homepage() {
     return names.join(" • ");
   }, [trending]);
 
+  const handleSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const q = searchTerm.trim();
+    if (!q) {
+      navigate("/search");
+      return;
+    }
+    navigate(`/search?q=${encodeURIComponent(q)}`);
+  };
+
   return (
     <div className="homepage-shell">
       <section className="homepage-hero glass-card-glow">
         <div className="homepage-hero__content">
           <div className="homepage-hero__eyebrow">WhatNextTV</div>
-          <h1 className="homepage-hero__title">Find your next TV show faster.</h1>
+          <h1 className="homepage-hero__title">Never wonder what to watch next again.</h1>
           <p className="homepage-hero__subtitle">
-            WhatNext helps you discover series similar to the ones you already love,
-            track what you’ve watched, save favourites and build a smarter watchlist.
+            Find TV shows you will actually love using personalised recommendations,
+            Reddit community signals and intelligent similarity matching — not just broad genre labels.
           </p>
 
-          <div className="homepage-hero__actions">
-            <Link to="/discover" className="glass-button-primary">
-              Start Exploring
-            </Link>
-            <Link to="/shows-like" className="glass-button">
-              Browse “Shows Like” Pages
-            </Link>
+          <form onSubmit={handleSearch} style={{ marginTop: 24, maxWidth: 720 }}>
+            <label htmlFor="homepage-show-search" style={{ display: "block", marginBottom: 8, fontWeight: 700 }}>
+              What TV show did you just finish?
+            </label>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <input
+                id="homepage-show-search"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Try Breaking Bad, Dark, Silo or Severance"
+                style={{
+                  flex: "1 1 320px",
+                  minHeight: 48,
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  padding: "0 16px",
+                  fontSize: 16,
+                }}
+              />
+              <button type="submit" className="glass-button-primary" style={{ minHeight: 48 }}>
+                Find Recommendations
+              </button>
+            </div>
+          </form>
+
+          <div className="homepage-hero__meta" style={{ marginTop: 18 }}>
+            {quickSearches.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="homepage-chip"
+                onClick={() => navigate(`/search?q=${encodeURIComponent(name)}`)}
+                style={{ cursor: "pointer" }}
+              >
+                {name}
+              </button>
+            ))}
           </div>
 
-          <div className="homepage-hero__meta">
-            <span className="homepage-chip">Recommendations</span>
-            <span className="homepage-chip">Watchlist</span>
-            <span className="homepage-chip">Favourites</span>
-            <span className="homepage-chip">SEO discovery</span>
+          <div className="homepage-hero__actions" style={{ marginTop: 22 }}>
+            <Link to="/shows-like" className="glass-button-primary">
+              Browse Shows Like Pages
+            </Link>
+            <Link to="/discover" className="glass-button">
+              Explore Trending TV
+            </Link>
           </div>
 
           {heroTrendingText && (
@@ -208,20 +273,102 @@ export default function Homepage() {
 
         <div className="homepage-hero__logo-wrap">
           <div className="homepage-hero__logo-glow" />
-          <img
-            src="/logo1.png"
-            alt="WhatNextTV logo"
-            className="homepage-hero__logo"
-          />
+          <img src="/logo1.png" alt="WhatNextTV logo" className="homepage-hero__logo" />
         </div>
+      </section>
+
+      <section className="homepage-section">
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">Popular Shows Like pages</h2>
+          <p className="homepage-section__copy">
+            Start with high-intent recommendation pages for the shows people most often search for after finishing a great series.
+          </p>
+        </div>
+
+        <div className="homepage-grid">
+          {popularShowsLike.map((item) => (
+            <Link key={item.slug} to={`/shows-like/${item.slug}`} className="homepage-feature-card glass-card">
+              <h3 className="homepage-feature-card__title">Shows like {item.title}</h3>
+              <p className="homepage-feature-card__desc">For fans of {item.hook}.</p>
+              <span className="homepage-feature-card__cta">See recommendations →</span>
+            </Link>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          <Link to="/seo-index" className="glass-button">
+            Browse all recommendation pages
+          </Link>
+        </div>
+      </section>
+
+      <section className="homepage-section glass-card" style={{ padding: 24 }}>
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">Why WhatNext recommendations are different</h2>
+          <p className="homepage-section__copy">
+            Most recommendation sites stop at genre. WhatNext looks for the deeper reasons you liked a show: the story shape, the characters, the atmosphere, the pacing and what real viewers recommend next.
+          </p>
+        </div>
+
+        <div className="homepage-grid">
+          {recommendationSignals.map((signal) => (
+            <div key={signal} className="homepage-feature-card">
+              <div className="homepage-feature-card__emoji">✓</div>
+              <h3 className="homepage-feature-card__title">{signal}</h3>
+              <p className="homepage-feature-card__desc">
+                Used as part of the matching process so recommendations feel closer to your actual taste.
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="homepage-section">
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">How WhatNext helps you choose faster</h2>
+          <p className="homepage-section__copy">
+            Search a favourite show, compare similar series, save what looks good and build a watchlist that improves as you rate more TV.
+          </p>
+        </div>
+
+        <div className="homepage-grid">
+          {featureCards.map((item) => (
+            <Link key={item.title} to={item.to} className="homepage-feature-card glass-card">
+              <h3 className="homepage-feature-card__title">{item.title}</h3>
+              <p className="homepage-feature-card__desc">{item.desc}</p>
+              <span className="homepage-feature-card__cta">Open section →</span>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="homepage-section">
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">Trending now on WhatNext</h2>
+          <p className="homepage-section__copy">
+            Fresh titles from the Discover feed for when you want something current, popular or newly talked about.
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="glass-card admin-empty">Loading trending shows…</div>
+        ) : trending.length > 0 ? (
+          <div className="tile-grid">
+            {trending.map((show) => {
+              const tmdbId = getTmdbId(show);
+              return tmdbId ? <ShowCard key={tmdbId} show={show} /> : null;
+            })}
+          </div>
+        ) : (
+          <div className="glass-card admin-empty">Trending shows will appear here once the feed is available.</div>
+        )}
       </section>
 
       <section className="homepage-section">
         <div className="homepage-section__header">
           <h2 className="homepage-section__title">Top rated by WhatNext users</h2>
           <p className="homepage-section__copy">
-            Real user ratings from the app, ranked using weighted scores so the list
-            reflects both quality and consistency.
+            Real user ratings from the app, ranked using weighted scores so the list reflects both quality and consistency.
           </p>
         </div>
 
@@ -235,95 +382,15 @@ export default function Homepage() {
                 return tmdbId ? <ShowCard key={tmdbId} show={show} /> : null;
               })}
             </div>
-
-            <div
-              style={{
-                marginTop: 16,
-                display: "flex",
-                justifyContent: "flex-start",
-              }}
-            >
+            <div style={{ marginTop: 16 }}>
               <Link to="/top-rated" className="glass-button-primary">
                 View full top rated list
               </Link>
             </div>
           </>
         ) : (
-          <div className="glass-card admin-empty">
-            Top rated shows will appear here as more users rate series.
-          </div>
+          <div className="glass-card admin-empty">Top rated shows will appear here as more users rate series.</div>
         )}
-      </section>
-
-      <section className="homepage-section">
-        <div className="homepage-section__header">
-          <h2 className="homepage-section__title">Everything in one place</h2>
-          <p className="homepage-section__copy">
-            Use WhatNext as both a recommendation engine and a simple way to keep
-            track of the TV shows you care about.
-          </p>
-        </div>
-
-        <div className="homepage-grid">
-          {sectionCards.map((item) => (
-            <Link key={item.title} to={item.to} className="homepage-feature-card glass-card">
-              <div className="homepage-feature-card__emoji">{item.emoji}</div>
-              <h3 className="homepage-feature-card__title">{item.title}</h3>
-              <p className="homepage-feature-card__desc">{item.desc}</p>
-              <span className="homepage-feature-card__cta">Open section →</span>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      <section className="homepage-section">
-        <div className="homepage-section__header">
-          <h2 className="homepage-section__title">Trending now on WhatNext</h2>
-          <p className="homepage-section__copy">
-            Fresh titles from your existing Discover feed so the homepage always feels active.
-          </p>
-        </div>
-
-        {loading ? (
-          <div className="glass-card admin-empty">Loading trending shows…</div>
-        ) : trending.length > 0 ? (
-          <div className="tile-grid">
-            {trending.map((show) => {
-              const tmdbId = getTmdbId(show);
-              return tmdbId ? (
-                <ShowCard key={tmdbId} show={show} />
-              ) : null;
-            })}
-          </div>
-        ) : (
-          <div className="glass-card admin-empty">
-            Trending shows will appear here once the feed is available.
-          </div>
-        )}
-      </section>
-
-      <section className="homepage-section">
-        <div className="homepage-section__header">
-          <h2 className="homepage-section__title">Popular “Shows Like” pages</h2>
-          <p className="homepage-section__copy">
-            Jump straight into high-intent recommendation pages for some of the most searched shows.
-          </p>
-        </div>
-
-        <div className="homepage-pill-links">
-          {featuredShowsLike.map((slug) => (
-            <Link
-              key={slug}
-              to={`/shows-like/${slug}`}
-              className="homepage-pill-link"
-            >
-              Shows like {prettySlug(slug)}
-            </Link>
-          ))}
-          <Link to="/seo-index" className="homepage-pill-link homepage-pill-link--accent">
-            Browse all recommendation pages
-          </Link>
-        </div>
       </section>
 
       {featured.length > 0 && (
@@ -331,7 +398,7 @@ export default function Homepage() {
           <div className="homepage-section__header">
             <h2 className="homepage-section__title">Featured picks</h2>
             <p className="homepage-section__copy">
-              A few handoff-friendly titles from your main discover feed for a stronger first impression.
+              A few recommendation-friendly titles from the main Discover feed for a stronger first impression.
             </p>
           </div>
 
@@ -344,18 +411,29 @@ export default function Homepage() {
         </section>
       )}
 
+      <section className="homepage-section glass-card" style={{ padding: 24 }}>
+        <div className="homepage-section__header">
+          <h2 className="homepage-section__title">Find TV shows like the series you already love</h2>
+          <p className="homepage-section__copy">
+            WhatNext is built for the question people ask after finishing a brilliant show: what should I watch next? Whether you want another crime drama like Breaking Bad, a mystery like Dark, a dystopian sci-fi series like Silo or a power drama like Succession, the aim is to give you recommendations that explain why each show fits.
+          </p>
+          <p className="homepage-section__copy">
+            You can use WhatNext without an account to search and browse recommendations, then register when you want to save favourites, keep a watchlist and make future recommendations more personal.
+          </p>
+        </div>
+      </section>
+
       <section className="homepage-cta glass-card">
         <h2 className="homepage-cta__title">Ready to find something great?</h2>
         <p className="homepage-cta__copy">
-          Search a favourite show, explore recommendations, and start building your
-          personal TV library.
+          Search a favourite show, browse similar series and start building your personal TV library.
         </p>
         <div className="homepage-hero__actions">
           <Link to="/search" className="glass-button-primary">
-            Search Shows
+            Search TV Shows
           </Link>
-          <Link to="/discover" className="glass-button">
-            Explore Discover
+          <Link to="/shows-like" className="glass-button">
+            Browse Shows Like Pages
           </Link>
         </div>
       </section>
@@ -364,14 +442,9 @@ export default function Homepage() {
         <div className="wn-feedback-content">
           <h2>💬 Help Shape WhatNext</h2>
           <p>
-            Found a bug? Got an idea? Or just enjoying the app?
-            We’re actively improving WhatNext and would love your feedback.
+            Found a bug? Got an idea? Or just enjoying the app? We are actively improving WhatNext and would love your feedback.
           </p>
-
-          <a
-            href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback"
-            className="wn-feedback-btn"
-          >
+          <a href="mailto:whatnexttv@gmail.com?subject=WhatNext Feedback" className="wn-feedback-btn">
             Contact Us
           </a>
         </div>

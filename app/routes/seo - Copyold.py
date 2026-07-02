@@ -771,121 +771,6 @@ def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: 
     ]
 
 
-
-def _score_to_match_percent(score: float | int | None) -> int:
-    """Convert the internal recommendation score into a user-facing match %.
-
-    The SEO algorithm uses relative scores rather than a true probability. This
-    keeps the display honest by mapping strong results into an easy-to-read range
-    without claiming mathematical certainty.
-    """
-    try:
-        val = float(score or 0.0)
-    except Exception:
-        val = 0.0
-    return int(max(62, min(98, round(62 + (val * 18)))))
-
-
-def _short_overview(text_val: str | None, max_chars: int = 210) -> str:
-    text_clean = re.sub(r"\s+", " ", str(text_val or "")).strip()
-    if len(text_clean) <= max_chars:
-        return text_clean
-    return text_clean[: max_chars - 1].rsplit(" ", 1)[0].strip() + "…"
-
-
-def _genre_overlap_names(anchor_details: dict, item: dict, max_n: int = 3) -> list[str]:
-    anchor_genres = {str(g).strip().lower() for g in (anchor_details.get("genres") or []) if str(g).strip()}
-    item_genres = [str(g).strip() for g in (item.get("genres") or []) if str(g).strip()]
-    return [g for g in item_genres if g.lower() in anchor_genres][:max_n]
-
-
-def _source_reason_label(source: str) -> str:
-    source = str(source or "").strip()
-    if source == "multi_signal":
-        return "Multiple signals agree: audience behaviour and recommendation similarity both point to this title."
-    if source == "reddit_pairs":
-        return "Audience behaviour signal: viewers discussing similar shows often move toward this title."
-    if source == "tmdb_recs":
-        return "Recommendation graph signal: this title appears close to the anchor show in recommendation data."
-    if source == "semantic_fallback":
-        return "Story-shape signal: this title was selected because its themes and tone are a close fit."
-    return "Quality fallback: this title survived the same relevance and quality filters as the main recommendations."
-
-
-def _recommendation_match_reasons(anchor_title: str, anchor_details: dict, item: dict) -> list[str]:
-    """Build concise, visible reasons Google and users can understand."""
-    reasons: list[str] = []
-    overlap = _genre_overlap_names(anchor_details, item)
-    if overlap:
-        reasons.append(f"Shared genre fit: {_natural_join(overlap)}")
-
-    source_label = _source_reason_label(str(item.get("source") or ""))
-    if source_label:
-        reasons.append(source_label)
-
-    vote_average = float(item.get("vote_average") or 0.0)
-    vote_count = int(item.get("vote_count") or 0)
-    if vote_average >= 8.0 and vote_count >= 200:
-        reasons.append(f"Strong audience quality signal: {vote_average:.1f}/10 from {vote_count:,} votes")
-    elif vote_average >= 7.2 and vote_count >= 100:
-        reasons.append(f"Solid audience quality signal: {vote_average:.1f}/10 from {vote_count:,} votes")
-
-    anchor_descriptor = _anchor_descriptor(anchor_title, anchor_details)
-    themes = anchor_descriptor.get("themes") or []
-    if isinstance(themes, list) and themes:
-        item_blob = _blob_for(item)
-        matched_themes = [str(t) for t in themes if str(t).lower() in item_blob]
-        if matched_themes:
-            reasons.append(f"Theme overlap: {_natural_join(matched_themes[:2])}")
-        else:
-            reasons.append(f"Chosen for a similar {anchor_descriptor.get('angle') or 'storytelling'} feel")
-
-    # Keep cards readable. The expanded explanation below carries the longer copy.
-    clean: list[str] = []
-    for reason in reasons:
-        if reason and reason not in clean:
-            clean.append(reason)
-    return clean[:5]
-
-
-def _why_recommended(anchor_title: str, anchor_details: dict, item: dict) -> str:
-    title = str(item.get("title") or "this show").strip()
-    descriptor = _anchor_descriptor(anchor_title, anchor_details)
-    audience_hook = str(descriptor.get("audience_hook") or "a similar overall feel")
-    angle = str(descriptor.get("angle") or "storytelling")
-    overview = _short_overview(str(item.get("overview") or ""), 220)
-    reasons = _recommendation_match_reasons(anchor_title, anchor_details, item)
-
-    reason_sentence = " ".join(reasons[:2]) if reasons else f"It shares {audience_hook}."
-    if overview:
-        return (
-            f"{title} is a strong follow-up to {anchor_title} because it offers {audience_hook} and a comparable sense of {angle}. "
-            f"{reason_sentence} In practical terms, {overview}"
-        )
-    return (
-        f"{title} is a strong follow-up to {anchor_title} because it offers {audience_hook} and a comparable sense of {angle}. "
-        f"{reason_sentence}"
-    )
-
-
-def _enrich_recommendations_for_seo(anchor_title: str, anchor_details: dict, results: list[dict]) -> list[dict]:
-    """Expose the recommendation engine's reasoning in the API response.
-
-    This is deliberately additive: existing frontend fields are preserved, while
-    new fields can be used to create richer indexable content on the SEO pages.
-    """
-    enriched: list[dict] = []
-    for idx, item in enumerate(results, start=1):
-        enriched_item = dict(item)
-        enriched_item["rank"] = idx
-        enriched_item["match_percent"] = _score_to_match_percent(item.get("score"))
-        enriched_item["match_reasons"] = _recommendation_match_reasons(anchor_title, anchor_details, item)
-        enriched_item["why_recommended"] = _why_recommended(anchor_title, anchor_details, item)
-        enriched_item["source_explanation"] = _source_reason_label(str(item.get("source") or ""))
-        enriched.append(enriched_item)
-    return enriched
-
-
 def _build_page_copy(anchor_title: str, anchor_details: dict, results: list[dict]) -> dict:
     titles = _top_titles(results, 3)
     top_titles_text = _natural_join(titles)
@@ -954,48 +839,6 @@ def _build_page_copy(anchor_title: str, anchor_details: dict, results: list[dict
             f"If you enjoyed {anchor_title}, try {top_titles_text}. These recommendations focus on {genre_text} shows that share {audience_hook} and a similar storytelling rhythm."
         )
 
-    what_makes_good_match = (
-        f"A good replacement for {anchor_title} is not just another show in the same broad genre. "
-        f"The best matches keep the parts viewers remember most: {theme_text or mood}, a {mood} atmosphere and {angle}. "
-        "That is why the ranking combines several signals before a title reaches the final list."
-    )
-
-    how_chosen = [
-        "Audience behaviour: Reddit-style co-mentions and pair signals help identify shows viewers naturally compare or recommend together.",
-        "Recommendation graph: TMDB recommendation data helps identify titles that sit close to the anchor show.",
-        "Story fit: genre overlap, semantic keywords and concept-specific guardrails reduce lazy matches that share only a surface-level category.",
-        "Quality control: vote average, vote count, popularity and freshness checks help remove weak or low-confidence titles from public SEO pages.",
-    ]
-
-    best_for: list[dict] = []
-    for item in results[:6]:
-        title = str(item.get("title") or "").strip()
-        if not title:
-            continue
-        reasons = _recommendation_match_reasons(anchor_title, anchor_details, item)
-        best_for.append(
-            {
-                "title": title,
-                "match_percent": _score_to_match_percent(item.get("score")),
-                "best_for": reasons[0] if reasons else f"Viewers who want {audience_hook}.",
-                "why": _why_recommended(anchor_title, anchor_details, item),
-            }
-        )
-
-    related_page_links = []
-    for item in results[:10]:
-        title = str(item.get("title") or "").strip()
-        if not title:
-            continue
-        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-        if slug:
-            related_page_links.append(
-                {
-                    "title": f"Shows like {title}",
-                    "href": f"/shows-like/{slug}",
-                }
-            )
-
     faq_items = _pick_faq_variant(anchor_title, anchor_details, top_titles_text, genre_text, descriptor)
 
     return {
@@ -1003,39 +846,11 @@ def _build_page_copy(anchor_title: str, anchor_details: dict, results: list[dict
         "seo_blurb": seo_blurb,
         "top_titles_text": top_titles_text,
         "top_genres": genres,
-        "audience_profile": {
-            "headline": f"Why {anchor_title} fans may like these shows",
-            "themes": themes[:3],
-            "mood": mood,
-            "storytelling_angle": angle,
-            "hook": audience_hook,
-            "summary": (
-                f"This page is tuned for viewers who want {audience_hook}. "
-                f"It favours shows with {theme_text or mood}, not just titles that happen to share a genre label."
-            ),
-        },
-        "content_sections": [
-            {
-                "heading": f"What makes a good show like {anchor_title}?",
-                "body": what_makes_good_match,
-            },
-            {
-                "heading": "How these recommendations are chosen",
-                "body": " ".join(how_chosen),
-                "bullets": how_chosen,
-            },
-            {
-                "heading": "Editor's verdict",
-                "body": (
-                    f"The strongest starting point is {top_titles_text or 'the top-ranked titles'} because the list balances similarity, quality and viewer behaviour. "
-                    f"For best results, choose the recommendation that matches the part of {anchor_title} you liked most: tone, characters, setting, mystery, tension or long-form payoff."
-                ),
-            },
-        ],
-        "best_for": best_for,
-        "related_page_links": related_page_links,
         "faq_items": faq_items,
     }
+
+
+
 
 def _is_future_or_too_fresh_for_seo(first_air_date: str | None, vote_count: int) -> bool:
     if vote_count < SEO_FRESH_MIN_VOTE_COUNT and first_air_date:
@@ -3007,16 +2822,14 @@ async def shows_like(
         rescue_items.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
         results = (results + rescue_items)[:MAX_RESULTS]
 
-    enriched_results = _enrich_recommendations_for_seo(anchor_title, anchor_details, results)
-
     return {
         "anchor": {
             "tmdb_id": tmdb_id,
             "title": anchor_title,
             "poster_path": row.get("poster_path") or anchor_details.get("poster_path"),
         },
-        "recommendations": enriched_results,
-        "page_copy": _build_page_copy(anchor_title, anchor_details, enriched_results),
+        "recommendations": results,
+        "page_copy": _build_page_copy(anchor_title, anchor_details, results),
     }
 
 

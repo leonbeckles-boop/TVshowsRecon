@@ -284,7 +284,7 @@ const ShowCard: React.FC<ShowCardProps> = ({
         <div className="show-card__header-row">
           <div className="show-card__title-wrap">
             <div className="show-card__title">{title}</div>
-            {year && <div className="show-card__year">{year}</div>}
+            {year && <div className="show-card__year">{year}</div>}            
           </div>
         </div>
 

@@ -1,6 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ShowCard from "../components/ShowCard";
+import "./Homepage.css";
 
 type Show = {
   tmdb_id?: number;
@@ -84,14 +85,14 @@ const featureCards = [
     to: "/shows-like",
   },
   {
-    title: "Build a smarter watchlist",
-    desc: "Save shows you want to watch next, keep track of what you have seen and avoid losing good recommendations.",
-    to: "/watchlist",
+    title: "Explore trending TV shows",
+    desc: "Browse current, popular and talked-about series when you want something new but do not know where to start.",
+    to: "/discover",
   },
   {
-    title: "Personalise your recommendations",
-    desc: "Add favourites and ratings so WhatNext can learn your taste and improve the suggestions you see.",
-    to: "/recs",
+    title: "Browse top rated shows",
+    desc: "See the highest rated series from WhatNext users and use the list as a shortcut to quality TV.",
+    to: "/top-rated",
   },
 ];
 
@@ -294,21 +295,22 @@ export default function Homepage() {
           </p>
         </div>
 
-        <div className="homepage-grid">
+        <div className="homepage-showslike-compact-grid">
           {popularShowsLike.map((item) => (
-            <Link key={item.slug} to={`/shows-like/${item.slug}`} className="homepage-feature-card glass-card">
-              <h3 className="homepage-feature-card__title">Shows like {item.title}</h3>
-              <p className="homepage-feature-card__desc">For fans of {item.hook}.</p>
-              <span className="homepage-feature-card__cta">See recommendations →</span>
+            <Link
+              key={item.slug}
+              to={`/shows-like/${item.slug}`}
+              className="homepage-showslike-compact-link"
+            >
+              Shows like {item.title}
             </Link>
           ))}
+            <Link to="/seo-index" className="glass-button">
+            Browse all recommendation pages
+            </Link>
         </div>
 
-        <div style={{ marginTop: 16 }}>
-          <Link to="/seo-index" className="glass-button">
-            Browse all recommendation pages
-          </Link>
-        </div>
+        
       </section>
 
       <section className="homepage-section glass-card" style={{ padding: 24 }}>

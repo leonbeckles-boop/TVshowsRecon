@@ -4,6 +4,7 @@ import { apiUrl } from "../api";
 import { useAuth } from "../auth/AuthProvider";
 import SeoRecommendationCard, { SeoRecommendation } from "../components/SeoRecommendationCard";
 import "./ShowsLikeV2.css";
+import "./ShowsLike_conversion.css";
 
 type SeoAnchor = {
   tmdb_id: number;
@@ -496,6 +497,21 @@ export default function ShowsLike() {
               isWatchlist={watchSet.has(rec.tmdb_id)}
             />
           ))}
+        </div>
+      </section>
+
+      <section className="shows-like-v2-conversion glass-card-glow" aria-label="Personalised recommendations">
+        <div className="shows-like-v2-conversion__copy">
+          <p className="shows-like-v2-section-label">Make WhatNext personal</p>
+          <h2>One show gave you these recommendations. Your whole taste can give you better ones.</h2>
+          <p>{user ? "Add more favourites and rate shows you have watched so WhatNext can keep improving the recommendations built around your taste." : "Create a free account, add your favourite shows and rate what you have watched. WhatNext can then recommend TV based on your combined taste instead of a single title."}</p>
+          <div className="shows-like-v2-conversion__benefits">
+            <span>✓ Build a taste profile</span><span>✓ Rate shows you have watched</span>
+            <span>✓ Save favourites and a watchlist</span><span>✓ Get personalised recommendations</span>
+          </div>
+        </div>
+        <div className="shows-like-v2-conversion__actions">
+          {user ? (<><Link to="/search" className="glass-button-primary">Add favourites and ratings</Link><Link to="/recommendations" className="glass-button">View my recommendations</Link></>) : (<><Link to="/register" className="glass-button-primary">Build my TV taste profile</Link><span className="shows-like-v2-conversion__note">Free account · Personalises as you rate more TV</span></>)}
         </div>
       </section>
 

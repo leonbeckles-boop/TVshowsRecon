@@ -1,0 +1,23 @@
+.homepage-showslike-compact-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.homepage-showslike-compact-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.65);
+  color: #e5f3ff;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.homepage-showslike-compact-link:hover {
+  border-color: rgba(56, 189, 248, 0.8);
+  color: #38bdf8;
+}

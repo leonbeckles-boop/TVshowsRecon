@@ -3,12 +3,11 @@ import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 
 export default function HowToUse() {
-  // ----- Styles (matched to Wrapped/Profile glass format) -----
   const pageWrap: React.CSSProperties = {
     paddingTop: 140,
     paddingLeft: 16,
     paddingRight: 16,
-    paddingBottom: 40,
+    paddingBottom: 48,
     maxWidth: 1180,
     margin: "0 auto",
   };
@@ -21,8 +20,23 @@ export default function HowToUse() {
     backdropFilter: "blur(8px)",
   };
 
-  const h1: React.CSSProperties = { fontSize: 34, margin: 0 };
-  const sub: React.CSSProperties = { opacity: 0.8, marginTop: 6 };
+  const h1: React.CSSProperties = {
+    fontSize: "clamp(30px, 4vw, 42px)",
+    lineHeight: 1.1,
+    margin: 0,
+  };
+
+  const h2: React.CSSProperties = {
+    fontSize: 24,
+    margin: 0,
+  };
+
+  const sub: React.CSSProperties = {
+    opacity: 0.8,
+    marginTop: 10,
+    lineHeight: 1.6,
+    maxWidth: 780,
+  };
 
   const pill: React.CSSProperties = {
     display: "inline-flex",
@@ -37,25 +51,47 @@ export default function HowToUse() {
 
   const grid3: React.CSSProperties = {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
     gap: 14,
-    marginTop: 16,
+    marginTop: 18,
+  };
+
+  const grid2: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+    gap: 14,
+    marginTop: 18,
   };
 
   const card: React.CSSProperties = {
     ...glass,
-    padding: 16,
+    padding: 18,
   };
 
-  const titleSm: React.CSSProperties = { fontSize: 16, margin: 0, fontWeight: 700 as any };
-  const text: React.CSSProperties = { opacity: 0.8, marginTop: 8, lineHeight: 1.45 };
-  const list: React.CSSProperties = { opacity: 0.78, marginTop: 10, paddingLeft: 18, lineHeight: 1.55 };
+  const titleSm: React.CSSProperties = {
+    fontSize: 17,
+    margin: 0,
+    fontWeight: 700,
+  };
+
+  const text: React.CSSProperties = {
+    opacity: 0.82,
+    marginTop: 8,
+    lineHeight: 1.55,
+  };
+
+  const list: React.CSSProperties = {
+    opacity: 0.8,
+    marginTop: 12,
+    paddingLeft: 20,
+    lineHeight: 1.65,
+  };
 
   const actions: React.CSSProperties = {
     display: "flex",
     flexWrap: "wrap",
     gap: 10,
-    marginTop: 14,
+    marginTop: 16,
   };
 
   const btnPrimary: React.CSSProperties = {
@@ -64,7 +100,7 @@ export default function HowToUse() {
     textDecoration: "none",
     border: "1px solid rgba(56,189,248,0.35)",
     background: "rgba(56,189,248,0.18)",
-    color: "rgba(240,250,255,0.95)",
+    color: "rgba(240,250,255,0.98)",
     fontWeight: 700,
   };
 
@@ -72,12 +108,12 @@ export default function HowToUse() {
     ...pill,
     cursor: "pointer",
     textDecoration: "none",
-    color: "rgba(255,255,255,0.9)",
+    color: "rgba(255,255,255,0.92)",
   };
 
   const stepBadge: React.CSSProperties = {
-    width: 28,
-    height: 28,
+    width: 30,
+    height: 30,
     borderRadius: 999,
     display: "inline-flex",
     alignItems: "center",
@@ -86,39 +122,57 @@ export default function HowToUse() {
     fontWeight: 800,
     border: "1px solid rgba(56,189,248,0.35)",
     background: "rgba(56,189,248,0.18)",
-    color: "rgba(240,250,255,0.95)",
+    color: "rgba(240,250,255,0.98)",
     flex: "0 0 auto",
+  };
+
+  const highlight: React.CSSProperties = {
+    ...glass,
+    padding: 20,
+    marginTop: 16,
+    border: "1px solid rgba(56,189,248,0.22)",
+    background:
+      "linear-gradient(135deg, rgba(56,189,248,0.10), rgba(255,255,255,0.035))",
   };
 
   return (
     <div>
       <PageHeader
-        title="How to use WhatNext"
-        subtitle="Add favourites + ratings to teach your taste — recommendations improve fast."
+        title="How WhatNext works"
+        subtitle="Build your taste profile, then let WhatNext find shows that fit you — not everyone else."
       />
 
       <div style={pageWrap}>
-        <div style={{ ...pill, marginBottom: 10 }}>New here? Start in under 60 seconds ✅</div>
+        <div style={{ ...pill, marginBottom: 10 }}>New to WhatNext? Start here ↓</div>
 
-        <div style={{ ...glass, padding: 18 }}>
-          <div style={h1}>Get better recrecommendationss in 3 quick steps</div>
+        <section style={{ ...glass, padding: 22 }}>
+          <h1 style={h1}>Stop scrolling. Start with shows you already love.</h1>
           <div style={sub}>
-            WhatNext learns from the shows you save and rate. The more signal you give it, the smarter it gets.
+            WhatNext learns your taste from the shows you favourite, the ratings you give and the shows you hide.
+            Those choices build a personal taste profile that powers your recommendations.
+          </div>
+
+          <div style={highlight}>
+            <div style={{ ...titleSm, fontSize: 19 }}>The simple idea</div>
+            <div style={{ ...text, fontSize: 15 }}>
+              Tell WhatNext <b>what you love</b>, <b>how much you loved it</b> and <b>what you are not interested in</b>.
+              We use those signals to narrow thousands of shows into a more useful shortlist for you.
+            </div>
           </div>
 
           <div style={grid3}>
             <div style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={stepBadge}>1</div>
-                <div style={titleSm}>Search for shows you’ve watched</div>
+                <div style={titleSm}>Create your free account</div>
               </div>
               <div style={text}>
-                Go to <b>Search</b> and add a few shows you genuinely enjoyed. Start with your favourites — not just
-                what’s popular.
+                Start by creating an account with just your <b>email address and a password</b>. That’s it — once you’re
+                signed in, you can save favourites, rate shows and build your personal taste profile.
               </div>
               <div style={actions}>
-                <Link to="/search" style={btnPrimary}>
-                  Go to Search
+                <Link to="/login" style={btnPrimary}>
+                  Create account / sign in
                 </Link>
               </div>
             </div>
@@ -126,19 +180,15 @@ export default function HowToUse() {
             <div style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={stepBadge}>2</div>
-                <div style={titleSm}>Favourite + rate</div>
+                <div style={titleSm}>Add shows you know</div>
               </div>
               <div style={text}>
-                Add shows to <b>Favourites</b> and give them a rating. Ratings help separate “love it” from “it’s okay”.
+                Search for shows you have already watched and add the ones you genuinely loved to your favourites.
+                These give WhatNext the clearest signal about your taste.
               </div>
-              <ul style={list}>
-                <li>Aim for <b>5 favourites</b> to start</li>
-                <li>Add <b>5 ratings</b> for a big accuracy jump</li>
-                <li>Use the <b>✕</b> hide button on shows you’d never watch</li>
-              </ul>
               <div style={actions}>
-                <Link to="/favorites" style={btnSecondary}>
-                  View Favourites
+                <Link to="/search" style={btnPrimary}>
+                  Search for shows
                 </Link>
               </div>
             </div>
@@ -146,57 +196,103 @@ export default function HowToUse() {
             <div style={card}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={stepBadge}>3</div>
-                <div style={titleSm}>Check Recommendations</div>
+                <div style={titleSm}>Rate and refine your taste</div>
               </div>
               <div style={text}>
-                Head to <b>Recommendations</b> and refresh. As you add more favourites/ratings, results become sharper,
-                newer, and more “you”.
+                Rate what you have watched and use “not interested” when something is not for you. Every choice gives
+                WhatNext more information about what fits your taste.
               </div>
-              <div style={actions}>
-                <Link to="/recs" style={btnPrimary}>
-                  View Recommendations
-                </Link>
-              </div>
+              <ul style={list}>
+                <li><b>Favourites</b> tell us what you want more of.</li>
+                <li><b>Ratings</b> add context — a 10/10 means something different from a 6/10.</li>
+                <li><b>Not interested</b> helps move recommendations away from things you would not watch.</li>
+              </ul>
             </div>
           </div>
 
-          <div style={{ ...grid3, marginTop: 14 }}>
+          <div style={{ ...highlight, marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={stepBadge}>4</div>
+              <div style={{ ...titleSm, fontSize: 19 }}>Get recommendations built around you</div>
+            </div>
+            <div style={{ ...text, maxWidth: 780 }}>
+              Once you have added a few favourites and ratings, open Recommendations to see shows selected around your
+              taste profile. Keep favouriting, rating and hiding shows to keep refining what WhatNext knows about you.
+            </div>
+            <div style={actions}>
+              <Link to="/recs" style={btnPrimary}>
+                See my recommendations
+              </Link>
+              <Link to="/favorites" style={btnSecondary}>
+                View my favourites
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        <section style={{ marginTop: 18 }}>
+          <div style={grid2}>
             <div style={card}>
-              <div style={titleSm}>Best-results checklist</div>
+              <h2 style={h2}>What makes a good taste profile?</h2>
+              <div style={text}>
+                Variety helps. Add the shows that really represent what you enjoy rather than filling your favourites
+                with everything you have ever watched.
+              </div>
               <ul style={list}>
-                <li>Favourite shows you’d recommend to a friend</li>
-                <li>Rate finished shows (even if you dropped them)</li>
-                <li>Hide shows that are totally not your thing</li>
-                <li>Come back after a few days — you’ll see new picks</li>
+                <li>Add around <b>5 favourites</b> to get started.</li>
+                <li>Rate several shows you know well.</li>
+                <li>Include favourites from different genres you genuinely enjoy.</li>
+                <li>Keep using “not interested” when a suggestion misses the mark.</li>
               </ul>
             </div>
 
             <div style={card}>
-              <div style={titleSm}>WhatNext is doing under the hood</div>
+              <h2 style={h2}>WhatNext is not just a popularity list</h2>
+              <div style={text}>
+                Popular shows are easy to find anywhere. WhatNext is designed to help answer a harder question:
+                <b> “What should I watch next based on the things I already know I like?”</b>
+              </div>
               <ul style={list}>
-                <li>Matches your favourites to similar shows</li>
-                <li>Balances taste + quality</li>
-                <li>Surfaces newer titles you may have missed</li>
-                <li>Improves continuously as your library grows</li>
+                <li>Looks for connections between the shows you enjoy.</li>
+                <li>Uses your own favourites and ratings as the starting point.</li>
+                <li>Lets you actively remove suggestions that do not fit.</li>
+                <li>Helps surface shows you may not have thought to search for.</li>
               </ul>
             </div>
-
-            <div style={card}>
-              <div style={titleSm}>Quick start target</div>
-              <div style={text}>
-                If you do one thing: add <b>5 favourites</b> and <b>5 ratings</b>.
-              </div>
-              <div style={{ ...pill, marginTop: 12, opacity: 0.85 }}>
-                Tip: favourites = what you love • ratings = how much you love it
-              </div>
-            </div>
           </div>
+        </section>
 
-          <div style={{ marginTop: 14, opacity: 0.65, fontSize: 12 }}>
-            This page is here to help you get great results quickly. Once you’ve added a few shows, you can ignore it
-            completely.
+        <section style={{ ...glass, padding: 22, marginTop: 18 }}>
+          <h2 style={h2}>You can also explore without knowing what to search for</h2>
+          <div style={sub}>
+            Use Discover when you just want to browse. Open any show to learn more, then favourite or rate the ones
+            that match your taste so they can influence future recommendations.
           </div>
-        </div>
+          <div style={actions}>
+            <Link to="/discover" style={btnSecondary}>
+              Explore Discover
+            </Link>
+            <Link to="/search" style={btnSecondary}>
+              Search a show
+            </Link>
+          </div>
+        </section>
+
+        <section style={{ ...highlight, marginTop: 18 }}>
+          <div style={{ ...titleSm, fontSize: 20 }}>Ready to start? Create an account, then add 5 shows you love.</div>
+          <div style={{ ...text, maxWidth: 760 }}>
+            Signing up only takes an email address and password. Once you’re in, start with a handful of strong
+            favourites, add some ratings, then check your recommendations. You can refine your profile as you go.
+          </div>
+          <div style={actions}>
+            <Link to="/login" style={btnPrimary}>
+              Get started
+            </Link>
+            <Link to="/recs" style={btnSecondary}>
+              View recommendations
+            </Link>
+          </div>
+        </section>
       </div>
     </div>
   );

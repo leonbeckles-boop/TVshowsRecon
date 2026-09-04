@@ -1265,6 +1265,10 @@ CONCEPT_RULES: dict[str, dict[str, object]] = {
             "imperial",
             "new republic",
             "clone",
+            "fleet",
+            "colony",
+            "colonies",
+            "cylon",
             "space western",
         ],
         "boost_any": [
@@ -1284,6 +1288,11 @@ CONCEPT_RULES: dict[str, dict[str, object]] = {
             "adventure",
             "planet",
             "ship",
+            "fleet",
+            "colony",
+            "colonies",
+            "cylon",
+            "space western",
         ],
         "reject_any": [
             "superhero",
@@ -3024,7 +3033,13 @@ async def shows_like(
         reverse=True,
     )
 
-    if len(results) < MIN_RESULTS:
+    fill_target = (
+        MAX_RESULTS
+        if anchor_concept == "space_franchise_adventure"
+        else MIN_RESULTS
+    )
+
+    if len(results) < fill_target:
         fill_candidates: list[dict] = []
         for details in details_list:
             ok, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date = _passes_basic_candidate_checks(details)
@@ -3112,7 +3127,7 @@ async def shows_like(
         )
 
         for item in fill_candidates:
-            if len(results) >= MIN_RESULTS:
+            if len(results) >= fill_target:
                 break
             if item["tmdb_id"] in seen_ids:
                 continue
@@ -3129,10 +3144,16 @@ async def shows_like(
         reverse=True,
     )
 
+    final_limit = (
+        MIN_RESULTS
+        if anchor_concept == "space_franchise_adventure"
+        else MAX_RESULTS
+    )
+
     results = _seo_ranking_layer(
         results,
         anchor_concept=anchor_concept,
-        limit=MAX_RESULTS,
+        limit=final_limit,
         anchor_tmdb_id=tmdb_id,
     )
 

@@ -794,15 +794,33 @@ def _pick_faq_variant(anchor_title: str, anchor_details: dict, top_titles_text: 
 def _score_to_match_percent(score: float | int | None) -> int:
     """Convert the internal recommendation score into a user-facing match %.
 
-    The SEO algorithm uses relative scores rather than a true probability. This
-    keeps the display honest by mapping strong results into an easy-to-read range
-    without claiming mathematical certainty.
+    Internal recommendation scores are not probabilities. This mapping keeps
+    the displayed percentage meaningful while preserving visible differences
+    between exceptional, strong and secondary recommendations.
     """
     try:
         val = float(score or 0.0)
     except Exception:
         val = 0.0
-    return int(max(62, min(98, round(62 + (val * 18)))))
+
+    if val >= 2.70:
+        return 96
+    if val >= 2.40:
+        return 93
+    if val >= 2.10:
+        return 90
+    if val >= 1.80:
+        return 86
+    if val >= 1.55:
+        return 82
+    if val >= 1.30:
+        return 78
+    if val >= 1.05:
+        return 74
+    if val >= 0.80:
+        return 70
+
+    return 66
 
 
 def _short_overview(text_val: str | None, max_chars: int = 210) -> str:
@@ -2625,8 +2643,16 @@ def _seo_ranking_layer(
     # Diversity cap: avoid one page becoming all procedurals / all legal / all sci-fi.
     bucket_counts: dict[str, int] = {}
     final: list[dict] = []
+    seen_final_titles: set[str] = set()
 
     for item in polished:
+        title = title_of(item)
+
+        # Do not allow multiple TMDb records for the same TV series
+        # to occupy separate recommendation slots.
+        if title in seen_final_titles:
+            continue
+
         bucket = bucket_for(item)
         max_per_bucket = 4
 
@@ -2646,6 +2672,7 @@ def _seo_ranking_layer(
             continue
 
         final.append(item)
+        seen_final_titles.add(title)
         bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
 
         if len(final) >= limit:

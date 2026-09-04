@@ -3009,8 +3009,14 @@ async def shows_like(
 
         candidate_blob = _blob_for(details)
 
-        if anchor_concept:
-            if not passes_concept_guardrail(anchor_concept, candidate_blob, list(details.get("genres") or [])):
+        # Legacy concept guardrail is only needed for the older concept profiles.
+        # finance_power now uses CONCEPT_RULES + grounded sanity checks below.
+        if anchor_concept and anchor_concept != "finance_power":
+            if not passes_concept_guardrail(
+                anchor_concept,
+                candidate_blob,
+                list(details.get("genres") or [])
+            ):
                 continue
 
         if anchor_is_scifi and _is_weak_scifi(details) and semantic_score < 0.22 and concept_bonus < 0.16:
@@ -3129,8 +3135,14 @@ async def shows_like(
 
             candidate_blob = _blob_for(details)
 
-            if anchor_concept:
-                if not passes_concept_guardrail(anchor_concept, candidate_blob, list(details.get("genres") or [])):
+            # Legacy concept guardrail is only needed for the older concept profiles.
+            # finance_power now uses CONCEPT_RULES + grounded sanity checks below.
+            if anchor_concept and anchor_concept != "finance_power":
+                if not passes_concept_guardrail(
+                    anchor_concept,
+                    candidate_blob,
+                    list(details.get("genres") or [])
+                ):
                     continue
 
             if _weak_future_for_seo(details):

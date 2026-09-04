@@ -92,6 +92,9 @@ ANCHOR_TO_CONCEPT = {
     "succession": "finance_power",
     "mare of easttown": "small_town_mystery",
     "call the midwife": "medical_family",
+
+     # Mystery-box / supernatural ensemble
+    "stranger things": "mystery_box_survival",
 }
 
 
@@ -2939,11 +2942,15 @@ async def shows_like(
 
     # SEO safety net: never leave a valid sci-fi / mystery-box anchor with an empty page
     # just because the live TMDB/Reddit signals were sparse or a strict filter removed too much.
-    if anchor_concept == "mystery_box_survival" and len(results) < 6:
+    if anchor_concept in {
+        "mystery_box_survival",
+        "prestige_existential_mystery",
+    } and len(results) < 6:
         existing_ids = {int(x.get("tmdb_id") or 0) for x in results}
+        
         rescue_ids = [
             rid
-            for rid in SEO_CONCEPT_FALLBACK_IDS.get("mystery_box_survival", [])
+            for rid in SEO_CONCEPT_FALLBACK_IDS.get(anchor_concept, [])
             if rid != tmdb_id and rid not in existing_ids
         ]
         rescue_details = await asyncio.gather(*[_tmdb_details(rid) for rid in rescue_ids[:18]]) if rescue_ids else []

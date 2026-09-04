@@ -2857,12 +2857,28 @@ async def shows_like(
             return False, rid, title_val, set(), 0.0, 0, 0.0, ""
 
         genre_ids = set(details.get("genre_ids") or [])
-        if genre_ids & BAD_GENRES:
-            return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
+
+        bad_genres_found = genre_ids & BAD_GENRES
+
+        if bad_genres_found:
+            # Family is acceptable for franchise-led space adventure pages
+            # when the candidate is also genuinely sci-fi/action.
+            allow_family_scifi = (
+                anchor_concept == "space_franchise_adventure"
+                and 10751 in bad_genres_found
+                and bool({10765, 10759} & genre_ids)
+                and not ({10762, 10764} & genre_ids)
+            )
+
+            if not allow_family_scifi:
+                return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
+
         if 10767 in genre_ids or 10766 in genre_ids:
             return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
+
         if 99 in genre_ids and len(genre_ids) == 1:
             return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
+
         if anchor_concept == "finance_power" and 35 in genre_ids and 18 not in genre_ids:
             return False, rid, title_val, genre_ids, 0.0, 0, 0.0, ""
 
@@ -2877,8 +2893,13 @@ async def shows_like(
             return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
         if anchor_is_scifi and 10765 not in genre_ids:
             return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
-        if anchor_is_scifi and not anchor_profile.get("is_animation") and 16 in genre_ids:
-            return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
+        if (
+        anchor_is_scifi
+        and not anchor_profile.get("is_animation")
+        and 16 in genre_ids
+        and anchor_concept != "space_franchise_adventure"
+        ):            
+         return False, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
 
         return True, rid, title_val, genre_ids, vote_average, vote_count, popularity, first_air_date
 

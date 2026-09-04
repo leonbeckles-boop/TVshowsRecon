@@ -2330,6 +2330,21 @@ def _seo_ranking_layer(
             "the night of": 0.22,
             "true detective": 0.22,
         },
+        "space_franchise_adventure": {
+        "the book of boba fett": 0.60,
+        "ahsoka": 0.56,
+        "andor": 0.52,
+        "star wars rebels": 0.50,
+        "obi-wan kenobi": 0.48,
+        "star wars: skeleton crew": 0.46,
+        "star wars: the clone wars": 0.42,
+        "star wars: the bad batch": 0.40,
+        "firefly": 0.30,
+        "battlestar galactica": 0.18,
+        "the expanse": 0.18,
+        "stargate atlantis": 0.14,
+        "stargate sg-1": 0.14,
+        },
     }
 
     def title_of(item: dict) -> str:
@@ -2537,7 +2552,7 @@ def _seo_ranking_layer(
             score += 0.06
 
         # Avoid anime/animation drift unless the concept supports it.
-        if 16 in genres and anchor_concept not in {"general_scifi", "space_epic"}:
+        if 16 in genres and anchor_concept not in {"general_scifi", "space_epic", "space_franchise_adventure",}:
             continue
 
         # Generic sci-fi/fantasy should not leak into grounded crime.
@@ -2614,6 +2629,9 @@ def _seo_ranking_layer(
 
         if anchor_concept in {"mystery_box_survival", "prestige_existential_mystery"}:
             max_per_bucket = 5
+
+        if anchor_concept == "space_franchise_adventure" and bucket == "scifi":
+            max_per_bucket = 12
 
         if bucket_counts.get(bucket, 0) >= max_per_bucket:
             continue

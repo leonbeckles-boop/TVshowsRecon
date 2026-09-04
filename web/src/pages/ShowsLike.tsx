@@ -261,8 +261,8 @@ export default function ShowsLike() {
 
   const anchorTitle = anchor?.title || "this show";
   const anchorPoster = useMemo(() => getPosterUrl(anchor), [anchor]);
-  const featuredRecs = useMemo(() => recs.slice(0, 6), [recs]);
-  const moreRecs = useMemo(() => recs.slice(6), [recs]);
+  const featuredRecs = useMemo(() => recs.slice(0, 8), [recs]);
+  const moreRecs = useMemo(() => recs.slice(8, 12), [recs]);
   const topThreeText = useMemo(() => pageCopy?.top_titles_text || joinNatural(topTitles(recs, 3)), [pageCopy, recs]);
   const topGenres = useMemo(() => pageCopy?.top_genres?.length ? pageCopy.top_genres : genreSummary(recs), [pageCopy, recs]);
   const faqItems = useMemo(() => {

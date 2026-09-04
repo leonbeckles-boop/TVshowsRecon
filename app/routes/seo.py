@@ -3026,8 +3026,35 @@ async def shows_like(
             if not is_reddit and not is_tmdb and semantic_score < 0.08 and genre_score < 0.05 and concept_bonus < 0.08:
                 continue
         else:
-            if not is_reddit and not is_tmdb and semantic_score < 0.10 and genre_score < 0.08 and concept_bonus < 0.12:
-                continue
+            if anchor_concept in {"medical_family", "period_community"}:
+                if (
+                    not is_reddit
+                    and not is_tmdb
+                    and semantic_score < 0.08
+                    and genre_score < 0.05
+                    and concept_bonus < 0.08
+                ):
+                    continue
+
+            elif anchor_concept == "finance_power":
+                if (
+                    not is_reddit
+                    and not is_tmdb
+                    and semantic_score < 0.06
+                    and genre_score < 0.05
+                    and concept_bonus < 0.07
+                ):
+                    continue
+
+            else:
+                if (
+                    not is_reddit
+                    and not is_tmdb
+                    and semantic_score < 0.10
+                    and genre_score < 0.08
+                    and concept_bonus < 0.12
+                ):
+                    continue
 
         if not _passes_seo_quality_floor(
             vote_average=vote_average,
@@ -3054,7 +3081,11 @@ async def shows_like(
         total_score += concept_bonus
 
         # Penalise crime-heavy shows for non-crime anchors
-        if anchor_concept not in {"crime_pressure", "detective_mystery"}:
+        if anchor_concept not in {
+            "crime_pressure",
+            "detective_mystery",
+            "finance_power",
+        }:
             if 80 in genre_ids:
                 total_score *= 0.75
 

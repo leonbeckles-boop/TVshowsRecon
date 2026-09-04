@@ -2267,7 +2267,7 @@ def _passes_grounded_concept_sanity(anchor_concept: str, details: dict, *, sourc
         "house of cards",
         "the newsroom",
         "the morning show",}
-        
+
         if title in allow_titles:
             return True
         if hits == 0:
@@ -2895,18 +2895,20 @@ async def shows_like(
     fetch_ids = sorted_ids[: MAX_RESULTS * 5]
     details_list = await asyncio.gather(*[_tmdb_details(rid) for rid in fetch_ids]) if fetch_ids else []
 
-    # Some SEO anchors, especially sci-fi, do not always have enough local
-    # Reddit/TMDB candidates. Add a small archetype fallback pool, then let the
-    # existing filters and scores below decide what survives.
-    if anchor_is_scifi:
-        extra_ids = [
-            rid
-            for rid in _fallback_ids_for_concept(anchor_concept)
-            if rid != tmdb_id and rid not in fetch_ids
-        ]
-        if extra_ids:
-            extra_details = await asyncio.gather(*[_tmdb_details(rid) for rid in extra_ids[:24]])
-            details_list.extend([d for d in extra_details if d])
+    # Add concept-level fallback candidates when available.
+    # These candidates still pass through the normal relevance, quality,
+    # concept and ranking filters below.
+    extra_ids = [
+        rid
+        for rid in _fallback_ids_for_concept(anchor_concept)
+        if rid != tmdb_id and rid not in fetch_ids
+    ]
+
+    if extra_ids:
+        extra_details = await asyncio.gather(
+            *[_tmdb_details(rid) for rid in extra_ids[:24]]
+        )
+        details_list.extend([d for d in extra_details if d])
 
     
 

@@ -183,7 +183,19 @@ def passes_concept_guardrail(concept: str, blob: str, genres: list[str]) -> bool
 
 def _fallback_ids_for_concept(anchor_concept: str) -> list[int]:
     extra_pools = {
-        "finance_power": [90282, 62822, 1425, 1435, 4053, 114869, 76331],
+        "finance_power": [
+            62852,   # Billions
+            90814,   # Industry
+            1104,    # Mad Men
+            1435,    # The Good Wife
+            69158,   # The Good Fight
+            111803,  # The White Lotus
+            1425,    # House of Cards
+            1398,    # The Sopranos
+            15621,   # The Newsroom
+            90282,   # The Morning Show 
+            ],
+
         "medical_family": [39793, 18856, 95386, 61241, 62084, 5021, 1457],
         "small_town_mystery": [1427, 70453, 61244, 34415, 45016, 46648, 115004],
     }
@@ -2245,7 +2257,17 @@ def _passes_grounded_concept_sanity(anchor_concept: str, details: dict, *, sourc
 
     if anchor_concept == "finance_power":
         # Allow a few prestige power/crime dramas even if the overview wording is sparse.
-        allow_titles = {"the good wife", "the good fight", "billions", "industry", "mad men", "the sopranos"}
+        allow_titles = {"the good wife",
+        "the good fight",
+        "billions",
+        "industry",
+        "mad men",
+        "the sopranos",
+        "the white lotus",
+        "house of cards",
+        "the newsroom",
+        "the morning show",}
+        
         if title in allow_titles:
             return True
         if hits == 0:
@@ -2357,6 +2379,20 @@ def _seo_ranking_layer(
             "the night of": 0.22,
             "true detective": 0.22,
         },
+
+        "finance_power": {
+        "industry": 0.50,
+        "billions": 0.46,
+        "mad men": 0.36,
+        "the good wife": 0.30,
+        "the good fight": 0.30,
+        "the white lotus": 0.28,
+        "house of cards": 0.28,
+        "the sopranos": 0.24,
+        "the newsroom": 0.22,
+        "the morning show": 0.20,
+        },
+
         "space_franchise_adventure": {
         "the book of boba fett": 0.60,
         "ahsoka": 0.56,

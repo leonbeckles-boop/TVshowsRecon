@@ -95,12 +95,27 @@ ANCHOR_TO_CONCEPT = {
 
      # Mystery-box / supernatural ensemble
     "stranger things": "mystery_box_survival",
+    "the mandalorian": "space_franchise_adventure",
 }
 
 
 # Broad fallback pools for SEO pages when live signals are sparse.
 # These are concept-level guardrails, not single-title overrides.
 SEO_CONCEPT_FALLBACK_IDS: dict[str, list[int]] = {
+    "space_franchise_adventure": [
+        115036,  # The Book of Boba Fett
+        114461,  # Ahsoka
+        83867,   # Andor
+        60554,   # Star Wars Rebels
+        202879,  # Star Wars: Skeleton Crew
+        4194,    # Star Wars: The Clone Wars
+        105971,  # Star Wars: The Bad Batch
+        1437,    # Firefly
+        1972,    # Battlestar Galactica
+        63639,   # The Expanse
+        2290,    # Stargate Atlantis
+    ],
+
     "space_epic": [83867, 63639, 71365, 1437, 87917, 5148, 580, 4271, 48866, 9156, 82856],
     "contained_dystopia": [
     106379,  # Fallout
@@ -142,6 +157,7 @@ SEO_CONCEPT_FALLBACK_IDS: dict[str, list[int]] = {
         42009,   # Black Mirror
         53425,   # Wayward Pines
     ],
+    
     "time_mystery": [70523, 60948, 42009, 95396, 66732, 14956],
     "corporate_mystery": [95396, 62560, 42009, 14956, 70523],
     "general_scifi": [42009, 70523, 66732, 60948, 83867, 87917, 63639, 125988],
@@ -1232,6 +1248,57 @@ def _fill_score_boost(show: dict, anchor_type: str) -> float:
 # the same, but moves concept fit into one reusable scoring path.
 
 CONCEPT_RULES: dict[str, dict[str, object]] = {
+    "space_franchise_adventure": {
+        "required_any": [
+            "star wars",
+            "space",
+            "galaxy",
+            "planet",
+            "ship",
+            "starship",
+            "jedi",
+            "mandalorian",
+            "bounty hunter",
+            "rebel",
+            "rebellion",
+            "empire",
+            "imperial",
+            "new republic",
+            "clone",
+            "space western",
+        ],
+        "boost_any": [
+            "star wars",
+            "jedi",
+            "mandalorian",
+            "bounty hunter",
+            "rebel",
+            "rebellion",
+            "empire",
+            "imperial",
+            "new republic",
+            "galaxy",
+            "space western",
+            "outlaw",
+            "mercenary",
+            "adventure",
+            "planet",
+            "ship",
+        ],
+        "reject_any": [
+            "superhero",
+            "marvel",
+            "dc comics",
+            "vampire",
+            "witch",
+            "high school",
+            "sitcom",
+            "reality",
+            "talk show",
+        ],
+        "preferred_genres": {10765, 10759, 16, 18},
+        "strict": True,
+    },
     "space_epic": {
         "required_any": [
             "space", "planet", "galaxy", "ship", "starship", "fleet", "station",
@@ -1571,7 +1638,11 @@ def _concept_fit_score(anchor_concept: str, details: dict, *, semantic_score: fl
         year = 0
 
     # Avoid anime/animation drift on non-animation SEO pages.
-    if 16 in genres and anchor_concept not in {"general_scifi", "space_epic"}:
+    if 16 in genres and anchor_concept not in {
+    "general_scifi",
+    "space_epic",
+    "space_franchise_adventure",
+    }:        
         return False, 0.0, 1.0
 
     required_any = list(rule.get("required_any") or [])
@@ -1612,18 +1683,104 @@ def _concept_fit_score(anchor_concept: str, details: dict, *, semantic_score: fl
             return False, 0.0, 1.0
 
     
-    if title in SCI_FI_CLASSICS and anchor_concept in {"space_epic", "general_scifi"}:
+    if title in SCI_FI_CLASSICS and anchor_concept in {
+        "space_epic",
+        "general_scifi",
+        "space_franchise_adventure",
+    }:
         bonus += 0.16
 
-    
-    if anchor_concept == "space_epic":
+
+    if anchor_concept == "space_franchise_adventure":
+        # Must fundamentally belong in sci-fi/fantasy or action/adventure.
+        if not ({10765, 10759, 16} & genres):
+            return False, 0.0, 1.0
+
+        # Closest Star Wars / Mandalorian viewing companions.
+        if title == "the book of boba fett":
+            bonus += 0.60
+
+        elif title == "ahsoka":
+            bonus += 0.56
+
+        elif title == "andor":
+            bonus += 0.52
+
+        elif title == "star wars rebels":
+            bonus += 0.50
+
+        elif title == "obi-wan kenobi":
+            bonus += 0.48
+
+        elif title == "star wars: skeleton crew":
+            bonus += 0.46
+
+        elif title == "star wars: the clone wars":
+            bonus += 0.42
+
+        elif title == "star wars: the bad batch":
+            bonus += 0.40
+
+        # Strong non-Star-Wars tonal matches.
+        elif title == "firefly":
+            bonus += 0.30
+
+        elif title in {
+            "battlestar galactica",
+            "the expanse",
+        }:
+            bonus += 0.18
+
+        elif title in {
+            "stargate sg-1",
+            "stargate atlantis",
+        }:
+            bonus += 0.14
+
+        # General franchise/space-western signals.
+        if _contains_any(blob, [
+            "star wars",
+            "jedi",
+            "mandalorian",
+            "bounty hunter",
+            "new republic",
+            "galactic empire",
+            "space western",
+        ]):
+            bonus += 0.16
+
+        elif _contains_any(blob, [
+            "rebellion",
+            "rebel",
+            "empire",
+            "galaxy",
+            "outlaw",
+            "mercenary",
+            "space adventure",
+        ]):
+            bonus += 0.08
+
+
+    elif anchor_concept == "space_epic":
         if 10765 not in genres:
             return False, 0.0, 1.0
-        if _contains_any(blob, ["star trek", "stargate", "battlestar", "farscape", "firefly", "andor"]):
-            bonus += 0.12
-        if _contains_any(blob, ["jedi", "mandalorian", "ahsoka"]):
-            multiplier *= 0.88
 
+        if _contains_any(blob, [
+            "star trek",
+            "stargate",
+            "battlestar",
+            "farscape",
+            "firefly",
+            "andor",
+        ]):
+            bonus += 0.12
+
+        if _contains_any(blob, [
+            "jedi",
+            "mandalorian",
+            "ahsoka",
+        ]):
+            multiplier *= 0.88
     elif anchor_concept == "contained_dystopia":
         if 10765 not in genres and semantic_score < 0.24:
             return False, 0.0, 1.0
@@ -2947,7 +3104,7 @@ async def shows_like(
         "prestige_existential_mystery",
     } and len(results) < 6:
         existing_ids = {int(x.get("tmdb_id") or 0) for x in results}
-        
+
         rescue_ids = [
             rid
             for rid in SEO_CONCEPT_FALLBACK_IDS.get(anchor_concept, [])

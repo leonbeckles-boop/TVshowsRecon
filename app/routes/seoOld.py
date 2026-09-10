@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from .seo_taxonomy import compare_old_new
 
 from app.db.session import get_async_session
 from app.routes.recs_v3 import (
@@ -16,14 +17,6 @@ import re
 from collections import Counter
 from datetime import datetime
 from app.services.seo_profiles import get_or_create_profile, apply_profile_scoring
-from app.services.seo_taxonomy import (
-    classify_anchor,
-    candidate_fit as taxonomy_candidate_fit,
-    concept_affinity as taxonomy_concept_affinity,
-    discovery_terms_for as taxonomy_discovery_terms_for,
-    discovery_genres_for as taxonomy_discovery_genres_for,
-    fingerprint_term_role_weight as taxonomy_fingerprint_term_role_weight,
-)
 import httpx
 SEO_DEBUG = True
 
@@ -4410,7 +4403,6 @@ def _seo_ranking_layer(
     anchor_concept: str,
     limit: int,
     anchor_tmdb_id: int | None = None,
-    taxonomy_mode: bool = False,
 ) -> list[dict]:
     """
     Final SEO polish layer:
@@ -4582,35 +4574,10 @@ def _seo_ranking_layer(
         if source == "fill" and _weak_future_for_seo(item):
             continue
 
-        taxonomy_exact_specialist = bool(
-            taxonomy_mode
-            and str(item.get("_seo_taxonomy_relationship_concept") or "") == anchor_concept
-            and str(item.get("_seo_taxonomy_fit_tier") or "") in {"strong", "good"}
-            and float(item.get("_seo_taxonomy_fit_score") or 0.0) >= 0.24
-        )
-
-        # V2.7.1: exact taxonomy specialist matches have already passed the
-        # structural classifier + candidate-fit checks. Do not make them pass
-        # the old concept-specific keyword sanity layer a second time.
-        #
-        # Non-exact and broad candidates still use the legacy safety check.
-        if (
-            not taxonomy_exact_specialist
-            and not _passes_grounded_concept_sanity(
-                anchor_concept,
-                item,
-                source=source,
-                score=score,
-            )
-        ):
+        if not _passes_grounded_concept_sanity(anchor_concept, item, source=source, score=score):
             continue
 
-        if taxonomy_exact_specialist:
-            # V2.7.1: niche exact-specialist matches may have lower popularity
-            # after the generic fill/quality penalties. Keep a conservative
-            # floor rather than discarding them purely for being less popular.
-            min_polished_score = 0.42
-        elif anchor_concept in {
+        if anchor_concept in {
             "period_community",
             "medical_family",
             "political_diplomatic_drama",
@@ -4806,12 +4773,7 @@ def _seo_ranking_layer(
                 score += 0.45
 
 
-        if taxonomy_exact_specialist:
-            # V2.7.1: niche exact-specialist matches may have lower popularity
-            # after the generic fill/quality penalties. Keep a conservative
-            # floor rather than discarding them purely for being less popular.
-            min_polished_score = 0.42
-        elif anchor_concept in {
+        if anchor_concept in {
             "period_community",
             "medical_family",
             "political_diplomatic_drama",
@@ -4874,16 +4836,6 @@ def _seo_ranking_layer(
         if anchor_concept == "space_franchise_adventure" and bucket == "scifi":
             max_per_bucket = 12
 
-        # V2.3 taxonomy shadow mode already performs concept/family relevance
-        # filtering upstream. Do not let the legacy diversity buckets truncate
-        # a valid specialist list (for example, fantasy being grouped into the
-        # old "scifi" bucket and capped at four).
-        #
-        # We still keep title de-duplication and the overall `limit`; only the
-        # legacy per-bucket cap is bypassed.
-        if taxonomy_mode:
-            max_per_bucket = limit
-
         if bucket_counts.get(bucket, 0) >= max_per_bucket:
             if SEO_DEBUG:
                 print(
@@ -4918,11 +4870,6 @@ def _seo_ranking_layer(
 
         if len(final) >= limit:
             break
-
-    for item in final:
-        item.pop("_seo_taxonomy_relationship_concept", None)
-        item.pop("_seo_taxonomy_fit_tier", None)
-        item.pop("_seo_taxonomy_fit_score", None)
 
     return final
 
@@ -5024,121 +4971,10 @@ async def _enrich_seo_details(details: dict) -> dict:
 
     return enriched
 
-def _active_concept_fit_score(
-    anchor_concept: str,
-    details: dict,
-    *,
-    semantic_score: float,
-    genre_score: float,
-    taxonomy_mode: bool = False,
-) -> tuple[bool, float, float]:
-    """Use taxonomy candidate-fit only for explicit taxonomy shadow requests."""
-    if not taxonomy_mode:
-        return _concept_fit_score(
-            anchor_concept,
-            details,
-            semantic_score=semantic_score,
-            genre_score=genre_score,
-        )
-
-    fit = taxonomy_candidate_fit(
-        details,
-        anchor_concept,
-        strict=False,
-        semantic_score=semantic_score,
-        genre_score=genre_score,
-    )
-
-    # V2.5.1 relationship-gated fingerprint ------------------------------
-    # Independently classify the candidate even when candidate_fit() took
-    # the direct "strong" path. This gives us a real structural relationship
-    # between the anchor concept and what the candidate itself appears to be.
-    relationship_concept = None
-    relationship_family = None
-    relationship_state = None
-    relationship_compatibility = 0.0
-
-    if fit.passed:
-        candidate_class = classify_anchor(details)
-        relationship_concept = candidate_class.concept
-        relationship_family = candidate_class.family
-        relationship_state = candidate_class.state
-
-        if relationship_concept == anchor_concept:
-            relationship_compatibility = 1.0
-        elif candidate_class.state == "general_fallback":
-            # Sparse candidate metadata is uncertain rather than definitively
-            # unrelated, so retain a neutral-low floor instead of zeroing it.
-            relationship_compatibility = 0.42
-        else:
-            relationship_compatibility = taxonomy_concept_affinity(
-                anchor_concept,
-                relationship_concept,
-            )
-
-            # A different-family specialist should not receive a useful
-            # fingerprint boost merely because of one literal shared keyword.
-            if relationship_family != fit.candidate_family and relationship_compatibility <= 0:
-                relationship_compatibility = 0.05
-
-        relationship_compatibility = max(
-            0.05,
-            min(1.0, float(relationship_compatibility)),
-        )
-
-        details["_seo_taxonomy_relationship_concept"] = relationship_concept
-        details["_seo_taxonomy_relationship_family"] = relationship_family
-        details["_seo_taxonomy_relationship_state"] = relationship_state
-        details["_seo_taxonomy_relationship_compatibility"] = (
-            relationship_compatibility
-        )
-
-    if SEO_DEBUG and fit.passed and fit.tier in {"strong", "good", "broad"}:
-        print(
-            "SEO TAXONOMY GRADED FIT DEBUG:",
-            {
-                "title": details.get("title") or details.get("name"),
-                "anchor_concept": anchor_concept,
-                "tier": fit.tier,
-                "candidate_concept": fit.candidate_concept,
-                "candidate_family": fit.candidate_family,
-                "semantic": round(float(semantic_score), 4),
-                "genre": round(float(genre_score), 4),
-                "fit_score": round(float(fit.score), 4),
-                "affinity": round(float(fit.affinity), 4),
-                "relationship_concept": relationship_concept,
-                "relationship_family": relationship_family,
-                "relationship_state": relationship_state,
-                "relationship_compatibility": round(
-                    float(relationship_compatibility), 4
-                ),
-                "admission_softened": bool(
-                    fit.tier == "broad"
-                    and fit.gate_reason not in {None, "", "ok"}
-                ),
-                "gate_reason": fit.gate_reason,
-                "candidate_eligible_families": (
-                    classify_anchor(details).eligible_families
-                    if fit.passed and fit.tier == "broad"
-                    else None
-                ),
-            },
-        )
-
-    if fit.passed:
-        details["_seo_taxonomy_fit_tier"] = fit.tier
-        details["_seo_taxonomy_fit_score"] = float(fit.score)
-        details["_seo_taxonomy_fit_candidate_concept"] = fit.candidate_concept
-        details["_seo_taxonomy_fit_candidate_family"] = fit.candidate_family
-
-    return (bool(fit.passed), float(fit.score), float(fit.multiplier))
-
-
 def _select_semantic_keyword_items(
     anchor_details: dict,
     anchor_concept: str,
     max_n: int = 8,
-    taxonomy_mode: bool = False,
 ) -> list[dict]:
     """
     Rank the anchor's own TMDb keywords by relevance to its automatically
@@ -5154,34 +4990,28 @@ def _select_semantic_keyword_items(
     if not keyword_items:
         return []
 
+    concept_profile = ANCHOR_CONCEPTS.get(
+            anchor_concept,
+            {},
+        )
+
+    concept_rule = CONCEPT_RULES.get(
+            anchor_concept,
+            {},
+        )
+
     concept_terms: list[str] = []
 
-    if taxonomy_mode:
-        for term in taxonomy_discovery_terms_for(anchor_concept, max_n=18):
-            value = str(term or "").strip().lower()
-            if value and value not in concept_terms:
-                concept_terms.append(value)
-    else:
-        concept_profile = ANCHOR_CONCEPTS.get(
-            anchor_concept,
-            {},
-        )
+    for term in (
+        list(concept_profile.get("must_have") or [])
+        + list(concept_profile.get("prefer") or [])
+        + list(concept_rule.get("required_any") or [])
+        + list(concept_rule.get("boost_any") or [])
+    ):
+        value = str(term or "").strip().lower()
 
-        concept_rule = CONCEPT_RULES.get(
-            anchor_concept,
-            {},
-        )
-
-        for term in (
-            list(concept_profile.get("must_have") or [])
-            + list(concept_profile.get("prefer") or [])
-            + list(concept_rule.get("required_any") or [])
-            + list(concept_rule.get("boost_any") or [])
-        ):
-            value = str(term or "").strip().lower()
-
-            if value and value not in concept_terms:
-                concept_terms.append(value)
+        if value and value not in concept_terms:
+            concept_terms.append(value)
 
     generic_terms = {
         "new york city",
@@ -5267,7 +5097,6 @@ def _semantic_concept_terms(
     anchor_concept: str,
     *,
     max_n: int = 8,
-    taxonomy_mode: bool = False,
 ) -> list[str]:
     """
     Return reusable semantic discovery vocabulary for an automatically
@@ -5275,13 +5104,6 @@ def _semantic_concept_terms(
 
     Prefer ANCHOR_CONCEPTS when available, otherwise reuse CONCEPT_RULES.
     """
-    if taxonomy_mode:
-        return [
-            str(term).strip().lower()
-            for term in taxonomy_discovery_terms_for(anchor_concept, max_n=max_n)
-            if str(term or "").strip()
-        ][:max_n]
-
     terms: list[str] = []
 
     profile = ANCHOR_CONCEPTS.get(anchor_concept) or {}
@@ -5443,7 +5265,6 @@ async def _fetch_tmdb_semantic_candidates(
     anchor_details: dict,
     anchor_concept: str,
     limit: int = 60,
-    taxonomy_mode: bool = False,
 ) -> list[dict]:
     """
     Discover additional TV candidates by querying TMDb separately for the
@@ -5489,10 +5310,7 @@ async def _fetch_tmdb_semantic_candidates(
         "comedy_mystery": [35, 9648],
     }
 
-    if taxonomy_mode:
-        concept_genres = taxonomy_discovery_genres_for(anchor_concept, max_n=3)
-    else:
-        concept_genres = CONCEPT_DISCOVERY_GENRES.get(anchor_concept)
+    concept_genres = CONCEPT_DISCOVERY_GENRES.get(anchor_concept)
 
     if concept_genres:
         genre_ids = concept_genres
@@ -5506,14 +5324,12 @@ async def _fetch_tmdb_semantic_candidates(
         anchor_details,
         anchor_concept,
         max_n=6,
-        taxonomy_mode=taxonomy_mode,
     )
 
     # Expand discovery using vocabulary from the automatically detected concept.
     concept_terms = _semantic_concept_terms(
         anchor_concept,
         max_n=14,
-        taxonomy_mode=taxonomy_mode,
     )
 
     concept_keyword_items = await _tmdb_keyword_ids_for_terms(
@@ -5604,12 +5420,6 @@ async def _fetch_tmdb_semantic_candidates(
 
             data = response.json()
             results = list(data.get("results") or [])
-            total_results = int(data.get("total_results") or len(results))
-
-            # V2.5 fingerprint: preserve how common this keyword is across the
-            # TMDb discover result set. This is a generic rarity signal.
-            enriched_keyword_item = dict(keyword_item)
-            enriched_keyword_item["result_count"] = max(1, total_results)
 
             if SEO_DEBUG:
                 print(
@@ -5622,7 +5432,6 @@ async def _fetch_tmdb_semantic_candidates(
                             keyword_item.get("source") or "anchor"
                         ),
                         "count": len(results),
-                        "total_results": total_results,
                         "titles": [
                             str(item.get("name") or "")
                             for item in results[:20]
@@ -5631,7 +5440,7 @@ async def _fetch_tmdb_semantic_candidates(
                 )
 
             return (
-                enriched_keyword_item,
+                keyword_item,
                 results,
             )
 
@@ -5649,67 +5458,6 @@ async def _fetch_tmdb_semantic_candidates(
                 selected_keyword_items
             )
         ]
-    )
-
-    # V2.5 anchor fingerprint -------------------------------------------------
-    # Fingerprint terms are the *actual TMDb keywords selected from this anchor*.
-    # Importance is automatic:
-    #   1) rarer TMDb keywords are more discriminating,
-    #   2) multi-word phrases are more specific,
-    #   3) taxonomy role says whether the term is defining or merely contextual.
-    #
-    # No title mappings or per-show rules.
-    anchor_fingerprint_weights: dict[str, float] = {}
-
-    if taxonomy_mode:
-        import math
-
-        for keyword_item, _items in keyword_results:
-            if str(keyword_item.get("source") or "") != "anchor":
-                continue
-
-            name = str(keyword_item.get("name") or "").strip().lower()
-            if not name:
-                continue
-
-            result_count = max(
-                1,
-                int(keyword_item.get("result_count") or 1),
-            )
-
-            # Smooth IDF-like rarity. Very rare terms approach 1.0; very common
-            # terms retain a small floor rather than disappearing entirely.
-            rarity = max(
-                0.16,
-                min(
-                    1.0,
-                    1.10 - (0.12 * math.log2(1.0 + result_count)),
-                ),
-            )
-
-            word_count = len([part for part in name.split() if part])
-            if word_count >= 3:
-                specificity = 1.22
-            elif word_count == 2:
-                specificity = 1.10
-            else:
-                specificity = 1.0
-
-            role_weight = taxonomy_fingerprint_term_role_weight(
-                anchor_concept,
-                name,
-            )
-
-            weight = rarity * specificity * role_weight
-            anchor_fingerprint_weights[name] = round(
-                max(anchor_fingerprint_weights.get(name, 0.0), weight),
-                4,
-            )
-
-    fingerprint_total_weight = sum(anchor_fingerprint_weights.values())
-    fingerprint_max_weight = max(
-        anchor_fingerprint_weights.values(),
-        default=0.0,
     )
 
     for keyword_rank, (keyword_item, items) in enumerate(
@@ -5777,20 +5525,12 @@ async def _fetch_tmdb_semantic_candidates(
                 keyword_name
                 and keyword_name not in evidence["matched_keywords"]
             ):
-                matched_keyword = {
-                    "name": keyword_name,
-                    "source": keyword_source,
-                }
-
-                if taxonomy_mode and keyword_source == "anchor":
-                    matched_keyword["fingerprint_weight"] = float(
-                        anchor_fingerprint_weights.get(keyword_name, 0.0)
-                    )
-                    matched_keyword["result_count"] = int(
-                        keyword_item.get("result_count") or 0
-                    )
-
-                evidence["matched_keywords"].append(matched_keyword)
+                evidence["matched_keywords"].append(
+                    {
+                        "name": keyword_name,
+                        "source": keyword_source,
+                    }
+                )
 
             evidence["vote_average"] = max(
                 float(evidence.get("vote_average") or 0.0),
@@ -5807,113 +5547,69 @@ async def _fetch_tmdb_semantic_candidates(
                 float(item.get("popularity") or 0.0),
             )
 
-    # V2.3 candidate-breadth pass.
-    #
-    # Keyword discovery is intentionally precise, but some concepts can have
-    # only a handful of TMDb titles carrying the exact taxonomy keywords.
-    # In taxonomy shadow mode, always add a bounded genre-driven candidate
-    # pool and let taxonomy candidate_fit() decide relevance downstream.
-    #
-    # This is generic: no title-specific rules and only three extra TMDb calls.
-    # Production retains the old single-page sparse fallback.
-    breadth_pages = 3 if taxonomy_mode else (1 if len(candidate_evidence) < 20 else 0)
-
-    if breadth_pages and genre_ids:
-        async def fetch_breadth_page(page: int) -> list[dict]:
-            try:
-                params = {
-                    "api_key": api_key,
-                    "include_adult": "false",
-                    "sort_by": "popularity.desc",
-                    "vote_count.gte": 40,
-                    "vote_average.gte": 6.3,
-                    "with_genres": "|".join(str(gid) for gid in genre_ids[:3]),
-                    "page": page,
-                }
-
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    response = await client.get(url, params=params)
-
-                if response.status_code != 200:
-                    return []
-
-                return list((response.json() or {}).get("results") or [])
-
-            except Exception:
-                return []
-
-        breadth_results = await asyncio.gather(
-            *[
-                fetch_breadth_page(page)
-                for page in range(1, breadth_pages + 1)
-            ]
-        )
-
-        breadth_added = 0
-
-        for page_items in breadth_results:
-            for item in page_items:
-                try:
-                    rid = int(item.get("id") or 0)
-                except Exception:
-                    continue
-
-                if not rid or rid == anchor_tmdb_id:
-                    continue
-
-                was_new = rid not in candidate_evidence
-
-                evidence = candidate_evidence.setdefault(
-                    rid,
-                    {
-                        "tmdb_id": rid,
-                        "keyword_hits": 0,
-                        "anchor_keyword_hits": 0,
-                        "concept_keyword_hits": 0,
-                        "weighted_hits": 0.0,
-                        "matched_keywords": [],
-                        "vote_average": 0.0,
-                        "vote_count": 0,
-                        "popularity": 0.0,
-                        "breadth_hits": 0,
+    # If semantic keyword discovery is too sparse, widen the candidate pool
+    # using the concept's discovery genres. Downstream concept scoring still
+    # decides which titles are actually relevant.
+    if len(candidate_evidence) < 20 and genre_ids:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(
+                    url,
+                    params={
+                        "api_key": api_key,
+                        "include_adult": "false",
+                        "sort_by": "popularity.desc",
+                        "vote_count.gte": 40,
+                        "vote_average.gte": 6.3,
+                        "with_genres": "|".join(str(gid) for gid in genre_ids),
+                        "page": 1,
                     },
                 )
 
-                # Existing keyword-discovered candidates may not have this
-                # field because they were created earlier.
-                evidence["breadth_hits"] = int(
-                    evidence.get("breadth_hits") or 0
-                ) + 1
+            if response.status_code == 200:
+                data = response.json()
 
-                evidence["vote_average"] = max(
-                    float(evidence.get("vote_average") or 0.0),
-                    float(item.get("vote_average") or 0.0),
-                )
+                for item in data.get("results") or []:
+                    try:
+                        rid = int(item.get("id") or 0)
+                    except Exception:
+                        continue
 
-                evidence["vote_count"] = max(
-                    int(evidence.get("vote_count") or 0),
-                    int(item.get("vote_count") or 0),
-                )
+                    if not rid or rid == anchor_tmdb_id:
+                        continue
 
-                evidence["popularity"] = max(
-                    float(evidence.get("popularity") or 0.0),
-                    float(item.get("popularity") or 0.0),
-                )
+                    evidence = candidate_evidence.setdefault(
+                        rid,
+                        {
+                            "tmdb_id": rid,
+                            "keyword_hits": 0,
+                            "anchor_keyword_hits": 0,
+                            "concept_keyword_hits": 0,
+                            "weighted_hits": 0.0,
+                            "matched_keywords": [],
+                            "vote_average": 0.0,
+                            "vote_count": 0,
+                            "popularity": 0.0,
+                        },
+                    )
 
-                if was_new:
-                    breadth_added += 1
+                    evidence["vote_average"] = max(
+                        float(evidence.get("vote_average") or 0.0),
+                        float(item.get("vote_average") or 0.0),
+                    )
 
-        if SEO_DEBUG:
-            print(
-                "SEO TAXONOMY BREADTH DEBUG:",
-                {
-                    "anchor_concept": anchor_concept,
-                    "genre_ids": genre_ids[:3],
-                    "pages": breadth_pages,
-                    "breadth_added": breadth_added,
-                    "candidate_pool": len(candidate_evidence),
-                },
-            )
+                    evidence["vote_count"] = max(
+                        int(evidence.get("vote_count") or 0),
+                        int(item.get("vote_count") or 0),
+                    )
+
+                    evidence["popularity"] = max(
+                        float(evidence.get("popularity") or 0.0),
+                        float(item.get("popularity") or 0.0),
+                    )
+
+        except Exception:
+            pass
 
     candidates: list[dict] = []
 
@@ -5950,75 +5646,10 @@ async def _fetch_tmdb_semantic_candidates(
             vote_average / 10.0,
         )
 
-        breadth_hits = int(
-            evidence.get("breadth_hits") or 0
-        )
-
-        breadth_component = (
-            0.08
-            if taxonomy_mode and breadth_hits > 0
-            else 0.0
-        )
-
-        # V2.5 actual-anchor fingerprint match.
-        fingerprint_terms: list[str] = []
-        fingerprint_matched_weight = 0.0
-        fingerprint_peak_weight = 0.0
-
-        if taxonomy_mode and anchor_fingerprint_weights:
-            for kw in evidence.get("matched_keywords") or []:
-                if not isinstance(kw, dict):
-                    continue
-                if str(kw.get("source") or "") != "anchor":
-                    continue
-
-                name = str(kw.get("name") or "").strip().lower()
-                weight = float(
-                    kw.get("fingerprint_weight")
-                    or anchor_fingerprint_weights.get(name, 0.0)
-                    or 0.0
-                )
-                if not name or weight <= 0:
-                    continue
-
-                if name not in fingerprint_terms:
-                    fingerprint_terms.append(name)
-                    fingerprint_matched_weight += weight
-                    fingerprint_peak_weight = max(
-                        fingerprint_peak_weight,
-                        weight,
-                    )
-
-        if fingerprint_total_weight > 0 and fingerprint_max_weight > 0:
-            fingerprint_coverage = min(
-                1.0,
-                fingerprint_matched_weight / fingerprint_total_weight,
-            )
-            fingerprint_peak = min(
-                1.0,
-                fingerprint_peak_weight / fingerprint_max_weight,
-            )
-            fingerprint_score = (
-                (0.62 * fingerprint_peak)
-                + (0.38 * fingerprint_coverage)
-            )
-
-            if len(fingerprint_terms) >= 2:
-                fingerprint_score += min(
-                    0.10,
-                    0.035 * (len(fingerprint_terms) - 1),
-                )
-
-            fingerprint_score = min(1.0, fingerprint_score)
-        else:
-            # Neutral for sparse anchors / unavailable keyword evidence.
-            fingerprint_score = 0.50 if taxonomy_mode else 0.0
-
         score_raw = (
             (0.50 * overlap_component)
             + (0.25 * repeat_component)
             + (0.25 * quality_component)
-            + breadth_component
         )
 
         candidates.append(
@@ -6034,16 +5665,9 @@ async def _fetch_tmdb_semantic_candidates(
                     "concept_keyword_hits": int(
                         evidence.get("concept_keyword_hits") or 0
                     ),
-                    "breadth_hits": int(
-                        evidence.get("breadth_hits") or 0
-                    ),
                     "matched_keywords": list(
                         evidence.get("matched_keywords") or []
                     ),
-                    "fingerprint_score": float(
-                        fingerprint_score if taxonomy_mode else 0.0
-                    ),
-                    "fingerprint_terms": list(fingerprint_terms),
                 }
             )
 
@@ -6070,21 +5694,6 @@ async def _fetch_tmdb_semantic_candidates(
                     for item in selected_keyword_items
                 ],
                 "genre_ids": genre_ids[:3],
-                "anchor_fingerprint": (
-                    [
-                        {
-                            "name": name,
-                            "weight": round(weight, 4),
-                        }
-                        for name, weight in sorted(
-                            anchor_fingerprint_weights.items(),
-                            key=lambda item: item[1],
-                            reverse=True,
-                        )
-                    ]
-                    if taxonomy_mode
-                    else []
-                ),
                 "count": len(candidates),
                 "top_candidates": [
                     {
@@ -6116,7 +5725,6 @@ async def _fetch_tmdb_semantic_candidates(
 @router.get("/shows-like/{slug}")
 async def shows_like(
     slug: str,
-    taxonomy_shadow: bool = True,
     db: AsyncSession = Depends(get_async_session),
 ):
     title = slug.replace("-", " ")
@@ -6201,7 +5809,6 @@ async def shows_like(
             candidate_title = str(tmdb_row.get("title") or "").strip().lower()
             current_title = str(anchor_title or "").strip().lower()
             if candidate_title == current_title and candidate_details.get("poster_path"):
-                candidate_details = await _enrich_seo_details(candidate_details)
                 tmdb_anchor_details = candidate_details
                 tmdb_row.pop("details", None)
                 row = tmdb_row
@@ -6209,91 +5816,6 @@ async def shows_like(
                 anchor_title = str(row["title"])
                 anchor_details = tmdb_anchor_details
                 print("SEO anchor corrected from TMDB search:", anchor_title, tmdb_id)
-
-    # V2.7.3 shadow-only identity verification. Exact-title DB rows can still
-    # point at an unrelated same-name TMDB show. Compare against TMDB search
-    # even when the stored row has a poster, and prefer the same-title result
-    # when it carries materially richer semantic metadata. Production remains
-    # untouched until the shadow regression proves this behaviour.
-    if taxonomy_shadow:
-        tmdb_verify = await _tmdb_search_anchor()
-        if tmdb_verify:
-            verify_title = str(tmdb_verify.get("title") or "").strip().lower()
-            current_title = str(anchor_title or "").strip().lower()
-            verify_details = dict(tmdb_verify.get("details") or {})
-            verify_id = tmdb_verify.get("show_id")
-            if verify_title == current_title and isinstance(verify_id, int):
-                verify_details = await _enrich_seo_details(verify_details)
-
-                def _anchor_richness(details: dict) -> float:
-                    kw = len(details.get("seo_keywords") or [])
-                    genres_n = len(details.get("genre_ids") or details.get("genres") or [])
-                    overview_n = len(str(details.get("overview") or "").strip())
-                    return (0.65 * min(12, kw)) + (0.55 * min(4, genres_n)) + (1.0 if overview_n >= 80 else 0.0)
-
-                current_richness = _anchor_richness(anchor_details)
-                verify_richness = _anchor_richness(verify_details)
-
-                # V2.7.4a ambiguity guard:
-                # TMDB search can return a newer/remade show with the exact same
-                # title. Richer metadata alone is not enough reason to replace a
-                # DB anchor that already has a meaningful semantic fingerprint.
-                #
-                # Only allow same-title replacement when the current anchor is
-                # genuinely sparse. This still repairs bad duplicate/import rows
-                # such as an entry with only one or two generic keywords, while
-                # preserving established same-name shows that already have
-                # several coherent keywords.
-                current_kw_n = len(anchor_details.get("seo_keywords") or [])
-                current_genre_n = len(anchor_details.get("genre_ids") or anchor_details.get("genres") or [])
-                current_overview_n = len(str(anchor_details.get("overview") or "").strip())
-                current_is_sparse = bool(
-                    current_kw_n <= 2
-                    or current_genre_n == 0
-                    or current_overview_n < 40
-                    or current_richness < 4.25
-                )
-
-                should_verify_replace = bool(
-                    verify_id != tmdb_id
-                    and current_is_sparse
-                    and verify_richness >= current_richness + 1.5
-                )
-
-                if should_verify_replace:
-                    previous_id = tmdb_id
-                    tmdb_id = int(verify_id)
-                    anchor_title = str(tmdb_verify.get("title") or anchor_title)
-                    anchor_details = verify_details
-                    row = {
-                        "show_id": tmdb_id,
-                        "title": anchor_title,
-                        "poster_path": verify_details.get("poster_path"),
-                    }
-                    print(
-                        "SEO TAXONOMY ANCHOR VERIFY:",
-                        {
-                            "title": anchor_title,
-                            "previous_tmdb_id": previous_id,
-                            "tmdb_id": tmdb_id,
-                            "previous_richness": round(current_richness, 3),
-                            "verified_richness": round(verify_richness, 3),
-                            "reason": "current_anchor_sparse",
-                        },
-                    )
-                elif verify_id != tmdb_id and verify_richness >= current_richness + 1.5:
-                    print(
-                        "SEO TAXONOMY ANCHOR VERIFY SKIP:",
-                        {
-                            "title": anchor_title,
-                            "current_tmdb_id": tmdb_id,
-                            "search_tmdb_id": int(verify_id),
-                            "current_keyword_count": current_kw_n,
-                            "current_richness": round(current_richness, 3),
-                            "verified_richness": round(verify_richness, 3),
-                            "reason": "current_anchor_not_sparse",
-                        },
-                    )
     anchor_genre_ids = set(anchor_details.get("genre_ids") or [])
     anchor_lang = anchor_details.get("original_language")
     anchor_keywords = _extract_anchor_keywords(
@@ -6303,40 +5825,29 @@ async def shows_like(
         " ".join(anchor_details.get("seo_keywords") or []),
     )
     anchor_profile = _anchor_profile(anchor_details)
-
-    # V2.7.4a production cutover: taxonomy is now the default path. Set taxonomy_shadow=false only for temporary legacy comparison/rollback diagnostics.
-    # This lets us run the exact same recommendation pipeline with Taxonomy V2.3
-    # without changing the live /shows-like behaviour.
-    old_anchor_concept = _classify_anchor_concept_v2(anchor_title, anchor_details)
-    old_anchor_concept = ANCHOR_TO_CONCEPT.get(anchor_title.lower(), old_anchor_concept)
-
-    taxonomy_result = None
-    if taxonomy_shadow:
-        taxonomy_result = classify_anchor(anchor_details)
-        anchor_concept = taxonomy_result.concept
-    else:
-        anchor_concept = old_anchor_concept
-
+    anchor_concept = _classify_anchor_concept_v2(anchor_title, anchor_details)
+    anchor_concept = ANCHOR_TO_CONCEPT.get(anchor_title.lower(), anchor_concept)
     print(
-        "SEO CONCEPT DEBUG:",
-        anchor_title,
-        anchor_concept,
-        "mode=taxonomy_v2_7_4a_production" if taxonomy_shadow else "mode=legacy_diagnostic",
+    "SEO CONCEPT DEBUG:",
+    anchor_title,
+    anchor_concept,
     )
 
-    if taxonomy_shadow and taxonomy_result is not None:
-        print(
-            "SEO TAXONOMY SHADOW:",
-            {
-                "title": anchor_title,
-                "old_concept": old_anchor_concept,
-                "taxonomy_concept": taxonomy_result.concept,
-                "family": taxonomy_result.family,
-                "confidence": round(taxonomy_result.confidence, 4),
-                "state": taxonomy_result.state,
-                "changed": old_anchor_concept != taxonomy_result.concept,
-            },
-        )
+    # TV Taxonomy v1 - observation only.
+    # Does NOT change anchor_concept or recommendation results.
+    try:
+        taxonomy_debug = compare_old_new(anchor_details, anchor_concept)
+        print("SEO TAXONOMY V1 DEBUG:", taxonomy_debug)
+    except Exception as exc:
+        print("SEO TAXONOMY V1 ERROR:", repr(exc))
+
+    print(
+        "SEO ANCHOR PROFILE DEBUG:",
+        anchor_title,
+        anchor_details.get("seo_keywords"),
+        anchor_profile,
+    )
+
     print(
         "SEO ANCHOR PROFILE DEBUG:",
         anchor_title,
@@ -6400,7 +5911,6 @@ async def shows_like(
         anchor_details=anchor_details,
         anchor_concept=anchor_concept,
         limit=MAX_RESULTS * 3,
-        taxonomy_mode=taxonomy_shadow,
     )
 
     (
@@ -6419,9 +5929,6 @@ async def shows_like(
     reddit_scores = reddit_scores or {}
 
     semantic_scores: dict[int, float] = {}
-    semantic_matched_terms: dict[int, list[str]] = {}
-    semantic_fingerprint_scores: dict[int, float] = {}
-    semantic_fingerprint_terms: dict[int, list[str]] = {}
 
     for item in semantic_items or []:
         try:
@@ -6439,43 +5946,6 @@ async def shows_like(
                 semantic_scores.get(rid, 0.0),
                 raw,
             )
-
-            if taxonomy_shadow:
-                try:
-                    fp_score = float(item.get("fingerprint_score") or 0.0)
-                except Exception:
-                    fp_score = 0.0
-
-                semantic_fingerprint_scores[rid] = max(
-                    semantic_fingerprint_scores.get(rid, 0.0),
-                    fp_score,
-                )
-
-                fp_terms = [
-                    str(v).strip().lower()
-                    for v in (item.get("fingerprint_terms") or [])
-                    if str(v).strip()
-                ]
-                if fp_terms:
-                    existing_fp = semantic_fingerprint_terms.setdefault(rid, [])
-                    for term in fp_terms:
-                        if term not in existing_fp:
-                            existing_fp.append(term)
-
-            matched_names: list[str] = []
-            for kw in item.get("matched_keywords") or []:
-                if isinstance(kw, dict):
-                    name = str(kw.get("name") or "").strip().lower()
-                else:
-                    name = str(kw or "").strip().lower()
-                if name and name not in matched_names:
-                    matched_names.append(name)
-
-            if matched_names:
-                existing = semantic_matched_terms.setdefault(rid, [])
-                for name in matched_names:
-                    if name not in existing:
-                        existing.append(name)
 
     trending_scores: dict[int, float] = {}
     for item in trending_items or []:
@@ -6577,27 +6047,6 @@ async def shows_like(
             if details
         ]
     )
-
-    # Attach semantic-discovery evidence to each enriched candidate so the
-    # taxonomy fit layer can distinguish "metadata is sparse" from
-    # "there is no concept evidence". Internal key only; it is not part of the
-    # public response schema.
-    if taxonomy_shadow:
-        for details in details_list:
-            try:
-                rid = int(details.get("tmdb_id") or 0)
-            except Exception:
-                rid = 0
-            if rid:
-                details["_seo_taxonomy_matched_terms"] = list(
-                    semantic_matched_terms.get(rid, [])
-                )
-                details["_seo_anchor_fingerprint_score"] = float(
-                    semantic_fingerprint_scores.get(rid, 0.0)
-                )
-                details["_seo_anchor_fingerprint_terms"] = list(
-                    semantic_fingerprint_terms.get(rid, [])
-                )
 
     if SEO_DEBUG:
         print(
@@ -6731,7 +6180,7 @@ async def shows_like(
         is_reddit = rid in reddit_set
         is_trending = rid in trending_set
 
-        concept_controls_fit = taxonomy_shadow or anchor_concept in {
+        concept_controls_fit = anchor_concept in {
             "period_professional_drama",
             "post_apocalyptic_survival",
             "warm_workplace_comedy",
@@ -6756,12 +6205,11 @@ async def shows_like(
             )
             continue
 
-        concept_pass, concept_bonus, concept_multiplier = _active_concept_fit_score(
+        concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
             anchor_concept,
             details,
             semantic_score=semantic_score,
             genre_score=genre_score,
-            taxonomy_mode=taxonomy_shadow,
         )
         if not concept_pass:
             _seo_debug_candidate(
@@ -6781,11 +6229,7 @@ async def shows_like(
 
         # Legacy concept guardrail is only needed for the older concept profiles.
         # finance_power now uses CONCEPT_RULES + grounded sanity checks below.
-        if (
-            not taxonomy_shadow
-            and anchor_concept
-            and anchor_concept != "finance_power"
-        ):
+        if anchor_concept and anchor_concept != "finance_power":
             if not passes_concept_guardrail(
                 anchor_concept,
                 candidate_blob,
@@ -6838,7 +6282,7 @@ async def shows_like(
                 and concept_bonus < 0.12
             ):
                 continue
-        passes_quality = _passes_seo_quality_floor(
+        if not _passes_seo_quality_floor(
             vote_average=vote_average,
             vote_count=vote_count,
             popularity=popularity,
@@ -6847,62 +6291,7 @@ async def shows_like(
             is_reddit=is_reddit,
             is_tmdb=is_tmdb,
             is_trending=is_trending,
-        )
-
-        # V2.7 taxonomy-aware quality rescue
-        # ----------------------------------
-        # The generic quality floor is useful for suppressing weak/popularity
-        # noise, but it can discard structurally excellent specialist matches.
-        # In taxonomy shadow mode only, rescue a candidate when:
-        #   * its independent taxonomy classification exactly matches the
-        #     anchor specialist concept;
-        #   * candidate-fit itself is meaningfully strong;
-        #   * the absolute safety/quality floors still hold; and
-        #   * there is at least some semantic or genre evidence.
-        #
-        # This is deliberately NOT a generic semantic rescue and does not apply
-        # to broad/secondary-family candidates. It therefore recovers genuine
-        # niche specialist matches such as low-popularity finance dramas without
-        # weakening concept precision globally.
-        taxonomy_quality_rescue = False
-        if not passes_quality and taxonomy_shadow:
-            relationship_concept = str(
-                details.get("_seo_taxonomy_relationship_concept") or ""
-            )
-            fit_tier = str(details.get("_seo_taxonomy_fit_tier") or "")
-            fit_score = float(details.get("_seo_taxonomy_fit_score") or 0.0)
-
-            taxonomy_quality_rescue = bool(
-                relationship_concept == anchor_concept
-                and fit_tier in {"strong", "good"}
-                and fit_score >= 0.24
-                and vote_average >= 6.3
-                and vote_count >= ABS_MIN_VOTE_COUNT
-                and popularity >= ABS_MIN_POPULARITY
-                and (
-                    semantic_score >= 0.06
-                    or genre_score >= 0.33
-                )
-            )
-
-            if taxonomy_quality_rescue and SEO_DEBUG:
-                print(
-                    "SEO TAXONOMY QUALITY RESCUE DEBUG:",
-                    {
-                        "title": title_val,
-                        "anchor_concept": anchor_concept,
-                        "relationship_concept": relationship_concept,
-                        "fit_tier": fit_tier,
-                        "fit_score": round(fit_score, 4),
-                        "semantic": round(float(semantic_score), 4),
-                        "genre": round(float(genre_score), 4),
-                        "vote_average": round(float(vote_average), 3),
-                        "vote_count": int(vote_count),
-                        "popularity": round(float(popularity), 3),
-                    },
-                )
-
-        if not passes_quality and not taxonomy_quality_rescue:
+        ):
             _seo_debug_candidate(
                 title=title_val,
                 rid=rid,
@@ -6946,78 +6335,6 @@ async def shows_like(
         total_score += qual_bonus
         total_score += fit_bonus
         total_score += concept_bonus
-
-        # V2.5.1 relationship-gated anchor fingerprint.
-        #
-        # Fingerprint overlap is useful only in proportion to structural
-        # taxonomy compatibility. Literal overlap such as "satire", "monster",
-        # or "miniseries" cannot independently overpower the candidate's actual
-        # archetype. This remains ranking-only; it never rejects a candidate.
-        if taxonomy_shadow:
-            fingerprint_score = max(
-                0.0,
-                min(
-                    1.0,
-                    float(
-                        details.get("_seo_anchor_fingerprint_score", 0.0)
-                        or 0.0
-                    ),
-                ),
-            )
-
-            relationship_compatibility = max(
-                0.05,
-                min(
-                    1.0,
-                    float(
-                        details.get(
-                            "_seo_taxonomy_relationship_compatibility",
-                            0.42,
-                        )
-                        or 0.42
-                    ),
-                ),
-            )
-
-            # Relationship gating:
-            #   exact specialist        -> full fingerprint value
-            #   close same-family       -> proportionate value
-            #   weak/different concept  -> fingerprint heavily damped
-            gated_fingerprint = (
-                fingerprint_score
-                * (relationship_compatibility ** 1.25)
-            )
-
-            # Keep the contribution bounded. The fingerprint refines the
-            # existing concept/semantic/source ranking; it does not replace it.
-            total_score += 0.30 * gated_fingerprint
-
-            # Only a very small dampener is retained for candidates with no
-            # anchor fingerprint evidence. Absence is not a rejection signal.
-            if fingerprint_score <= 0.0:
-                total_score *= 0.96
-            elif gated_fingerprint < 0.08:
-                total_score *= 0.985
-
-            if SEO_DEBUG and fingerprint_score > 0:
-                print(
-                    "SEO TAXONOMY FINGERPRINT DEBUG:",
-                    {
-                        "title": details.get("title") or details.get("name"),
-                        "anchor_concept": anchor_concept,
-                        "fingerprint": round(fingerprint_score, 4),
-                        "relationship_compatibility": round(
-                            relationship_compatibility, 4
-                        ),
-                        "gated_fingerprint": round(gated_fingerprint, 4),
-                        "fingerprint_terms": list(
-                            details.get("_seo_anchor_fingerprint_terms", [])
-                        ),
-                        "relationship_concept": details.get(
-                            "_seo_taxonomy_relationship_concept"
-                        ),
-                    },
-                )
 
         # Penalise crime-heavy shows for non-crime anchors
         if anchor_concept not in {
@@ -7075,17 +6392,6 @@ async def shows_like(
             "score": total_score,
         }
 
-        if taxonomy_shadow:
-            result["_seo_taxonomy_relationship_concept"] = str(
-                details.get("_seo_taxonomy_relationship_concept") or ""
-            )
-            result["_seo_taxonomy_fit_tier"] = str(
-                details.get("_seo_taxonomy_fit_tier") or ""
-            )
-            result["_seo_taxonomy_fit_score"] = float(
-                details.get("_seo_taxonomy_fit_score") or 0.0
-            )
-
         _seo_debug_candidate(
             title=title_val,
             rid=rid,
@@ -7132,12 +6438,11 @@ async def shows_like(
                 " ".join(details.get("genres") or []),
                 " ".join(details.get("seo_keywords") or []),
             )
-            concept_pass, concept_bonus, concept_multiplier = _active_concept_fit_score(
+            concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
                 anchor_concept,
                 details,
                 semantic_score=semantic_score,
                 genre_score=genre_score,
-                taxonomy_mode=taxonomy_shadow,
             )
             if not concept_pass:
                 continue
@@ -7146,11 +6451,7 @@ async def shows_like(
 
             # Legacy concept guardrail is only needed for the older concept profiles.
             # finance_power now uses CONCEPT_RULES + grounded sanity checks below.
-            if (
-                not taxonomy_shadow
-                and anchor_concept
-                and anchor_concept != "finance_power"
-            ):
+            if anchor_concept and anchor_concept != "finance_power":
                 if not passes_concept_guardrail(
                     anchor_concept,
                     candidate_blob,
@@ -7161,26 +6462,11 @@ async def shows_like(
             if _weak_future_for_seo(details):
                 continue
 
-            if (
-                not taxonomy_shadow
-                and not _passes_grounded_concept_sanity(
-                    anchor_concept,
-                    details,
-                    source="fill",
-                    score=0.0,
-                )
-            ):
+            if not _passes_grounded_concept_sanity(anchor_concept, details, source="fill", score=0.0):
                 continue
 
-            fit = (
-                0.0
-                if taxonomy_shadow
-                else _fill_fit_score(_anchor_fill_bucket(anchor_title, anchor_details), details)
-            )
-            if taxonomy_shadow:
-                if concept_bonus < 0.12 and semantic_score < 0.14:
-                    continue
-            elif fit < 0.10 and concept_bonus < 0.12 and semantic_score < 0.14:
+            fit = _fill_fit_score(_anchor_fill_bucket(anchor_title, anchor_details), details)
+            if fit < 0.10 and concept_bonus < 0.12 and semantic_score < 0.14:
                 continue
 
             bayes_quality = _bayesian_quality_score(vote_average, vote_count)
@@ -7260,7 +6546,6 @@ async def shows_like(
         anchor_concept=anchor_concept,
         limit=final_limit,
         anchor_tmdb_id=tmdb_id,
-        taxonomy_mode=taxonomy_shadow,
     )
 
     # SEO safety net: never leave a valid sci-fi / mystery-box anchor with an empty page
@@ -7293,12 +6578,11 @@ async def shows_like(
                 " ".join(details.get("genres") or []),
             )
             genre_score = _genre_overlap_score(anchor_genre_ids, genre_ids)
-            concept_pass, concept_bonus, concept_multiplier = _active_concept_fit_score(
+            concept_pass, concept_bonus, concept_multiplier = _concept_fit_score(
                 anchor_concept,
                 details,
                 semantic_score=semantic_score,
                 genre_score=genre_score,
-                taxonomy_mode=taxonomy_shadow,
             )
             if not concept_pass:
                 continue
@@ -7340,7 +6624,7 @@ async def shows_like(
 
     enriched_results = _enrich_recommendations_for_seo(anchor_title, anchor_details, results)
 
-    payload = {
+    return {
         "anchor": {
             "tmdb_id": tmdb_id,
             "title": anchor_title,
@@ -7349,21 +6633,6 @@ async def shows_like(
         "recommendations": enriched_results,
         "page_copy": _build_page_copy(anchor_title, anchor_details, enriched_results),
     }
-
-    # Debug metadata is exposed only for explicit shadow requests.
-    if taxonomy_shadow and taxonomy_result is not None:
-        payload["_taxonomy"] = {
-            "old_concept": old_anchor_concept,
-            "taxonomy_concept": taxonomy_result.concept,
-            "family": taxonomy_result.family,
-            "confidence": round(taxonomy_result.confidence, 4),
-            "state": taxonomy_result.state,
-            "changed": old_anchor_concept != taxonomy_result.concept,
-            "downstream_taxonomy": True,
-            "taxonomy_version": "2.7.4a-production",
-        }
-
-    return payload
 
 
 @router.get("/best-crime")

@@ -407,7 +407,23 @@ export default function ShowsLike() {
   if (loading) {
     return (
       <div className="page-body shows-like-v2-page">
-        <div className="glass-card admin-empty">Loading richer recommendations…</div>
+        <section className="shows-like-v2-loading glass-card-glow" role="status" aria-live="polite">
+          <div className="shows-like-v2-loading__icon" aria-hidden="true">
+            <div className="shows-like-v2-loading__spinner" />
+            <span className="shows-like-v2-loading__spark">✦</span>
+          </div>
+
+          <div className="shows-like-v2-loading__copy">
+            <p className="shows-like-v2-section-label">WhatNext is working</p>
+            <h1>Finding the best matches…</h1>
+            <p>Analysing themes, genres and similar shows to build a stronger recommendation list.</p>
+            <div className="shows-like-v2-loading__steps" aria-hidden="true">
+              <span>Comparing story signals</span>
+              <span>Checking audience fit</span>
+              <span>Ranking the strongest matches</span>
+            </div>
+          </div>
+        </section>
       </div>
     );
   }

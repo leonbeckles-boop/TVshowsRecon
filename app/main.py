@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
+from redis.asyncio import Redis
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
@@ -53,11 +56,33 @@ async def lifespan(app: FastAPI):
         http2=False,
     )
 
+    redis_url = (
+        os.getenv("REDIS_URL")
+        or os.getenv("RENDER_REDIS_URL")
+        or os.getenv("CACHE_REDIS_URL")
+        or "redis://redis:6379/0"
+    )
+    app.state.redis_client = None
+
+    try:
+        redis_client = Redis.from_url(redis_url, encoding="utf-8", decode_responses=False)
+        await redis_client.ping()
+        FastAPICache.init(RedisBackend(redis_client), prefix="tvrecs-cache")
+        app.state.redis_client = redis_client
+        log.info("Redis cache initialised")
+    except Exception as exc:
+        log.warning("Redis cache unavailable; continuing without cache: %r", exc)
+
     try:
         yield
     finally:
         try:
             await app.state.tmdb_client.aclose()
+        except Exception:
+            pass
+        try:
+            if app.state.redis_client is not None:
+                await app.state.redis_client.aclose()
         except Exception:
             pass
 

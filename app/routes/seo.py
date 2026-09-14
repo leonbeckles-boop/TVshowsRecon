@@ -11,8 +11,13 @@ from app.routes.recs_v3 import (
 )
 
 import asyncio
+import json
 import math
 import re
+import os
+import hmac
+
+from fastapi import Header, HTTPException
 from collections import Counter
 from datetime import datetime
 from app.services.seo_profiles import get_or_create_profile, apply_profile_scoring
@@ -25,7 +30,52 @@ from app.services.seo_taxonomy import (
     fingerprint_term_role_weight as taxonomy_fingerprint_term_role_weight,
 )
 import httpx
+from fastapi_cache import FastAPICache
+
 SEO_DEBUG = True
+
+SEO_CACHE_VERSION = "v274a"
+SEO_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+async def _get_cached_shows_like_payload(slug: str) -> dict | None:
+    try:
+        backend = FastAPICache.get_backend()
+        redis = getattr(backend, "redis", None)
+        if redis is None:
+            return None
+        key = f"seo:shows-like:{SEO_CACHE_VERSION}:{slug}"
+        cached = await redis.get(key)
+        if not cached:
+            return None
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8")
+        payload = json.loads(cached)
+        if isinstance(payload, dict):
+            if SEO_DEBUG:
+                print("SEO CACHE HIT:", key)
+            return payload
+    except Exception as exc:
+        if SEO_DEBUG:
+            print("SEO CACHE READ ERROR:", slug, repr(exc))
+    return None
+
+
+async def _cache_shows_like_payload(slug: str, payload: dict) -> None:
+    try:
+        backend = FastAPICache.get_backend()
+        redis = getattr(backend, "redis", None)
+        if redis is None:
+            return
+        key = f"seo:shows-like:{SEO_CACHE_VERSION}:{slug}"
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        await redis.setex(key, SEO_CACHE_TTL_SECONDS, encoded)
+        if SEO_DEBUG:
+            print("SEO CACHE STORE:", key, f"ttl={SEO_CACHE_TTL_SECONDS}s")
+    except Exception as exc:
+        if SEO_DEBUG:
+            print("SEO CACHE WRITE ERROR:", slug, repr(exc))
+
 
 
 router = APIRouter(prefix="/api/seo", tags=["seo"])
@@ -6117,8 +6167,46 @@ async def _fetch_tmdb_semantic_candidates(
 async def shows_like(
     slug: str,
     taxonomy_shadow: bool = True,
+    refresh: bool = False,
+    x_seo_refresh_key: str | None = Header(
+        default=None,
+        alias="X-SEO-Refresh-Key",
+    ),
     db: AsyncSession = Depends(get_async_session),
 ):
+    if refresh:
+        expected_refresh_key = os.getenv("SEO_REFRESH_KEY")
+
+        if (
+            not expected_refresh_key
+            or not x_seo_refresh_key
+            or not hmac.compare_digest(
+                x_seo_refresh_key,
+                expected_refresh_key,
+            )
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid SEO refresh key",
+            )
+
+    # Keep the cache key aligned with the actual route slug. Do not ASCII-normalise
+    # here: accented/non-Latin slugs must remain distinct.
+    cache_slug = slug.strip().lower()
+
+    if taxonomy_shadow and not refresh:
+        cached_payload = await _get_cached_shows_like_payload(cache_slug)
+        if cached_payload is not None:
+            return cached_payload
+    
+    # Keep the cache key aligned with the actual route slug. Do not ASCII-normalise
+    # here: accented/non-Latin slugs must remain distinct.
+    cache_slug = slug.strip().lower()
+    if taxonomy_shadow and not refresh:
+        cached_payload = await _get_cached_shows_like_payload(cache_slug)
+        if cached_payload is not None:
+            return cached_payload
+
     title = slug.replace("-", " ")
 
     # Resolve the anchor deterministically.
@@ -7362,6 +7450,9 @@ async def shows_like(
             "downstream_taxonomy": True,
             "taxonomy_version": "2.7.4a-production",
         }
+
+    if taxonomy_shadow:
+        await _cache_shows_like_payload(cache_slug, payload)
 
     return payload
 

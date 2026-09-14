@@ -40,6 +40,7 @@ services:
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID}
       REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET}
       REDDIT_USER_AGENT: ${REDDIT_USER_AGENT}
+      SEO_REFRESH_KEY: ${SEO_REFRESH_KEY}
       # Avoid blank secret warning; override in .env for prod
       SECRET_KEY: ${SECRET_KEY:-changeme-dev-secret}
     depends_on:

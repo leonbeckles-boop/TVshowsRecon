@@ -144,26 +144,53 @@ const SeoRecommendationCard: React.FC<Props> = ({
           </div>
         )}
 
-        <section className="seo-rec-card__why">
-          <h3>Why {rec.title} matches {anchorTitle}</h3>
-          <p>{whyText}</p>
-        </section>
+        {/* Desktop/tablet explanation */}
+          <div className="seo-rec-card__desktop-detail">
+            <section className="seo-rec-card__why">
+              <h3>Why {rec.title} matches {anchorTitle}</h3>
+              <p>{whyText}</p>
+            </section>
 
-        {reasons.length > 0 && (
-          <section className="seo-rec-card__reasons">
-            <h3>Match signals</h3>
-            <ul>
-              {reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          </section>
-        )}
+            {reasons.length > 0 && (
+              <section className="seo-rec-card__reasons">
+                <h3>Match signals</h3>
+                <ul>
+                  {reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
-        {overview && variant === "feature" && (
-          <p className="seo-rec-card__overview">{overview}</p>
-        )}
+            {overview && variant === "feature" && (
+              <p className="seo-rec-card__overview">{overview}</p>
+            )}
+          </div>
 
+          {/* Mobile explanation */}
+          <details className="seo-rec-card__mobile-detail">
+            <summary>
+              <span>Why it matches</span>
+              <span className="seo-rec-card__mobile-chevron">⌄</span>
+            </summary>
+
+            <div className="seo-rec-card__mobile-detail-body">
+              <p>{whyText}</p>
+
+              {reasons.length > 0 && (
+                <>
+                  <h3>Match signals</h3>
+                  <ul>
+                    {reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          </details>
+
+        
         <div className="seo-rec-card__actions">
           <Link to={`/show/${rec.tmdb_id}`} className="seo-rec-card__button seo-rec-card__button--primary">
             View details

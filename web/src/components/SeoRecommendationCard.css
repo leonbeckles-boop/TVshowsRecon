@@ -255,3 +255,129 @@
     font-size: 0.84rem;
   }
 }
+
+.seo-rec-card__desktop-detail {
+  display: grid;
+  gap: 13px;
+}
+
+/* Mobile detail is hidden on desktop */
+.seo-rec-card__mobile-detail {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .seo-rec-card,
+  .seo-rec-card--compact {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+    border-radius: 18px;
+  }
+
+  .seo-rec-card__content {
+    gap: 9px;
+  }
+
+  .seo-rec-card__title {
+    font-size: 1.15rem;
+  }
+
+  /* Vote count isn't important enough for the mobile card */
+  .seo-rec-card__meta span:nth-child(3) {
+    display: none;
+  }
+
+  .seo-rec-card__genres {
+    gap: 5px;
+  }
+
+  .seo-rec-card__genres span {
+    padding: 4px 7px;
+    font-size: 0.7rem;
+  }
+
+  /* Only show the first three genres */
+  .seo-rec-card__genres span:nth-child(n+4) {
+    display: none;
+  }
+
+  .seo-rec-card__similar-link {
+    display: none;
+  }
+
+  /* Hide verbose desktop presentation */
+  .seo-rec-card__desktop-detail {
+    display: none;
+  }
+
+  /* Compact expandable mobile explanation */
+  .seo-rec-card__mobile-detail {
+    display: block;
+    border-top: 1px solid rgba(255,255,255,0.10);
+    padding-top: 8px;
+  }
+
+  .seo-rec-card__mobile-detail summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    list-style: none;
+    color: rgba(255,255,255,0.9);
+    font-size: 0.84rem;
+    font-weight: 800;
+  }
+
+  .seo-rec-card__mobile-detail summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .seo-rec-card__mobile-chevron {
+    transition: transform 0.2s ease;
+  }
+
+  .seo-rec-card__mobile-detail[open] .seo-rec-card__mobile-chevron {
+    transform: rotate(180deg);
+  }
+
+  .seo-rec-card__mobile-detail-body {
+    padding-top: 12px;
+    color: rgba(255,255,255,0.82);
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+
+  .seo-rec-card__mobile-detail-body p {
+    margin: 0;
+  }
+
+  .seo-rec-card__mobile-detail-body h3 {
+    margin: 14px 0 7px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.65);
+  }
+
+  .seo-rec-card__mobile-detail-body ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+
+  .seo-rec-card__mobile-detail-body li {
+    margin-bottom: 5px;
+  }
+
+  .seo-rec-card__actions {
+    grid-column: 1 / -1;
+    gap: 7px;
+  }
+
+  .seo-rec-card__button {
+    flex: 1;
+    text-align: center;
+    padding: 8px 7px;
+    font-size: 0.78rem;
+  }
+}

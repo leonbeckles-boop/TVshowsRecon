@@ -41,7 +41,22 @@ def render_page(slug, data):
         why = rec.get("why_recommended") or rec.get("source_explanation") or rec.get("overview") or ""
         rec_id = rec.get("tmdb_id")
         detail_link = f'{BASE}/show/{int(rec_id)}' if str(rec_id).isdigit() else f'{BASE}/search'
-        cards.append(f'<article class="card"><h3><a href="{esc(detail_link)}">{esc(name)}</a></h3><p>{esc(why)}</p></article>')
+        poster = rec.get("poster_path") or rec.get("poster_url") or ""
+        if isinstance(poster, str) and poster.startswith("/"):
+            poster = f"https://image.tmdb.org/t/p/w500{poster}"
+        elif not (isinstance(poster, str) and poster.startswith("https://image.tmdb.org/t/p/")):
+            poster = ""
+        poster_html = (
+            f'<a href="{esc(detail_link)}" aria-label="View {esc(name)}">'
+            f'<img class="poster" src="{esc(poster)}" alt="{esc(name)} poster" '
+            f'loading="lazy" width="500" height="750"></a>'
+            if poster else '<div class="poster placeholder" aria-hidden="true">Poster unavailable</div>'
+        )
+        cards.append(
+            f'<article class="card">{poster_html}<div class="card-content">'
+            f'<h3><a href="{esc(detail_link)}">{esc(name)}</a></h3>'
+            f'<p>{esc(why)}</p></div></article>'
+        )
     if not cards:
         return None
     sections = []
@@ -65,7 +80,7 @@ def render_page(slug, data):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(f'Shows Like {title}: What to Watch Next | WhatNextTV')}</title>
 <meta name="description" content="{esc(description)}"><link rel="canonical" href="{esc(url)}">
-<style>body{{margin:0;background:#020617;color:#e2e8f0;font:16px/1.6 system-ui,sans-serif}}a{{color:#93c5fd}}header,main,footer{{max-width:1100px;margin:auto;padding:22px}}header{{display:flex;gap:22px;flex-wrap:wrap}}h1{{font-size:clamp(2rem,5vw,3.5rem);line-height:1.15}}h2{{margin-top:36px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card,section{{background:#101b32;border:1px solid #334155;border-radius:12px;padding:18px}}.card p{{margin-bottom:0}}.links{{display:flex;flex-wrap:wrap;gap:16px}}footer{{border-top:1px solid #334155;margin-top:35px}}</style></head>
+<style>body{{margin:0;background:#020617;color:#e2e8f0;font:16px/1.6 system-ui,sans-serif}}a{{color:#93c5fd}}header,main,footer{{max-width:1100px;margin:auto;padding:22px}}header{{display:flex;gap:22px;flex-wrap:wrap}}h1{{font-size:clamp(2rem,5vw,3.5rem);line-height:1.15}}h2{{margin-top:36px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card,section{{background:#101b32;border:1px solid #334155;border-radius:12px;padding:18px}}.card{{padding:0;overflow:hidden}}.poster{{display:block;width:100%;height:auto;aspect-ratio:2/3;object-fit:cover}}.placeholder{{display:grid;place-items:center;background:#1e293b;color:#94a3b8}}.card-content{{padding:18px}}.card h3{{margin-top:0}}.card p{{margin-bottom:0}}.links{{display:flex;flex-wrap:wrap;gap:16px}}footer{{border-top:1px solid #334155;margin-top:35px}}</style></head>
 <body><header><a href="{BASE}/">WhatNextTV</a><a href="{BASE}/discover">Discover</a><a href="{BASE}/search">Search</a><a href="{BASE}/register">Create an account</a></header>
 <main><nav><a href="{BASE}/">Home</a> / <a href="{BASE}/shows-like">Shows Like</a> / {esc(title)}</nav>
 <h1>Shows Like {esc(title)}</h1><p>{esc(copy.get('intro') or description)}</p>

@@ -5,9 +5,12 @@
       "destination": "https://whatnext-api.onrender.com/api/$1"
     },
     {
+      "source": "/shows-like/:slug",
+      "destination": "https://whatnext-api.onrender.com/seo-pages/shows-like/:slug"
+    },
+    {
       "source": "/(.*)",
       "destination": "/"
     }
   ]
 }
-

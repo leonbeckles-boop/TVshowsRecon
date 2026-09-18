@@ -1,11 +1,15 @@
 {
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://whatnext-api.onrender.com/api/:path*"
+      "source": "/shows-like/:slug",
+      "destination": "https://whatnext-api.onrender.com/seo-pages/shows-like/:slug"
     },
     {
-      "source": "/:path*",
+      "source": "/api/(.*)",
+      "destination": "https://whatnext-api.onrender.com/api/$1"
+    },
+    {
+      "source": "/(.*)",
       "destination": "/"
     }
   ]

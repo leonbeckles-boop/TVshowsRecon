@@ -304,32 +304,46 @@ export default function ShowsLike() {
       .slice(0, 10);
   }, [relatedLinks, anchorTitle]);
 
-  useEffect(() => {
-    if (!anchor?.title || !slug) return;
+  
+useEffect(() => {
+  if (!slug) return;
 
-    const title = `Shows Like ${anchor.title}: What to Watch Next | WhatNextTV`;
-    const description = pageCopy?.seo_blurb
-      ? safeText(pageCopy.seo_blurb).slice(0, 158)
-      : `Looking for shows like ${anchor.title}? Discover similar TV series with match reasons, quality signals and recommendations from WhatNextTV.`;
+  const canonicalUrl =
+    `https://whatnexttv.org/shows-like/${encodeURIComponent(slug)}`;
 
-    document.title = title;
+  let canonical = document.querySelector<HTMLLinkElement>(
+    'link[rel="canonical"]'
+  );
 
-    let meta = document.querySelector('meta[name="description"]');
-    if (!meta) {
-      meta = document.createElement("meta");
-      meta.setAttribute("name", "description");
-      document.head.appendChild(meta);
-    }
-    meta.setAttribute("content", description);
+  if (!canonical) {
+    canonical = document.createElement("link");
+    canonical.rel = "canonical";
+    document.head.appendChild(canonical);
+  }
 
-    let canonical = document.querySelector('link[rel="canonical"]');
-    if (!canonical) {
-      canonical = document.createElement("link");
-      canonical.setAttribute("rel", "canonical");
-      document.head.appendChild(canonical);
-    }
-    canonical.setAttribute("href", `${window.location.origin}/shows-like/${slug}`);
-  }, [anchor, slug, pageCopy]);
+  canonical.href = canonicalUrl;
+
+  if (!anchor?.title) return;
+
+  document.title =
+    `Shows Like ${anchor.title}: What to Watch Next | WhatNextTV`;
+
+  const description = pageCopy?.seo_blurb
+    ? safeText(pageCopy.seo_blurb).slice(0, 158)
+    : `Looking for shows like ${anchor.title}? Discover similar TV series with match reasons and recommendations from WhatNextTV.`;
+
+  let meta = document.querySelector<HTMLMetaElement>(
+    'meta[name="description"]'
+  );
+
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "description";
+    document.head.appendChild(meta);
+  }
+
+  meta.content = description;
+}, [slug, anchor, pageCopy]);
 
   useEffect(() => {
     if (!anchor?.title || recs.length === 0 || !slug) {

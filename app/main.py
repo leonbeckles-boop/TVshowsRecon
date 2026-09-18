@@ -18,6 +18,7 @@ from app.routes import recs_v4
 from app.routes import admin, wrapped
 from app.routes import watchlist
 from app.routes import seo
+from app.routes import seo_html
 from app.routes import seo_index
 from app.routes import sitemap
 from app.routes import admin_tasks
@@ -150,6 +151,7 @@ api.include_router(watchlist.router)
 api.include_router(admin_tasks.router)
 
 app.include_router(seo.router)
+app.include_router(seo_html.router)
 app.include_router(seo_index.router)
 app.include_router(sitemap.router)
 
